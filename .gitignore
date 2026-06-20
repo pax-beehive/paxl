@@ -1,0 +1,44 @@
+# Binaries and build output
+/bin/
+/dist/
+/build/
+/out/
+/tmp/
+/paxl
+*.exe
+*.test
+*.prof
+
+# Go test and coverage output
+coverage.out
+coverage.html
+*.coverprofile
+
+# Local Go workspace files
+go.work
+go.work.sum
+
+# Generated scratch output
+.local/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Tool caches
+.cache/
+.golangci-cache/

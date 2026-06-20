@@ -1,0 +1,1126 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+	"time"
+
+	"github.com/pax-oss/paxl/internal/facade"
+	"github.com/pax-oss/paxl/internal/model"
+	"github.com/pax-oss/paxl/internal/model/store"
+	"github.com/stretchr/testify/suite"
+	"github.com/urfave/cli/v3"
+)
+
+type CommandSuite struct {
+	suite.Suite
+	stdout bytes.Buffer
+	stderr bytes.Buffer
+}
+
+func TestCommandSuite(t *testing.T) {
+	suite.Run(t, new(CommandSuite))
+}
+
+func (s *CommandSuite) SetupTest() {
+	s.stdout.Reset()
+	s.stderr.Reset()
+}
+
+func (s *CommandSuite) TestAgentListUsesSingularCommandAndOnlyShowsSupportedAgents() {
+	err := run(context.Background(), []string{"agent", "list"}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "codex")
+	s.Contains(s.stdout.String(), "claude")
+	s.NotContains(s.stdout.String(), "qwen")
+	s.Empty(s.stderr.String())
+}
+
+func (s *CommandSuite) TestAgentListSupportsJSONLFormat() {
+	err := run(
+		context.Background(),
+		[]string{"agent", "list", "--format", "jsonl"},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+
+	var first model.AgentInfo
+	s.Require().NoError(json.Unmarshal(firstLine(s.stdout.Bytes()), &first))
+	s.Equal(model.AgentNameCodex, first.Name)
+}
+
+func (s *CommandSuite) TestAgentListAcceptsVerboseFlag() {
+	err := run(context.Background(), []string{"agent", "list", "--verbose"}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "codex")
+}
+
+func (s *CommandSuite) TestAgentListAcceptsProbeFlagForCompatibility() {
+	err := run(context.Background(), []string{"agent", "list", "--probe"}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "codex")
+}
+
+func (s *CommandSuite) TestAgentListRejectsUnknownFormatBeforeFacadeCall() {
+	err := run(
+		context.Background(),
+		[]string{"agent", "list", "--format", "yaml"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestAgentSetupDryRunUsesSingularCommand() {
+	err := run(
+		context.Background(),
+		[]string{"agent", "setup", "--agent", "codex,claude", "--dry-run"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "npm install -g @openai/codex")
+	s.Contains(s.stdout.String(), "npm install -g @anthropic-ai/claude-code")
+}
+
+func (s *CommandSuite) TestAgentSetupRejectsUnsupportedAgentBeforeInstall() {
+	err := run(
+		context.Background(),
+		[]string{"agent", "setup", "--agent", "qwen", "--dry-run"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestAgentSetupDryRunDefaultsToSupportedAgents() {
+	err := run(
+		context.Background(),
+		[]string{"agent", "setup", "--dry-run"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "@openai/codex")
+	s.Contains(s.stdout.String(), "@anthropic-ai/claude-code")
+}
+
+func (s *CommandSuite) TestAgentInstallCommandRejectsUnknownAgent() {
+	_, err := agentInstallCommand(model.AgentNameUnknown)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestParseDurationSupportsDaySuffix() {
+	duration, err := parseDuration("2d")
+
+	s.Require().NoError(err)
+	s.Equal(48*time.Hour, duration)
+}
+
+func (s *CommandSuite) TestDefaultHTMLPathSanitizesSessionID() {
+	path := defaultHTMLPath(&model.Session{ID: "codex:sess/one"})
+
+	s.Contains(path, "paxl-codex_sess_one.html")
+}
+
+func (s *CommandSuite) TestVersionPrintsBinaryNameAndVersion() {
+	err := run(context.Background(), []string{"version"}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "paxl")
+	s.Contains(s.stdout.String(), "commit")
+}
+
+func (s *CommandSuite) TestVersionSupportsJSONFormat() {
+	err := run(context.Background(), []string{"version", "--format", "json"}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"version"`)
+}
+
+func (s *CommandSuite) TestVersionRejectsUnknownFormat() {
+	err := run(context.Background(), []string{"version", "--format", "yaml"}, &s.stdout, &s.stderr)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestPluralTopLevelCommandsAreNotSupported() {
+	command := newCommand(&s.stdout, &s.stderr)
+
+	for _, name := range []string{"agents", "sessions", "capsules"} {
+		s.Run(name, func() {
+			s.False(hasCommand(command, name))
+		})
+	}
+}
+
+func (s *CommandSuite) TestSingularSessionCommandExposesMigratedSubcommands() {
+	cases := []string{"list", "get", "mirror"}
+	command := findCommand(newCommand(&s.stdout, &s.stderr), "session")
+	s.Require().NotNil(command)
+
+	for _, name := range cases {
+		s.Run(name, func() {
+			s.True(hasCommand(command, name))
+		})
+	}
+}
+
+func (s *CommandSuite) TestSessionListSyncsCodexLocalSessionsToSQLite() {
+	codexHome := s.T().TempDir()
+	s.T().Setenv("CODEX_HOME", codexHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(codexHome, "session_index.jsonl"),
+		[]byte(
+			`{"id":"sess-1","thread_name":"Codex session","updated_at":"2026-06-20T01:00:00Z"}`+"\n",
+		),
+		0o600,
+	))
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+
+	err := run(
+		context.Background(),
+		[]string{"--db", dbPath, "session", "list", "--agent", "codex", "--format", "jsonl"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"id":"codex:sess-1"`)
+	s.Contains(s.stdout.String(), `"agent":"codex"`)
+}
+
+func (s *CommandSuite) TestSessionListSyncsClaudeLocalSessionsToSQLite() {
+	claudeHome := s.T().TempDir()
+	projectDir := filepath.Join(claudeHome, "projects", "sample")
+	s.Require().NoError(os.MkdirAll(projectDir, 0o700))
+	s.T().Setenv("CLAUDE_HOME", claudeHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(projectDir, "claude-session.jsonl"),
+		[]byte(
+			`{"type":"user","sessionId":"claude-session","timestamp":"2026-06-20T02:00:00Z","cwd":"/tmp/project","message":{"role":"user","content":"Claude session title"}}`+"\n",
+		),
+		0o600,
+	))
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+
+	err := run(
+		context.Background(),
+		[]string{"--db", dbPath, "session", "list", "--agent", "claude", "--format", "jsonl"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"id":"claude:claude-session"`)
+	s.Contains(s.stdout.String(), `"agent":"claude"`)
+}
+
+func (s *CommandSuite) TestSessionListAcceptsCommaSeparatedAgents() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	s.seedStoredSessions(dbPath, []*model.Session{
+		{NativeID: "codex-one", Title: "Codex"},
+	})
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	_, err = opened.Store.UpsertSessions(context.Background(), &store.UpsertSessionsRequest{
+		Agent: model.AgentNameClaude,
+		Sessions: []*model.Session{
+			{NativeID: "claude-one", Title: "Claude"},
+		},
+	})
+	s.Require().NoError(err)
+	s.Require().NoError(opened.Store.Close())
+
+	err = run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"session", "list",
+			"--no-sync",
+			"--agent", "codex,claude",
+			"--format", "jsonl",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"id":"codex:codex-one"`)
+	s.Contains(s.stdout.String(), `"id":"claude:claude-one"`)
+}
+
+func (s *CommandSuite) TestSessionListFiltersUpdatedSinceAndRendersHTML() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	now := time.Now().UTC()
+	s.seedStoredSessions(dbPath, []*model.Session{
+		{
+			NativeID:  "fresh",
+			Title:     "Fresh <session>",
+			UpdatedAt: now.Add(-30 * time.Minute).Format(time.RFC3339),
+		},
+		{
+			NativeID:  "old",
+			Title:     "Old",
+			UpdatedAt: now.Add(-48 * time.Hour).Format(time.RFC3339),
+		},
+	})
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"session", "list",
+			"--no-sync",
+			"--updated-since", "24h",
+			"--format", "html",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "codex:fresh")
+	s.Contains(s.stdout.String(), "Fresh &lt;session&gt;")
+	s.NotContains(s.stdout.String(), "codex:old")
+}
+
+func (s *CommandSuite) TestSessionGetRendersCodexTranscript() {
+	codexHome := s.T().TempDir()
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.T().Setenv("CODEX_HOME", codexHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-test-sess-1.jsonl"),
+		[]byte(
+			`{"type":"session_meta","payload":{"id":"sess-1","timestamp":"2026-06-20T01:00:00Z","cwd":"/tmp/project"}}`+"\n"+
+				`{"timestamp":"2026-06-20T01:01:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Hello Codex"}]}}`+"\n"+
+				`{"timestamp":"2026-06-20T01:02:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello back"}]}}`+"\n",
+		),
+		0o600,
+	))
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	s.Require().NoError(run(
+		context.Background(),
+		[]string{"--db", dbPath, "session", "list", "--agent", "codex"},
+		&s.stdout,
+		&s.stderr,
+	))
+	s.SetupTest()
+
+	err := run(
+		context.Background(),
+		[]string{"--db", dbPath, "session", "get", "codex:sess-1"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "[user]")
+	s.Contains(s.stdout.String(), "Hello Codex")
+	s.Contains(s.stdout.String(), "[assistant]")
+	s.Contains(s.stdout.String(), "Hello back")
+}
+
+func (s *CommandSuite) TestSessionGetWritesHTMLToOutputPath() {
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+	outputPath := filepath.Join(s.T().TempDir(), "session.html")
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"session", "get", "codex:sess-1",
+			"--format", "html",
+			"--output", outputPath,
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Wrote "+outputPath)
+	rawHTML, err := os.ReadFile(outputPath)
+	s.Require().NoError(err)
+	s.Contains(string(rawHTML), "<!doctype html>")
+	s.Contains(string(rawHTML), "Bridge context")
+}
+
+func (s *CommandSuite) TestSessionGetRendersClaudeJSONL() {
+	claudeHome := s.T().TempDir()
+	projectDir := filepath.Join(claudeHome, "projects", "sample")
+	s.Require().NoError(os.MkdirAll(projectDir, 0o700))
+	s.T().Setenv("CLAUDE_HOME", claudeHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(projectDir, "claude-session.jsonl"),
+		[]byte(
+			`{"type":"user","sessionId":"claude-session","timestamp":"2026-06-20T02:00:00Z","message":{"role":"user","content":"Hello Claude"}}`+"\n"+
+				`{"type":"assistant","sessionId":"claude-session","timestamp":"2026-06-20T02:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Hi there"}]}}`+"\n",
+		),
+		0o600,
+	))
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	s.Require().NoError(run(
+		context.Background(),
+		[]string{"--db", dbPath, "session", "list", "--agent", "claude"},
+		&s.stdout,
+		&s.stderr,
+	))
+	s.SetupTest()
+
+	err := run(
+		context.Background(),
+		[]string{"--db", dbPath, "session", "get", "claude:claude-session", "--format", "jsonl"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"role":"user"`)
+	s.Contains(s.stdout.String(), `"contentText":"Hello Claude"`)
+	s.Contains(s.stdout.String(), `"role":"assistant"`)
+	s.Contains(s.stdout.String(), `"contentText":"Hi there"`)
+}
+
+func (s *CommandSuite) TestSingularCapsuleCommandExposesMigratedSubcommands() {
+	cases := []string{"create", "list", "get", "archive", "inject", "injection"}
+	command := findCommand(newCommand(&s.stdout, &s.stderr), "capsule")
+	s.Require().NotNil(command)
+
+	for _, name := range cases {
+		s.Run(name, func() {
+			s.True(hasCommand(command, name))
+		})
+	}
+}
+
+func (s *CommandSuite) TestCapsuleLocalLifecycleUsesSingularCommands() {
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"capsule", "create", "codex:sess-1",
+			"--keyword", "bridge",
+			"--local",
+			"--format", "jsonl",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"keyword":"bridge"`)
+	s.Contains(s.stdout.String(), "Bridge context")
+	var created map[string]any
+	s.Require().NoError(json.Unmarshal(firstLine(s.stdout.Bytes()), &created))
+	capsuleID, ok := created["capsuleId"].(string)
+	s.Require().True(ok)
+	s.NotEmpty(capsuleID)
+
+	s.SetupTest()
+	err = run(
+		context.Background(),
+		[]string{"--db", dbPath, "capsule", "list", "--format", "jsonl"},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), capsuleID)
+
+	s.SetupTest()
+	err = run(
+		context.Background(),
+		[]string{"--db", dbPath, "capsule", "get", capsuleID},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Knowledge capsule: bridge")
+	s.Contains(s.stdout.String(), "Bridge context")
+
+	s.SetupTest()
+	err = run(
+		context.Background(),
+		[]string{"--db", dbPath, "capsule", "archive", capsuleID},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Archived "+capsuleID)
+}
+
+func (s *CommandSuite) TestCapsuleCreateUsesSourceAgentGenerationByDefault() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	dbPath, rolloutPath := s.seedCodexSessionWithKeywordAndRollout("bridge")
+	s.installFakeCodexCapsuleGenerator(rolloutPath)
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"capsule", "create", "codex:sess-1",
+			"--keyword", "bridge",
+			"--format", "jsonl",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"title":"Generated bridge"`)
+	s.Contains(s.stdout.String(), "Generated bridge content")
+}
+
+func (s *CommandSuite) TestSessionMirrorDeliversHandoffToExistingSession() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+	s.seedCodexTargetSession(dbPath)
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	s.installFakeCodex(capturePath)
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"session", "mirror", "codex:sess-1",
+			"--to-session", "codex:target",
+			"--format", "jsonl",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"schemaVersion":"paxl.session.mirror.v1"`)
+	s.Contains(s.stdout.String(), `"targetSessionId":"codex:target"`)
+	rawPrompt, err := os.ReadFile(capturePath)
+	s.Require().NoError(err)
+	s.Contains(string(rawPrompt), "system_handoff")
+	s.Contains(string(rawPrompt), "This context was mirrored by paxl")
+	s.Contains(string(rawPrompt), "Bridge context")
+	s.Contains(string(rawPrompt), "Bridge answer")
+}
+
+func (s *CommandSuite) TestSessionMirrorStartsNewTargetSession() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	s.installFakeClaude(capturePath)
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"session", "mirror", "codex:sess-1",
+			"--to", "claude",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "cli_new_session")
+	s.Contains(s.stdout.String(), "new claude session")
+	rawPrompt, err := os.ReadFile(capturePath)
+	s.Require().NoError(err)
+	s.Contains(string(rawPrompt), "Target agent: claude")
+	s.Contains(string(rawPrompt), "Bridge context")
+	s.Contains(string(rawPrompt), "Bridge answer")
+}
+
+func (s *CommandSuite) TestSessionMirrorHelpDoesNotExposeKeyword() {
+	err := run(context.Background(), []string{"session", "mirror", "--help"}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	s.NotContains(s.stdout.String(), "--keyword")
+}
+
+func (s *CommandSuite) TestSessionMirrorRejectsInvalidRequests() {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{name: "missing source", args: []string{"session", "mirror", "--to", "codex"}},
+		{name: "missing target", args: []string{"session", "mirror", "codex:sess"}},
+		{
+			name: "unknown target agent",
+			args: []string{"session", "mirror", "codex:sess", "--to", "qwen"},
+		},
+		{
+			name: "unknown format",
+			args: []string{"session", "mirror", "codex:sess", "--to", "codex", "--format", "xml"},
+		},
+	}
+
+	for _, tc := range cases {
+		s.Run(tc.name, func() {
+			err := run(context.Background(), tc.args, &s.stdout, &s.stderr)
+			s.Error(err)
+		})
+	}
+}
+
+func (s *CommandSuite) TestTimeoutFlagsRejectInvalidDurations() {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{name: "session list", args: []string{"session", "list", "--timeout", "bad"}},
+		{
+			name: "session mirror",
+			args: []string{"session", "mirror", "codex:sess", "--to", "codex", "--timeout", "bad"},
+		},
+		{
+			name: "capsule create",
+			args: []string{
+				"capsule",
+				"create",
+				"codex:sess",
+				"--keyword",
+				"bridge",
+				"--timeout",
+				"bad",
+			},
+		},
+		{
+			name: "capsule inject",
+			args: []string{"capsule", "inject", "kcap_1", "codex:target", "--timeout", "bad"},
+		},
+	}
+
+	for _, tc := range cases {
+		s.Run(tc.name, func() {
+			err := run(context.Background(), tc.args, &s.stdout, &s.stderr)
+			s.Error(err)
+		})
+	}
+}
+
+func (s *CommandSuite) TestCapsuleCreateRejectsInvalidDebugStackAfter() {
+	err := run(
+		context.Background(),
+		[]string{
+			"capsule", "create", "codex:sess",
+			"--keyword", "bridge",
+			"--debug-stack-after", "bad",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestCapsuleInjectDeliversHandoffAndListsInjection() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+	capsuleID := s.createLocalCapsule(dbPath, "bridge")
+	s.seedCodexTargetSession(dbPath)
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	s.installFakeCodex(capturePath)
+
+	err := run(
+		context.Background(),
+		[]string{"--db", dbPath, "capsule", "inject", capsuleID, "codex:target"},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Injected")
+	rawPrompt, err := os.ReadFile(capturePath)
+	s.Require().NoError(err)
+	s.Contains(string(rawPrompt), "system_handoff")
+	s.Contains(string(rawPrompt), "Bridge context")
+
+	s.SetupTest()
+	err = run(
+		context.Background(),
+		[]string{
+			"--db",
+			dbPath,
+			"capsule",
+			"injection",
+			"--target-session",
+			"codex:target",
+			"--format",
+			"jsonl",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"targetSessionId":"codex:target"`)
+	s.Contains(s.stdout.String(), `"capsuleId":"`+capsuleID+`"`)
+}
+
+func (s *CommandSuite) TestCapsuleInjectWritesDeliveredHandoffToOutputPath() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+	capsuleID := s.createLocalCapsule(dbPath, "bridge")
+	s.seedCodexTargetSession(dbPath)
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	outputPath := filepath.Join(s.T().TempDir(), "handoff.txt")
+	s.installFakeCodex(capturePath)
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"capsule", "inject", capsuleID, "codex:target",
+			"--output", outputPath,
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "and wrote "+outputPath)
+	rawOutput, err := os.ReadFile(outputPath)
+	s.Require().NoError(err)
+	s.Contains(string(rawOutput), "system_handoff")
+	s.Contains(string(rawOutput), "Bridge context")
+}
+
+func (s *CommandSuite) TestCapsuleInjectionListSupportsTableFormat() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+	capsuleID := s.createLocalCapsule(dbPath, "bridge")
+	s.seedCodexTargetSession(dbPath)
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	s.installFakeCodex(capturePath)
+	s.Require().NoError(run(
+		context.Background(),
+		[]string{"--db", dbPath, "capsule", "inject", capsuleID, "codex:target"},
+		&s.stdout,
+		&s.stderr,
+	))
+	s.SetupTest()
+
+	err := run(
+		context.Background(),
+		[]string{"--db", dbPath, "capsule", "injection", "--format", "table"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "codex:target")
+}
+
+func (s *CommandSuite) TestCapsuleCreateRejectsMissingKeyword() {
+	err := run(
+		context.Background(),
+		[]string{"capsule", "create", "codex:sess", "--local"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestCapsuleCreateRejectsMissingSourceSession() {
+	err := run(
+		context.Background(),
+		[]string{"capsule", "create", "--keyword", "bridge"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestCapsuleCreateRejectsUnknownAgent() {
+	err := run(
+		context.Background(),
+		[]string{"capsule", "create", "sess", "--agent", "qwen", "--keyword", "bridge"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestCapsuleCreateRejectsUnknownFormat() {
+	err := run(
+		context.Background(),
+		[]string{
+			"capsule",
+			"create",
+			"codex:sess",
+			"--keyword",
+			"bridge",
+			"--local",
+			"--format",
+			"xml",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestCapsuleGetRejectsMissingCapsuleID() {
+	err := run(context.Background(), []string{"capsule", "get"}, &s.stdout, &s.stderr)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestCapsuleArchiveRejectsMissingCapsuleID() {
+	err := run(context.Background(), []string{"capsule", "archive"}, &s.stdout, &s.stderr)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestCapsuleInjectRejectsMissingArguments() {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{name: "empty", args: []string{"capsule", "inject"}},
+		{name: "only capsule", args: []string{"capsule", "inject", "kcap_1"}},
+	}
+
+	for _, tc := range cases {
+		s.Run(tc.name, func() {
+			err := run(context.Background(), tc.args, &s.stdout, &s.stderr)
+			s.Error(err)
+		})
+	}
+}
+
+func (s *CommandSuite) TestCapsuleInjectRejectsUnknownAgent() {
+	err := run(
+		context.Background(),
+		[]string{"capsule", "inject", "kcap_1", "target", "--agent", "qwen"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestRenderCapsuleListSupportsTableFormat() {
+	err := renderCapsuleList(&s.stdout, &facade.ListCapsulesResponse{
+		Capsules: []*model.KnowledgeCapsule{
+			{
+				CapsuleID:       "kcap_1",
+				Status:          "active",
+				SourceSessionID: "codex:sess",
+				Keyword:         "bridge",
+				Title:           "Bridge",
+				CreatedAt:       "2026-06-20T01:00:00Z",
+			},
+		},
+	}, "table")
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "kcap_1")
+}
+
+func (s *CommandSuite) TestRenderCapsuleListRejectsUnknownFormat() {
+	err := renderCapsuleList(&s.stdout, &facade.ListCapsulesResponse{}, "xml")
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestRenderCapsuleSupportsJSONLFormat() {
+	err := renderCapsule(&s.stdout, &facade.GetCapsuleResponse{
+		Capsule: &model.KnowledgeCapsule{
+			CapsuleID: "kcap_1",
+			Keyword:   "bridge",
+			Content:   "Bridge context",
+		},
+	}, "jsonl")
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"capsuleId":"kcap_1"`)
+}
+
+func (s *CommandSuite) TestRenderCapsuleRejectsUnknownFormat() {
+	err := renderCapsule(&s.stdout, &facade.GetCapsuleResponse{
+		Capsule: &model.KnowledgeCapsule{CapsuleID: "kcap_1"},
+	}, "xml")
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestRenderInjectionListSupportsFormats() {
+	resp := &facade.ListInjectionsResponse{
+		Injections: []*model.KnowledgeInjection{
+			{
+				InjectionID:         "kci_1",
+				CapsuleID:           "kcap_1",
+				TargetSessionID:     "codex:target",
+				Status:              "delivered",
+				DeliveryMessageType: "system_handoff",
+				CreatedAt:           "2026-06-20T01:00:00Z",
+			},
+		},
+	}
+
+	s.Require().NoError(renderInjectionList(&s.stdout, resp, "table"))
+	s.Contains(s.stdout.String(), "kci_1")
+
+	s.SetupTest()
+	s.Require().NoError(renderInjectionList(&s.stdout, resp, "jsonl"))
+	s.Contains(s.stdout.String(), `"injectionId":"kci_1"`)
+}
+
+func (s *CommandSuite) TestRenderInjectionListRejectsUnknownFormat() {
+	err := renderInjectionList(&s.stdout, &facade.ListInjectionsResponse{}, "xml")
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestRenderMirrorResultRejectsUnknownFormat() {
+	err := renderMirrorResult(&s.stdout, &facade.MirrorSessionResponse{
+		Capsule:   &model.KnowledgeCapsule{CapsuleID: "kcap_1"},
+		Injection: &model.KnowledgeInjection{InjectionID: "mir_1"},
+	}, "xml")
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) seedCodexSessionWithKeyword(keyword string) string {
+	dbPath, _ := s.seedCodexSessionWithKeywordAndRollout(keyword)
+	return dbPath
+}
+
+func (s *CommandSuite) seedCodexSessionWithKeywordAndRollout(keyword string) (string, string) {
+	codexHome := s.T().TempDir()
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.T().Setenv("CODEX_HOME", codexHome)
+	rolloutPath := filepath.Join(rolloutDir, "rollout-test-sess-1.jsonl")
+	s.Require().NoError(os.WriteFile(
+		rolloutPath,
+		[]byte(
+			`{"type":"session_meta","payload":{"id":"sess-1","timestamp":"2026-06-20T01:00:00Z","cwd":"/tmp/project"}}`+"\n"+
+				`{"timestamp":"2026-06-20T01:01:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Bridge context for `+keyword+`"}]}}`+"\n"+
+				`{"timestamp":"2026-06-20T01:02:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Bridge answer"}]}}`+"\n",
+		),
+		0o600,
+	))
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	s.Require().NoError(run(
+		context.Background(),
+		[]string{"--db", dbPath, "session", "list", "--agent", "codex"},
+		&s.stdout,
+		&s.stderr,
+	))
+	s.SetupTest()
+	return dbPath, rolloutPath
+}
+
+func (s *CommandSuite) createLocalCapsule(dbPath string, keyword string) string {
+	s.Require().NoError(run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"capsule", "create", "codex:sess-1",
+			"--keyword", keyword,
+			"--local",
+			"--format", "jsonl",
+		},
+		&s.stdout,
+		&s.stderr,
+	))
+	var created map[string]any
+	s.Require().NoError(json.Unmarshal(firstLine(s.stdout.Bytes()), &created))
+	capsuleID, ok := created["capsuleId"].(string)
+	s.Require().True(ok)
+	s.SetupTest()
+	return capsuleID
+}
+
+func (s *CommandSuite) seedCodexTargetSession(dbPath string) {
+	s.Require().NoError(run(
+		context.Background(),
+		[]string{"--db", dbPath, "session", "list", "--agent", "codex"},
+		&s.stdout,
+		&s.stderr,
+	))
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	defer closeStore(opened.Store)
+	_, err = opened.Store.UpsertSessions(context.Background(), &store.UpsertSessionsRequest{
+		Agent: model.AgentNameCodex,
+		Sessions: []*model.Session{
+			{NativeID: "target", Title: "Target"},
+		},
+	})
+	s.Require().NoError(err)
+	s.SetupTest()
+}
+
+func (s *CommandSuite) seedStoredSessions(dbPath string, sessions []*model.Session) {
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	defer closeStore(opened.Store)
+	_, err = opened.Store.UpsertSessions(context.Background(), &store.UpsertSessionsRequest{
+		Agent:    model.AgentNameCodex,
+		Sessions: sessions,
+	})
+	s.Require().NoError(err)
+}
+
+func (s *CommandSuite) installFakeCodex(capturePath string) {
+	s.installFakeCommand("codex", capturePath)
+}
+
+func (s *CommandSuite) installFakeClaude(capturePath string) {
+	s.installFakeCommand("claude", capturePath)
+}
+
+func (s *CommandSuite) installFakeCommand(name string, capturePath string) {
+	binDir := s.T().TempDir()
+	fakePath := filepath.Join(binDir, name)
+	s.Require().NoError(os.WriteFile(
+		fakePath,
+		[]byte("#!/bin/sh\ncat > "+capturePath+"\n"),
+		0o700,
+	))
+	s.T().Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func (s *CommandSuite) installFakeCodexCapsuleGenerator(rolloutPath string) {
+	binDir := s.T().TempDir()
+	fakePath := filepath.Join(binDir, "codex")
+	script := "#!/bin/sh\n" +
+		"prompt=$(cat)\n" +
+		"capsule_id=$(printf '%s\\n' \"$prompt\" | sed -n 's/^Capsule id: //p' | head -n 1)\n" +
+		"printf '%s\\n' \"{\\\"timestamp\\\":\\\"2026-06-20T01:03:00Z\\\",\\\"type\\\":\\\"response_item\\\",\\\"payload\\\":{\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"content\\\":[{\\\"type\\\":\\\"output_text\\\",\\\"text\\\":\\\"PAX_KNOWLEDGE_CAPSULE_START ${capsule_id}\\\\n{\\\\\\\"title\\\\\\\":\\\\\\\"Generated bridge\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Generated summary\\\\\\\",\\\\\\\"content\\\\\\\":\\\\\\\"Generated bridge content\\\\\\\"}\\\\nPAX_KNOWLEDGE_CAPSULE_END ${capsule_id}\\\"}]}}\" >> \"" + rolloutPath + "\"\n"
+	s.Require().NoError(os.WriteFile(fakePath, []byte(script), 0o700))
+	s.T().Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func (s *CommandSuite) TestRenderAgentListRejectsUnknownFormat() {
+	err := renderAgentList(&s.stdout, &facade.ListAgentsResponse{}, "xml")
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestRenderSessionListSupportsTableFormat() {
+	err := renderSessionList(&s.stdout, &facade.ListSessionsResponse{
+		Sessions: []*model.Session{
+			{
+				ID:        "codex:sess",
+				Agent:     model.AgentNameCodex,
+				NativeID:  "sess",
+				Title:     "Session",
+				UpdatedAt: "2026-06-20T01:00:00Z",
+			},
+		},
+	}, "table")
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "codex:sess")
+}
+
+func (s *CommandSuite) TestRenderSessionListRejectsUnknownFormat() {
+	err := renderSessionList(&s.stdout, &facade.ListSessionsResponse{}, "xml")
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestSessionListRejectsUnknownAgentBeforeFacadeCall() {
+	err := run(
+		context.Background(),
+		[]string{"session", "list", "--agent", "qwen"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestSessionGetRejectsMissingSessionID() {
+	err := run(context.Background(), []string{"session", "get"}, &s.stdout, &s.stderr)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestSessionGetRejectsUnknownFormat() {
+	err := run(
+		context.Background(),
+		[]string{"session", "get", "codex:sess", "--format", "xml"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestSessionGetRejectsUnknownAgent() {
+	err := run(
+		context.Background(),
+		[]string{"session", "get", "sess", "--agent", "qwen"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestRenderSessionTimelineRejectsUnknownFormat() {
+	err := renderSessionTimeline(&s.stdout, &facade.GetSessionResponse{}, "xml")
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestRenderSessionTimelineSupportsEmptyTranscript() {
+	err := renderSessionTimeline(&s.stdout, &facade.GetSessionResponse{}, "transcript")
+
+	s.NoError(err)
+	s.Empty(s.stdout.String())
+}
+
+func firstLine(raw []byte) []byte {
+	for i, value := range raw {
+		if value == '\n' {
+			return raw[:i]
+		}
+	}
+	return raw
+}
+
+func hasCommand(command *cli.Command, name string) bool {
+	return findCommand(command, name) != nil
+}
+
+func findCommand(command *cli.Command, name string) *cli.Command {
+	for _, subcommand := range command.Commands {
+		if subcommand.Name == name {
+			return subcommand
+		}
+	}
+	return nil
+}

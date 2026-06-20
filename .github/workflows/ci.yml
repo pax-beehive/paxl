@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Format, lint, and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+
+      - name: Install Go tools
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+          go install golang.org/x/tools/cmd/goimports@v0.44.0
+          go install github.com/segmentio/golines@v0.13.0
+          go install github.com/vektra/mockery/v3@v3.7.1
+
+      - name: Check formatting
+        run: make format-check
+
+      - name: Run linter
+        run: make lint
+
+      - name: Run unit tests with coverage
+        run: make test-cover COVERAGE_MIN=80
+
+      - name: Upload coverage profile
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out

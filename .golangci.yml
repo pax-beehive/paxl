@@ -1,0 +1,87 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - contextcheck
+    - cyclop
+    - dogsled
+    - errcheck
+    - errorlint
+    - exhaustive
+    - gocritic
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nakedret
+    - nilerr
+    - nilnil
+    - noctx
+    - prealloc
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+    - whitespace
+  settings:
+    cyclop:
+      max-complexity: 20
+      package-average: 10.0
+      skip-tests: false
+    exhaustive:
+      default-signifies-exhaustive: false
+    errcheck:
+      check-type-assertions: true
+      check-blank: false
+    gosec:
+      excludes:
+        - G104
+    revive:
+      confidence: 0.8
+      rules:
+        - name: exported
+          disabled: true
+        - name: error-strings
+        - name: error-naming
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: duplicated-imports
+        - name: early-return
+        - name: empty-block
+        - name: errorf
+        - name: if-return
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: modifies-parameter
+        - name: range
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-naming
+        - name: unreachable-code
+        - name: unused-parameter
+        - name: var-naming
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - unparam
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+    - golines
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

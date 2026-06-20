@@ -1,0 +1,22 @@
+all: false
+dir: "{{.InterfaceDir}}/mocks"
+filename: "{{.InterfaceName | snakecase}}.go"
+force-file-write: true
+formatter: goimports
+formatter-options:
+  goimports:
+    format-only: false
+generate: true
+include-auto-generated: false
+log-level: warn
+structname: "Mock{{.InterfaceName}}"
+pkgname: "{{.SrcPackageName}}mocks"
+recursive: true
+require-template-schema-exists: true
+template: testify
+template-schema: "{{.Template}}.schema.json"
+
+packages:
+  github.com/pax-oss/paxl:
+    config:
+      all: true

@@ -1,0 +1,155 @@
+package facade_test
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/pax-oss/paxl/internal/facade"
+	"github.com/pax-oss/paxl/internal/model"
+	"github.com/pax-oss/paxl/internal/model/store"
+	"github.com/stretchr/testify/suite"
+)
+
+type SessionFacadeSuite struct {
+	suite.Suite
+	ctx   context.Context
+	store *store.Store
+}
+
+func TestSessionFacadeSuite(t *testing.T) {
+	suite.Run(t, new(SessionFacadeSuite))
+}
+
+func (s *SessionFacadeSuite) SetupTest() {
+	s.ctx = context.Background()
+	opened, err := store.Open(
+		s.ctx,
+		&store.OpenRequest{Path: filepath.Join(s.T().TempDir(), "paxl.sqlite")},
+	)
+	s.Require().NoError(err)
+	s.store = opened.Store
+}
+
+func (s *SessionFacadeSuite) TearDownTest() {
+	s.Require().NoError(s.store.Close())
+}
+
+func (s *SessionFacadeSuite) TestListSyncsCodexSessionsIntoStore() {
+	codexHome := s.T().TempDir()
+	s.T().Setenv("CODEX_HOME", codexHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(codexHome, "session_index.jsonl"),
+		[]byte(`{"id":"sess-1","thread_name":"Codex","updated_at":"2026-06-20T01:00:00Z"}`+"\n"),
+		0o600,
+	))
+	sessionFacade := facade.NewSessionFacade(nil, s.store)
+
+	resp, err := sessionFacade.List(s.ctx, &facade.ListSessionsRequest{
+		Agents: []model.AgentName{model.AgentNameCodex},
+	})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Sessions, 1)
+	s.Equal("codex:sess-1", resp.Sessions[0].ID)
+}
+
+func (s *SessionFacadeSuite) TestListCanUseCachedStoreWithoutSyncing() {
+	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+		Agent: model.AgentNameClaude,
+		Sessions: []*model.Session{
+			{NativeID: "cached", Title: "Cached"},
+		},
+	})
+	s.Require().NoError(err)
+	sessionFacade := facade.NewSessionFacade(nil, s.store)
+
+	resp, err := sessionFacade.List(s.ctx, &facade.ListSessionsRequest{NoSync: true})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Sessions, 1)
+	s.Equal("claude:cached", resp.Sessions[0].ID)
+}
+
+func (s *SessionFacadeSuite) TestListFiltersCachedSessionsByUpdatedSince() {
+	now := time.Now().UTC()
+	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+		Agent: model.AgentNameCodex,
+		Sessions: []*model.Session{
+			{
+				NativeID:  "fresh",
+				Title:     "Fresh",
+				UpdatedAt: now.Add(-30 * time.Minute).Format(time.RFC3339),
+			},
+			{
+				NativeID:  "old",
+				Title:     "Old",
+				UpdatedAt: now.Add(-48 * time.Hour).Format(time.RFC3339),
+			},
+		},
+	})
+	s.Require().NoError(err)
+	cutoff := now.Add(-24 * time.Hour)
+	sessionFacade := facade.NewSessionFacade(nil, s.store)
+
+	resp, err := sessionFacade.List(s.ctx, &facade.ListSessionsRequest{
+		UpdatedSince: &cutoff,
+		NoSync:       true,
+	})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Sessions, 1)
+	s.Equal("codex:fresh", resp.Sessions[0].ID)
+}
+
+func (s *SessionFacadeSuite) TestGetSyncsSessionElementsWhenNeeded() {
+	codexHome := s.T().TempDir()
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.T().Setenv("CODEX_HOME", codexHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-test-sess-get.jsonl"),
+		[]byte(
+			`{"timestamp":"2026-06-20T01:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Hello"}]}}`+"\n",
+		),
+		0o600,
+	))
+	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+		Agent: model.AgentNameCodex,
+		Sessions: []*model.Session{
+			{NativeID: "sess-get", Title: "Get"},
+		},
+	})
+	s.Require().NoError(err)
+	sessionFacade := facade.NewSessionFacade(nil, s.store)
+
+	resp, err := sessionFacade.Get(s.ctx, &facade.GetSessionRequest{ID: "codex:sess-get"})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Elements, 1)
+	s.Equal("Hello", resp.Elements[0].ContentText)
+}
+
+func (s *SessionFacadeSuite) TestListRequiresRequestAndStore() {
+	sessionFacade := facade.NewSessionFacade(nil, s.store)
+
+	_, err := sessionFacade.List(s.ctx, nil)
+	s.Error(err)
+
+	withoutStore := facade.NewSessionFacade(nil, nil)
+	_, err = withoutStore.List(s.ctx, &facade.ListSessionsRequest{})
+	s.Error(err)
+}
+
+func (s *SessionFacadeSuite) TestGetRequiresRequestAndStore() {
+	sessionFacade := facade.NewSessionFacade(nil, s.store)
+
+	_, err := sessionFacade.Get(s.ctx, nil)
+	s.Error(err)
+
+	withoutStore := facade.NewSessionFacade(nil, nil)
+	_, err = withoutStore.Get(s.ctx, &facade.GetSessionRequest{ID: "codex:sess"})
+	s.Error(err)
+}
