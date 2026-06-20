@@ -180,6 +180,12 @@ Inject a capsule into a target session:
 paxl capsule inject <capsule-id> codex:<target-session-id>
 ```
 
+Start a new target agent session with a capsule:
+
+```sh
+paxl capsule inject <capsule-id> --new --agent codex
+```
+
 Archive a capsule:
 
 ```sh

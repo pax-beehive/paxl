@@ -132,6 +132,36 @@ func (s *SessionFacadeSuite) TestGetSyncsSessionElementsWhenNeeded() {
 	s.Equal("Hello", resp.Elements[0].ContentText)
 }
 
+func (s *SessionFacadeSuite) TestGetLoadsUncachedSessionFromAgentLogs() {
+	codexHome := s.T().TempDir()
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.T().Setenv("CODEX_HOME", codexHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-test-uncached.jsonl"),
+		[]byte(
+			`{"type":"session_meta","payload":{"id":"uncached","timestamp":"2026-06-20T01:00:00Z","cwd":"/tmp/project"}}`+"\n"+
+				`{"timestamp":"2026-06-20T01:01:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Uncached content"}]}}`+"\n",
+		),
+		0o600,
+	))
+	sessionFacade := facade.NewSessionFacade(nil, s.store)
+
+	resp, err := sessionFacade.Get(s.ctx, &facade.GetSessionRequest{ID: "codex:uncached"})
+
+	s.Require().NoError(err)
+	s.Equal("codex:uncached", resp.Session.ID)
+	s.Require().Len(resp.Elements, 1)
+	s.Equal("Uncached content", resp.Elements[0].ContentText)
+
+	cached, err := s.store.FindSession(
+		s.ctx,
+		&store.FindSessionRequest{ID: "codex:uncached"},
+	)
+	s.Require().NoError(err)
+	s.NotZero(cached.Session.CurrentSyncVersion)
+}
+
 func (s *SessionFacadeSuite) TestListRequiresRequestAndStore() {
 	sessionFacade := facade.NewSessionFacade(nil, s.store)
 

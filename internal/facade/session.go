@@ -2,7 +2,10 @@ package facade
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pax-oss/paxl/internal/model"
@@ -87,14 +90,11 @@ func (f *SessionFacade) Get(
 	if f.store == nil {
 		return nil, fmt.Errorf("get session: store is required")
 	}
-	session, err := f.store.FindSession(
-		ctx,
-		&store.FindSessionRequest{ID: req.ID, Agent: req.Agent},
-	)
+	option := applyOptions(opts)
+	session, err := f.findOrLoadSession(ctx, req, option)
 	if err != nil {
 		return nil, fmt.Errorf("find session %q: %w", req.ID, err)
 	}
-	option := applyOptions(opts)
 	if session.Session.CurrentSyncVersion == 0 {
 		if err := f.syncSessionElements(ctx, session.Session, option); err != nil {
 			return nil, fmt.Errorf("sync session elements: %w", err)
@@ -109,6 +109,106 @@ func (f *SessionFacade) Get(
 		return nil, fmt.Errorf("load session elements: %w", err)
 	}
 	return &GetSessionResponse{Session: session.Session, Elements: elements.Elements}, nil
+}
+
+func (f *SessionFacade) findOrLoadSession(
+	ctx context.Context,
+	req *GetSessionRequest,
+	option *Option,
+) (*store.FindSessionResponse, error) {
+	session, err := f.store.FindSession(
+		ctx,
+		&store.FindSessionRequest{ID: req.ID, Agent: req.Agent},
+	)
+	if err == nil || !errors.Is(err, sql.ErrNoRows) {
+		return session, err
+	}
+	agent, nativeID, ok, parseErr := resolveSessionLookup(req.ID, req.Agent)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	if !ok {
+		return nil, err
+	}
+	return f.loadUncachedSession(ctx, agent, nativeID, option)
+}
+
+func resolveSessionLookup(
+	id string,
+	agent model.AgentName,
+) (model.AgentName, string, bool, error) {
+	if strings.Contains(id, ":") {
+		parts := strings.SplitN(id, ":", 2)
+		parsed, err := model.ParseAgentName(parts[0])
+		if err != nil {
+			return model.AgentNameUnknown, "", false, err
+		}
+		return parsed, parts[1], true, nil
+	}
+	if agent == model.AgentNameUnknown || agent == "" {
+		return model.AgentNameUnknown, "", false, nil
+	}
+	return agent, id, true, nil
+}
+
+func (f *SessionFacade) loadUncachedSession(
+	ctx context.Context,
+	agent model.AgentName,
+	nativeID string,
+	option *Option,
+) (*store.FindSessionResponse, error) {
+	adapter, err := f.registry.Lookup(ctx, &adaptor.LookupRequest{Name: agent})
+	if err != nil {
+		return nil, fmt.Errorf("lookup %s adapter: %w", agent, err)
+	}
+	transcript, err := adapter.Adapter.GetSession(
+		ctx,
+		&adaptor.GetSessionRequest{NativeID: nativeID},
+		adaptor.WithVerboseWriter(option.VerboseWriter),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get %s session %s: %w", agent, nativeID, err)
+	}
+	session := &model.Session{
+		NativeID:  nativeID,
+		Title:     nativeID,
+		UpdatedAt: latestElementTimestamp(transcript.Elements),
+	}
+	if _, err := f.store.UpsertSessions(ctx, &store.UpsertSessionsRequest{
+		Agent:    agent,
+		Sessions: []*model.Session{session},
+	}); err != nil {
+		return nil, fmt.Errorf("store uncached session: %w", err)
+	}
+	if _, err := f.store.ReplaceSessionElements(ctx, &store.ReplaceSessionElementsRequest{
+		SessionID: string(agent) + ":" + nativeID,
+		Elements:  transcript.Elements,
+	}); err != nil {
+		return nil, fmt.Errorf("store uncached session elements: %w", err)
+	}
+	found, err := f.store.FindSession(
+		ctx,
+		&store.FindSessionRequest{ID: string(agent) + ":" + nativeID},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("reload uncached session: %w", err)
+	}
+	return found, nil
+}
+
+func latestElementTimestamp(elements []*model.Element) string {
+	latest := ""
+	for _, element := range elements {
+		if element == nil {
+			continue
+		}
+		for _, value := range []string{element.CompletedAt, element.StartedAt} {
+			if value > latest {
+				latest = value
+			}
+		}
+	}
+	return latest
 }
 
 func (f *SessionFacade) syncSessions(

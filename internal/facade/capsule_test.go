@@ -68,6 +68,32 @@ func (s *CapsuleFacadeSuite) TestLocalCapsuleLifecycle() {
 	s.Equal("archived", archived.Capsule.Status)
 }
 
+func (s *CapsuleFacadeSuite) TestCreateLoadsUncachedSourceSession() {
+	codexHome := s.T().TempDir()
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.T().Setenv("CODEX_HOME", codexHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-test-uncached-source.jsonl"),
+		[]byte(
+			`{"type":"session_meta","payload":{"id":"uncached-source","timestamp":"2026-06-20T01:00:00Z","cwd":"/tmp/project"}}`+"\n"+
+				`{"timestamp":"2026-06-20T01:01:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Bridge detail from uncached source"}]}}`+"\n",
+		),
+		0o600,
+	))
+	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
+
+	created, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
+		SourceSessionID: "codex:uncached-source",
+		Keyword:         "bridge",
+		Local:           true,
+	})
+
+	s.Require().NoError(err)
+	s.Equal("codex:uncached-source", created.Capsule.SourceSessionID)
+	s.Contains(created.Capsule.Content, "Bridge detail from uncached source")
+}
+
 func (s *CapsuleFacadeSuite) TestCreateUsesSourceAgentGenerationByDefault() {
 	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
 	rolloutPath := s.seedCodexRollout()
@@ -159,6 +185,76 @@ func (s *CapsuleFacadeSuite) TestInjectDeliversHandoffAndStoresInjection() {
 	s.Require().NoError(err)
 	s.Require().Len(listed.Injections, 1)
 	s.Equal(injected.Injection.InjectionID, listed.Injections[0].InjectionID)
+}
+
+func (s *CapsuleFacadeSuite) TestInjectStartsNewTargetSession() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
+	created, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
+		SourceSessionID: "codex:sess",
+		Keyword:         "bridge",
+		Local:           true,
+	})
+	s.Require().NoError(err)
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	s.installFakeClaude(capturePath)
+
+	injected, err := capsuleFacade.Inject(s.ctx, &facade.InjectCapsuleRequest{
+		CapsuleID:  created.Capsule.CapsuleID,
+		Agent:      model.AgentNameClaude,
+		NewSession: true,
+	})
+
+	s.Require().NoError(err)
+	s.Equal(created.Capsule.CapsuleID, injected.Injection.CapsuleID)
+	s.Equal(model.AgentNameClaude, injected.Injection.TargetAgent)
+	s.Equal("cli_new_session", injected.Injection.DeliveryMethod)
+	s.Contains(injected.Injection.TargetSessionID, "new claude session")
+	s.Contains(injected.Message, "system_handoff")
+	rawPrompt, err := os.ReadFile(capturePath)
+	s.Require().NoError(err)
+	s.Equal(injected.Message, string(rawPrompt))
+}
+
+func (s *CapsuleFacadeSuite) TestInjectLoadsUncachedTargetSessionBeforeDelivery() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
+	created, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
+		SourceSessionID: "codex:sess",
+		Keyword:         "bridge",
+		Local:           true,
+	})
+	s.Require().NoError(err)
+	codexHome := s.T().TempDir()
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.T().Setenv("CODEX_HOME", codexHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-test-target.jsonl"),
+		[]byte(
+			`{"type":"session_meta","payload":{"id":"target","timestamp":"2026-06-20T01:00:00Z","cwd":"/tmp/project"}}`+"\n"+
+				`{"timestamp":"2026-06-20T01:01:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Target exists"}]}}`+"\n",
+		),
+		0o600,
+	))
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	s.installFakeCodex(capturePath)
+
+	injected, err := capsuleFacade.Inject(s.ctx, &facade.InjectCapsuleRequest{
+		CapsuleID:       created.Capsule.CapsuleID,
+		TargetSessionID: "codex:target",
+	})
+
+	s.Require().NoError(err)
+	s.Equal("codex:target", injected.Injection.TargetSessionID)
+	s.Equal("cli_resume", injected.Injection.DeliveryMethod)
+	rawPrompt, err := os.ReadFile(capturePath)
+	s.Require().NoError(err)
+	s.Equal(injected.Message, string(rawPrompt))
 }
 
 func (s *CapsuleFacadeSuite) TestInjectRejectsArchivedCapsule() {

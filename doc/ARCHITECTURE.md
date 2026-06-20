@@ -180,14 +180,15 @@ High-level flow:
 
 ```text
 capsule create
-  -> facade resolves source session
+  -> facade resolves source session, loading local logs on cache miss
   -> default: adapter prompts source agent to generate marked JSON
   -> local: facade extracts matching local transcript context
   -> store writes capsule
 
 capsule inject
-  -> facade loads capsule and target session
-  -> adapter delivers system_handoff to target
+  -> facade loads capsule and target session, loading local logs on cache miss
+  -> existing session: adapter delivers system_handoff to target
+  -> new session: adapter starts target agent with system_handoff
   -> store records injection
 ```
 

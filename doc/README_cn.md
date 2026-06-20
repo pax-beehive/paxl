@@ -174,6 +174,12 @@ paxl capsule get <capsule-id>
 paxl capsule inject <capsule-id> codex:<target-session-id>
 ```
 
+用 capsule 直接启动一个新的目标 agent session：
+
+```sh
+paxl capsule inject <capsule-id> --new --agent codex
+```
+
 归档 capsule：
 
 ```sh

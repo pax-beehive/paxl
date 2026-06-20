@@ -676,6 +676,47 @@ func (s *CommandSuite) TestCapsuleInjectDeliversHandoffAndListsInjection() {
 	s.Contains(s.stdout.String(), `"capsuleId":"`+capsuleID+`"`)
 }
 
+func (s *CommandSuite) TestCapsuleInjectStartsNewTargetSession() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+	capsuleID := s.createLocalCapsule(dbPath, "bridge")
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	s.installFakeClaude(capturePath)
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"capsule", "inject", capsuleID,
+			"--new",
+			"--agent", "claude",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Injected")
+	s.Contains(s.stdout.String(), "new claude session")
+	rawPrompt, err := os.ReadFile(capturePath)
+	s.Require().NoError(err)
+	s.Contains(string(rawPrompt), "system_handoff")
+	s.Contains(string(rawPrompt), "Bridge context")
+
+	s.SetupTest()
+	err = run(
+		context.Background(),
+		[]string{"--db", dbPath, "capsule", "injection", "--format", "jsonl"},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"deliveryMethod":"cli_new_session"`)
+	s.Contains(s.stdout.String(), `"targetAgent":"claude"`)
+}
+
 func (s *CommandSuite) TestCapsuleInjectWritesDeliveredHandoffToOutputPath() {
 	if runtime.GOOS == "windows" {
 		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
@@ -806,6 +847,13 @@ func (s *CommandSuite) TestCapsuleInjectRejectsMissingArguments() {
 	}{
 		{name: "empty", args: []string{"capsule", "inject"}},
 		{name: "only capsule", args: []string{"capsule", "inject", "kcap_1"}},
+		{name: "new without agent", args: []string{"capsule", "inject", "kcap_1", "--new"}},
+		{
+			name: "new with target",
+			args: []string{
+				"capsule", "inject", "kcap_1", "target", "--new", "--agent", "codex",
+			},
+		},
 	}
 
 	for _, tc := range cases {

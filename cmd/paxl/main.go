@@ -301,11 +301,11 @@ func newCapsuleCommand(stdout io.Writer, stderr io.Writer) *cli.Command {
 			{
 				Name:      "inject",
 				Usage:     "Inject a knowledge capsule into a target session",
-				ArgsUsage: "<capsule-id> <target-session-id>",
+				ArgsUsage: "<capsule-id> [target-session-id]",
 				Flags: []cli.Flag{
 					&cli.StringFlag{
 						Name:  "agent",
-						Usage: "Agent for bare native target session IDs",
+						Usage: "Agent for bare native target session IDs or new sessions",
 					},
 					&cli.StringFlag{
 						Name:  "output",
@@ -316,6 +316,7 @@ func newCapsuleCommand(stdout io.Writer, stderr io.Writer) *cli.Command {
 						Value: "30s",
 						Usage: "Agent delivery timeout, for example 10s or 1m",
 					},
+					&cli.BoolFlag{Name: "new", Usage: "Start a new target agent session"},
 					&cli.BoolFlag{Name: "verbose", Usage: "Print injection delivery details"},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -858,12 +859,13 @@ func parseArchiveCapsuleRequest(cmd *cli.Command) (*facade.ArchiveCapsuleRequest
 }
 
 func parseInjectCapsuleRequest(cmd *cli.Command) (*facade.InjectCapsuleRequest, error) {
-	if cmd.Args().Len() < 2 {
-		return nil, fmt.Errorf("capsule id and target session id are required")
+	if cmd.Args().Len() < 1 {
+		return nil, fmt.Errorf("capsule id is required")
 	}
 	req := &facade.InjectCapsuleRequest{
 		CapsuleID:       cmd.Args().Get(0),
 		TargetSessionID: cmd.Args().Get(1),
+		NewSession:      cmd.Bool("new"),
 	}
 	if rawAgent := strings.TrimSpace(cmd.String("agent")); rawAgent != "" {
 		agent, err := model.ParseAgentName(rawAgent)
@@ -871,6 +873,15 @@ func parseInjectCapsuleRequest(cmd *cli.Command) (*facade.InjectCapsuleRequest, 
 			return nil, fmt.Errorf("parse agent: %w", err)
 		}
 		req.Agent = agent
+	}
+	if req.NewSession && req.TargetSessionID != "" {
+		return nil, fmt.Errorf("target session id must be omitted when --new is set")
+	}
+	if req.NewSession && req.Agent == "" {
+		return nil, fmt.Errorf("agent is required when --new is set")
+	}
+	if !req.NewSession && req.TargetSessionID == "" {
+		return nil, fmt.Errorf("target session id is required unless --new is set")
 	}
 	return req, nil
 }
