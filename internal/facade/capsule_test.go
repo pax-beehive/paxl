@@ -68,6 +68,32 @@ func (s *CapsuleFacadeSuite) TestLocalCapsuleLifecycle() {
 	s.Equal("archived", archived.Capsule.Status)
 }
 
+func (s *CapsuleFacadeSuite) TestCreateLoadsUncachedSourceSession() {
+	codexHome := s.T().TempDir()
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.T().Setenv("CODEX_HOME", codexHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-test-uncached-source.jsonl"),
+		[]byte(
+			`{"type":"session_meta","payload":{"id":"uncached-source","timestamp":"2026-06-20T01:00:00Z","cwd":"/tmp/project"}}`+"\n"+
+				`{"timestamp":"2026-06-20T01:01:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Bridge detail from uncached source"}]}}`+"\n",
+		),
+		0o600,
+	))
+	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
+
+	created, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
+		SourceSessionID: "codex:uncached-source",
+		Keyword:         "bridge",
+		Local:           true,
+	})
+
+	s.Require().NoError(err)
+	s.Equal("codex:uncached-source", created.Capsule.SourceSessionID)
+	s.Contains(created.Capsule.Content, "Bridge detail from uncached source")
+}
+
 func (s *CapsuleFacadeSuite) TestCreateUsesSourceAgentGenerationByDefault() {
 	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
 	rolloutPath := s.seedCodexRollout()
@@ -98,6 +124,21 @@ func (s *CapsuleFacadeSuite) TestCreateSourceGenerationMarksTruncatedContent() {
 	s.Less(len(resp.Capsule.Content), int(resp.Capsule.OriginalEstimatedChars))
 }
 
+func (s *CapsuleFacadeSuite) TestCreateSourceGenerationAcceptsModelRole() {
+	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
+	rolloutPath := s.seedCodexRollout()
+	s.installFakeCodexModelCapsuleGenerator(rolloutPath)
+
+	resp, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
+		SourceSessionID: "codex:sess",
+		Keyword:         "bridge",
+	})
+
+	s.Require().NoError(err)
+	s.Equal("Generated bridge", resp.Capsule.Title)
+	s.Contains(resp.Capsule.Content, "Generated bridge content")
+}
+
 func (s *CapsuleFacadeSuite) TestCreateSourceGenerationFailsWhenMarkersAreMissing() {
 	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
 	s.seedCodexRollout()
@@ -115,6 +156,19 @@ func (s *CapsuleFacadeSuite) TestCreateSourceGenerationIgnoresUserMarkerEcho() {
 	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
 	rolloutPath := s.seedCodexRollout()
 	s.installFakeCodexUserMarkerGenerator(rolloutPath)
+
+	_, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
+		SourceSessionID: "codex:sess",
+		Keyword:         "bridge",
+	})
+
+	s.Error(err)
+}
+
+func (s *CapsuleFacadeSuite) TestCreateSourceGenerationIgnoresToolResultMarkerEcho() {
+	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
+	rolloutPath := s.seedCodexRollout()
+	s.installFakeCodexToolResultMarkerGenerator(rolloutPath)
 
 	_, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
 		SourceSessionID: "codex:sess",
@@ -159,6 +213,94 @@ func (s *CapsuleFacadeSuite) TestInjectDeliversHandoffAndStoresInjection() {
 	s.Require().NoError(err)
 	s.Require().Len(listed.Injections, 1)
 	s.Equal(injected.Injection.InjectionID, listed.Injections[0].InjectionID)
+}
+
+func (s *CapsuleFacadeSuite) TestInjectStartsNewTargetSession() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
+	created, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
+		SourceSessionID: "codex:sess",
+		Keyword:         "bridge",
+		Local:           true,
+	})
+	s.Require().NoError(err)
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	s.installFakeClaude(capturePath)
+
+	injected, err := capsuleFacade.Inject(s.ctx, &facade.InjectCapsuleRequest{
+		CapsuleID:  created.Capsule.CapsuleID,
+		Agent:      model.AgentNameClaude,
+		NewSession: true,
+	})
+
+	s.Require().NoError(err)
+	s.Equal(created.Capsule.CapsuleID, injected.Injection.CapsuleID)
+	s.Equal(model.AgentNameClaude, injected.Injection.TargetAgent)
+	s.Equal("cli_new_session", injected.Injection.DeliveryMethod)
+	s.Contains(injected.Injection.TargetSessionID, "new claude session")
+	s.Contains(injected.Message, "system_handoff")
+	rawPrompt, err := os.ReadFile(capturePath)
+	s.Require().NoError(err)
+	s.Equal(injected.Message, string(rawPrompt))
+}
+
+func (s *CapsuleFacadeSuite) TestInjectRejectsMissingTargetAgentForNewSession() {
+	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
+	created, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
+		SourceSessionID: "codex:sess",
+		Keyword:         "bridge",
+		Local:           true,
+	})
+	s.Require().NoError(err)
+
+	_, err = capsuleFacade.Inject(s.ctx, &facade.InjectCapsuleRequest{
+		CapsuleID:  created.Capsule.CapsuleID,
+		NewSession: true,
+	})
+
+	s.Require().Error(err)
+	s.Contains(err.Error(), "target agent is required")
+}
+
+func (s *CapsuleFacadeSuite) TestInjectLoadsUncachedTargetSessionBeforeDelivery() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
+	created, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
+		SourceSessionID: "codex:sess",
+		Keyword:         "bridge",
+		Local:           true,
+	})
+	s.Require().NoError(err)
+	codexHome := s.T().TempDir()
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.T().Setenv("CODEX_HOME", codexHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-test-target.jsonl"),
+		[]byte(
+			`{"type":"session_meta","payload":{"id":"target","timestamp":"2026-06-20T01:00:00Z","cwd":"/tmp/project"}}`+"\n"+
+				`{"timestamp":"2026-06-20T01:01:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Target exists"}]}}`+"\n",
+		),
+		0o600,
+	))
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	s.installFakeCodex(capturePath)
+
+	injected, err := capsuleFacade.Inject(s.ctx, &facade.InjectCapsuleRequest{
+		CapsuleID:       created.Capsule.CapsuleID,
+		TargetSessionID: "codex:target",
+	})
+
+	s.Require().NoError(err)
+	s.Equal("codex:target", injected.Injection.TargetSessionID)
+	s.Equal("cli_resume", injected.Injection.DeliveryMethod)
+	rawPrompt, err := os.ReadFile(capturePath)
+	s.Require().NoError(err)
+	s.Equal(injected.Message, string(rawPrompt))
 }
 
 func (s *CapsuleFacadeSuite) TestInjectRejectsArchivedCapsule() {
@@ -373,12 +515,20 @@ func (s *CapsuleFacadeSuite) seedCodexRollout() string {
 }
 
 func (s *CapsuleFacadeSuite) installFakeCodexCapsuleGenerator(rolloutPath string) {
+	s.installFakeCodexRoleCapsuleGenerator(rolloutPath, "assistant")
+}
+
+func (s *CapsuleFacadeSuite) installFakeCodexModelCapsuleGenerator(rolloutPath string) {
+	s.installFakeCodexRoleCapsuleGenerator(rolloutPath, "model")
+}
+
+func (s *CapsuleFacadeSuite) installFakeCodexRoleCapsuleGenerator(rolloutPath string, role string) {
 	binDir := s.T().TempDir()
 	fakePath := filepath.Join(binDir, "codex")
 	script := "#!/bin/sh\n" +
 		"prompt=$(cat)\n" +
 		"capsule_id=$(printf '%s\\n' \"$prompt\" | sed -n 's/^Capsule id: //p' | head -n 1)\n" +
-		"printf '%s\\n' \"{\\\"timestamp\\\":\\\"2026-06-20T01:03:00Z\\\",\\\"type\\\":\\\"response_item\\\",\\\"payload\\\":{\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"content\\\":[{\\\"type\\\":\\\"output_text\\\",\\\"text\\\":\\\"PAX_KNOWLEDGE_CAPSULE_START ${capsule_id}\\\\n{\\\\\\\"title\\\\\\\":\\\\\\\"Generated bridge\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Generated summary\\\\\\\",\\\\\\\"content\\\\\\\":\\\\\\\"Generated bridge content\\\\\\\"}\\\\nPAX_KNOWLEDGE_CAPSULE_END ${capsule_id}\\\"}]}}\" >> \"" + rolloutPath + "\"\n"
+		"printf '%s\\n' \"{\\\"timestamp\\\":\\\"2026-06-20T01:03:00Z\\\",\\\"type\\\":\\\"response_item\\\",\\\"payload\\\":{\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"" + role + "\\\",\\\"content\\\":[{\\\"type\\\":\\\"output_text\\\",\\\"text\\\":\\\"PAX_KNOWLEDGE_CAPSULE_START ${capsule_id}\\\\n{\\\\\\\"title\\\\\\\":\\\\\\\"Generated bridge\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Generated summary\\\\\\\",\\\\\\\"content\\\\\\\":\\\\\\\"Generated bridge content\\\\\\\"}\\\\nPAX_KNOWLEDGE_CAPSULE_END ${capsule_id}\\\"}]}}\" >> \"" + rolloutPath + "\"\n"
 	s.Require().NoError(os.WriteFile(fakePath, []byte(script), 0o700))
 	s.T().Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
@@ -390,6 +540,17 @@ func (s *CapsuleFacadeSuite) installFakeCodexUserMarkerGenerator(rolloutPath str
 		"prompt=$(cat)\n" +
 		"capsule_id=$(printf '%s\\n' \"$prompt\" | sed -n 's/^Capsule id: //p' | head -n 1)\n" +
 		"printf '%s\\n' \"{\\\"timestamp\\\":\\\"2026-06-20T01:03:00Z\\\",\\\"type\\\":\\\"response_item\\\",\\\"payload\\\":{\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"user\\\",\\\"content\\\":[{\\\"type\\\":\\\"input_text\\\",\\\"text\\\":\\\"PAX_KNOWLEDGE_CAPSULE_START ${capsule_id}\\\\n{\\\\\\\"title\\\\\\\":\\\\\\\"Echo\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Echo\\\\\\\",\\\\\\\"content\\\\\\\":\\\\\\\"Echo\\\\\\\"}\\\\nPAX_KNOWLEDGE_CAPSULE_END ${capsule_id}\\\"}]}}\" >> \"" + rolloutPath + "\"\n"
+	s.Require().NoError(os.WriteFile(fakePath, []byte(script), 0o700))
+	s.T().Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func (s *CapsuleFacadeSuite) installFakeCodexToolResultMarkerGenerator(rolloutPath string) {
+	binDir := s.T().TempDir()
+	fakePath := filepath.Join(binDir, "codex")
+	script := "#!/bin/sh\n" +
+		"prompt=$(cat)\n" +
+		"capsule_id=$(printf '%s\\n' \"$prompt\" | sed -n 's/^Capsule id: //p' | head -n 1)\n" +
+		"printf '%s\\n' \"{\\\"timestamp\\\":\\\"2026-06-20T01:03:00Z\\\",\\\"type\\\":\\\"response_item\\\",\\\"payload\\\":{\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"toolResult\\\",\\\"content\\\":[{\\\"type\\\":\\\"output_text\\\",\\\"text\\\":\\\"PAX_KNOWLEDGE_CAPSULE_START ${capsule_id}\\\\n{\\\\\\\"title\\\\\\\":\\\\\\\"Tool echo\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Tool echo\\\\\\\",\\\\\\\"content\\\\\\\":\\\\\\\"Tool echo\\\\\\\"}\\\\nPAX_KNOWLEDGE_CAPSULE_END ${capsule_id}\\\"}]}}\" >> \"" + rolloutPath + "\"\n"
 	s.Require().NoError(os.WriteFile(fakePath, []byte(script), 0o700))
 	s.T().Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }

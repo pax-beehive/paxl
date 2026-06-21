@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,6 +31,78 @@ func TestCommandSuite(t *testing.T) {
 func (s *CommandSuite) SetupTest() {
 	s.stdout.Reset()
 	s.stderr.Reset()
+	s.T().Setenv("HOME", s.T().TempDir())
+}
+
+func (s *CommandSuite) TestRunWritesExecutionLogUnderPaxHome() {
+	home := s.T().TempDir()
+	s.T().Setenv("HOME", home)
+
+	err := run(context.Background(), []string{"version"}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	entries, err := os.ReadDir(filepath.Join(home, ".pax", "paxl", "logs"))
+	s.Require().NoError(err)
+	s.Len(entries, 1)
+	raw, err := os.ReadFile(filepath.Join(home, ".pax", "paxl", "logs", entries[0].Name()))
+	s.Require().NoError(err)
+	s.Contains(string(raw), `"event":"command_start"`)
+	s.Contains(string(raw), `"event":"command_finish"`)
+	s.Contains(string(raw), `"args":["version"]`)
+}
+
+func (s *CommandSuite) TestRunWritesCommandErrorsToExecutionLog() {
+	home := s.T().TempDir()
+	s.T().Setenv("HOME", home)
+
+	err := run(context.Background(), []string{"version", "--format", "xml"}, &s.stdout, &s.stderr)
+
+	s.Require().Error(err)
+	entries, err := os.ReadDir(filepath.Join(home, ".pax", "paxl", "logs"))
+	s.Require().NoError(err)
+	s.Len(entries, 1)
+	raw, err := os.ReadFile(filepath.Join(home, ".pax", "paxl", "logs", entries[0].Name()))
+	s.Require().NoError(err)
+	s.Contains(string(raw), `"event":"command_finish"`)
+	s.Contains(string(raw), `"status":"error"`)
+	s.Contains(string(raw), "unsupported format")
+}
+
+func (s *CommandSuite) TestRunContinuesWhenExecutionLogDirectoryCannotBeCreated() {
+	homeFile := filepath.Join(s.T().TempDir(), "home")
+	s.Require().NoError(os.WriteFile(homeFile, []byte("not a directory"), 0o600))
+	s.T().Setenv("HOME", homeFile)
+
+	err := run(context.Background(), []string{"version"}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "paxl")
+}
+
+func (s *CommandSuite) TestRunWritesBufferedAdapterDiagnosticsToExecutionLog() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+	capsuleID := s.createLocalCapsule(dbPath, "bridge")
+	home := s.T().TempDir()
+	s.T().Setenv("HOME", home)
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	s.installVerboseFakeCommand("claude", capturePath)
+
+	err := run(
+		context.Background(),
+		[]string{"--db", dbPath, "capsule", "inject", capsuleID, "--new", "--agent", "claude"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Empty(s.stderr.String())
+	raw := s.readExecutionLogs(home)
+	s.Contains(raw, `"event":"diagnostic"`)
+	s.Contains(raw, "Command stdout: fake stdout.")
+	s.Contains(raw, "Command stderr: fake stderr.")
 }
 
 func (s *CommandSuite) TestAgentListUsesSingularCommandAndOnlyShowsSupportedAgents() {
@@ -38,6 +111,8 @@ func (s *CommandSuite) TestAgentListUsesSingularCommandAndOnlyShowsSupportedAgen
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), "codex")
 	s.Contains(s.stdout.String(), "claude")
+	s.Contains(s.stdout.String(), "pi")
+	s.Contains(s.stdout.String(), "kiro")
 	s.NotContains(s.stdout.String(), "qwen")
 	s.Empty(s.stderr.String())
 }
@@ -92,6 +167,46 @@ func (s *CommandSuite) TestAgentSetupDryRunUsesSingularCommand() {
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), "npm install -g @openai/codex")
 	s.Contains(s.stdout.String(), "npm install -g @anthropic-ai/claude-code")
+}
+
+func (s *CommandSuite) TestAgentSetupSkipsInstallWhenCommandAlreadyExists() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	s.installFakeCodex(capturePath)
+
+	err := run(
+		context.Background(),
+		[]string{"agent", "setup", "--agent", "codex"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "codex already available.")
+	_, err = os.Stat(capturePath)
+	s.ErrorIs(err, os.ErrNotExist)
+}
+
+func (s *CommandSuite) TestAgentSetupRejectsAgentsWithoutManagedInstallCommand() {
+	for _, agent := range []string{"pi", "kiro"} {
+		s.Run(agent, func() {
+			s.T().Setenv("PATH", s.T().TempDir())
+
+			err := run(
+				context.Background(),
+				[]string{"agent", "setup", "--agent", agent},
+				&s.stdout,
+				&s.stderr,
+			)
+
+			s.Require().Error(err)
+			s.Contains(err.Error(), agent+" install is not managed")
+			s.stdout.Reset()
+			s.stderr.Reset()
+		})
+	}
 }
 
 func (s *CommandSuite) TestAgentSetupRejectsUnsupportedAgentBeforeInstall() {
@@ -228,6 +343,63 @@ func (s *CommandSuite) TestSessionListSyncsClaudeLocalSessionsToSQLite() {
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), `"id":"claude:claude-session"`)
 	s.Contains(s.stdout.String(), `"agent":"claude"`)
+}
+
+func (s *CommandSuite) TestSessionListSyncsPiLocalSessionsToSQLite() {
+	piHome := s.T().TempDir()
+	sessionDir := filepath.Join(piHome, "sessions", "--tmp-project--")
+	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
+	s.T().Setenv("PI_CODING_AGENT_DIR", piHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(sessionDir, "2026-06-20T23-40-48-559Z_pi-session.jsonl"),
+		[]byte(
+			`{"type":"session","version":3,"id":"pi-session","timestamp":"2026-06-20T23:40:48.559Z","cwd":"/tmp/project"}`+"\n"+
+				`{"type":"message","id":"msg-user","timestamp":"2026-06-20T23:41:55.752Z","message":{"role":"user","content":[{"type":"text","text":"Pi session title"}]}}`+"\n",
+		),
+		0o600,
+	))
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+
+	err := run(
+		context.Background(),
+		[]string{"--db", dbPath, "session", "list", "--agent", "pi", "--format", "jsonl"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"id":"pi:pi-session"`)
+	s.Contains(s.stdout.String(), `"title":"Pi session title"`)
+}
+
+func (s *CommandSuite) TestSessionListSyncsKiroLocalSessionsToSQLite() {
+	kiroHome := s.T().TempDir()
+	sessionDir := filepath.Join(kiroHome, "sessions", "cli")
+	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
+	s.T().Setenv("KIRO_HOME", kiroHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(sessionDir, "kiro-session.json"),
+		[]byte(`{
+			"session_id":"kiro-session",
+			"cwd":"/tmp/project",
+			"created_at":"2026-06-20T23:55:57.801723Z",
+			"updated_at":"2026-06-20T23:59:07.433059Z",
+			"title":"Kiro session title"
+		}`),
+		0o600,
+	))
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+
+	err := run(
+		context.Background(),
+		[]string{"--db", dbPath, "session", "list", "--agent", "kiro", "--format", "jsonl"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"id":"kiro:kiro-session"`)
+	s.Contains(s.stdout.String(), `"title":"Kiro session title"`)
 }
 
 func (s *CommandSuite) TestSessionListAcceptsCommaSeparatedAgents() {
@@ -676,6 +848,76 @@ func (s *CommandSuite) TestCapsuleInjectDeliversHandoffAndListsInjection() {
 	s.Contains(s.stdout.String(), `"capsuleId":"`+capsuleID+`"`)
 }
 
+func (s *CommandSuite) TestCapsuleInjectStartsNewTargetSession() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+	capsuleID := s.createLocalCapsule(dbPath, "bridge")
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	s.installFakeClaude(capturePath)
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"capsule", "inject", capsuleID,
+			"--new",
+			"--agent", "claude",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Injected")
+	s.Contains(s.stdout.String(), "new claude session")
+	rawPrompt, err := os.ReadFile(capturePath)
+	s.Require().NoError(err)
+	s.Contains(string(rawPrompt), "system_handoff")
+	s.Contains(string(rawPrompt), "Bridge context")
+
+	s.SetupTest()
+	err = run(
+		context.Background(),
+		[]string{"--db", dbPath, "capsule", "injection", "--format", "jsonl"},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"deliveryMethod":"cli_new_session"`)
+	s.Contains(s.stdout.String(), `"targetAgent":"claude"`)
+}
+
+func (s *CommandSuite) TestCapsuleInjectStartsNewKiroTargetSession() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+	capsuleID := s.createLocalCapsule(dbPath, "bridge")
+	argsPath := filepath.Join(s.T().TempDir(), "args.txt")
+	s.installArgCapturingFakeCommand("kiro-cli", argsPath)
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"capsule", "inject", capsuleID,
+			"--new",
+			"--agent", "kiro",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "new kiro session")
+	rawArgs, err := os.ReadFile(argsPath)
+	s.Require().NoError(err)
+	s.Contains(string(rawArgs), "chat\n--no-interactive\nsystem_handoff")
+	s.Contains(string(rawArgs), "Bridge context")
+}
+
 func (s *CommandSuite) TestCapsuleInjectWritesDeliveredHandoffToOutputPath() {
 	if runtime.GOOS == "windows" {
 		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
@@ -806,6 +1048,13 @@ func (s *CommandSuite) TestCapsuleInjectRejectsMissingArguments() {
 	}{
 		{name: "empty", args: []string{"capsule", "inject"}},
 		{name: "only capsule", args: []string{"capsule", "inject", "kcap_1"}},
+		{name: "new without agent", args: []string{"capsule", "inject", "kcap_1", "--new"}},
+		{
+			name: "new with target",
+			args: []string{
+				"capsule", "inject", "kcap_1", "target", "--new", "--agent", "codex",
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -1000,6 +1249,22 @@ func (s *CommandSuite) installFakeClaude(capturePath string) {
 	s.installFakeCommand("claude", capturePath)
 }
 
+func (s *CommandSuite) installVerboseFakeCommand(name string, capturePath string) {
+	binDir := s.T().TempDir()
+	fakePath := filepath.Join(binDir, name)
+	s.Require().NoError(os.WriteFile(
+		fakePath,
+		[]byte(
+			"#!/bin/sh\n"+
+				"cat > "+capturePath+"\n"+
+				"printf 'fake stdout.\\n'\n"+
+				"printf 'fake stderr.\\n' >&2\n",
+		),
+		0o700,
+	))
+	s.T().Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 func (s *CommandSuite) installFakeCommand(name string, capturePath string) {
 	binDir := s.T().TempDir()
 	fakePath := filepath.Join(binDir, name)
@@ -1009,6 +1274,30 @@ func (s *CommandSuite) installFakeCommand(name string, capturePath string) {
 		0o700,
 	))
 	s.T().Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func (s *CommandSuite) installArgCapturingFakeCommand(name string, argsPath string) {
+	binDir := s.T().TempDir()
+	fakePath := filepath.Join(binDir, name)
+	s.Require().NoError(os.WriteFile(
+		fakePath,
+		[]byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > "+argsPath+"\n"),
+		0o700,
+	))
+	s.T().Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func (s *CommandSuite) readExecutionLogs(home string) string {
+	logDir := filepath.Join(home, ".pax", "paxl", "logs")
+	entries, err := os.ReadDir(logDir)
+	s.Require().NoError(err)
+	var out strings.Builder
+	for _, entry := range entries {
+		raw, err := os.ReadFile(filepath.Join(logDir, entry.Name()))
+		s.Require().NoError(err)
+		out.Write(raw)
+	}
+	return out.String()
 }
 
 func (s *CommandSuite) installFakeCodexCapsuleGenerator(rolloutPath string) {

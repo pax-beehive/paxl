@@ -11,6 +11,8 @@ const (
 	AgentNameUnknown AgentName = "unknown"
 	AgentNameCodex   AgentName = "codex"
 	AgentNameClaude  AgentName = "claude"
+	AgentNamePi      AgentName = "pi"
+	AgentNameKiro    AgentName = "kiro"
 )
 
 func ParseAgentName(raw string) (AgentName, error) {
@@ -21,6 +23,10 @@ func ParseAgentName(raw string) (AgentName, error) {
 		return AgentNameCodex, nil
 	case AgentNameClaude:
 		return AgentNameClaude, nil
+	case AgentNamePi:
+		return AgentNamePi, nil
+	case AgentNameKiro:
+		return AgentNameKiro, nil
 	default:
 		return AgentNameUnknown, fmt.Errorf("parse agent name %q: unsupported agent", raw)
 	}

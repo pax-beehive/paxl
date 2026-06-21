@@ -6,9 +6,8 @@ session context.
 It is useful when you work across multiple local coding agents and need a
 practical way to keep context moving without manually copying long transcripts.
 For example, if your Claude Code quota is exhausted, you can mirror the current
-Claude session into Codex so Codex can continue from the same local context. The
-same model also works for future adapters such as a Pi agent once an adapter is
-implemented.
+Claude session into Codex, Pi, or Kiro so another local agent can continue from
+the same context.
 
 Chinese documentation: [doc/README_cn.md](doc/README_cn.md)
 
@@ -28,6 +27,8 @@ Current built-in agents:
 
 - `codex`: local Codex logs plus Codex CLI delivery.
 - `claude`: local Claude Code logs plus Claude Code CLI delivery.
+- `pi`: local Pi logs plus Pi CLI delivery.
+- `kiro`: local Kiro CLI logs plus Kiro CLI delivery.
 
 ## Install
 
@@ -62,6 +63,67 @@ paxl --db .local/paxl.sqlite session list
 ```
 
 If `--db` is omitted, `paxl` uses its default local database path.
+
+## Execution Logs
+
+Every `paxl` command writes a JSONL execution log under:
+
+```text
+~/.pax/paxl/logs/
+```
+
+Logs include command start and finish events, duration, errors, and buffered
+adapter diagnostics. Normal command output is unchanged; `--verbose` still
+controls whether delivery diagnostics are also printed to stderr.
+
+## Quality Metrics
+
+Statement coverage remains the merge gate:
+
+```sh
+make test-cover
+```
+
+Branch coverage is available as a non-gating quality metric through
+[`gobco`](https://github.com/rillig/gobco):
+
+```sh
+make branch-cover-install
+make branch-cover
+```
+
+The branch coverage report prints per-package missed branches and a total such
+as `Branch coverage total: 792/1186 (66.8%)`. Use it to guide test review; it is
+not part of CI enforcement.
+
+Mutation testing is available as another non-gating quality signal through
+[`go-mutesting`](https://github.com/avito-tech/go-mutesting). The tool is pinned
+in `go.mod` as a Go tool dependency, so no separate install step is required:
+
+```sh
+make mutation-test
+make mutation-test MUTATION_TARGETS=./internal/model/...
+make mutation-test MUTATION_TARGETS=./internal/facade MUTATION_TIMEOUT=60
+```
+
+The default target is `./internal/model/store`, which exercises non-trivial
+persistence behavior without running mutation testing across the whole
+repository. The report prints surviving mutations and a mutation score. Use it
+when deciding whether a high-coverage area is actually asserting important
+behavior.
+
+Cognitive complexity is available through
+[`gocognit`](https://github.com/uudashr/gocognit), also pinned as a Go tool
+dependency:
+
+```sh
+make cognitive-complexity
+make cognitive-complexity COGNITIVE_TARGETS=./pkg/adaptor COGNITIVE_TOP=10
+```
+
+The default report prints the top 20 production functions and the repository
+average. Use it alongside cyclomatic complexity when deciding whether a function
+is hard to reason about.
 
 ## Common Workflows
 
@@ -180,6 +242,12 @@ Inject a capsule into a target session:
 paxl capsule inject <capsule-id> codex:<target-session-id>
 ```
 
+Start a new target agent session with a capsule:
+
+```sh
+paxl capsule inject <capsule-id> --new --agent codex
+```
+
 Archive a capsule:
 
 ```sh
@@ -197,6 +265,16 @@ Claude delivery:
 
 - Existing session: `claude --print --resume <session-id>`
 - New session: `claude --print`
+
+Pi delivery:
+
+- Existing session: `pi --session <session-id> -p`
+- New session: `pi -p`
+
+Kiro delivery:
+
+- Existing session: `kiro-cli chat --resume-id <session-id> --no-interactive <message>`
+- New session: `kiro-cli chat --no-interactive <message>`
 
 `paxl` buffers child process output by default. Use `--verbose` when you want
 delivery details.
@@ -219,7 +297,7 @@ The CI coverage gate is 80%.
 ## Status
 
 `paxl` is an early open-source CLI. The architecture is designed for more agent
-adapters, but only Codex and Claude are built in today.
+adapters. Codex, Claude, Pi, and Kiro are built in today.
 
 ## Platform Support
 
@@ -228,10 +306,10 @@ built-in adapters depend on local agent log locations and native CLIs.
 
 Current support boundary:
 
-- macOS: verified with local Codex and Claude Code logs.
+- macOS: verified with local Codex, Claude Code, Pi, and Kiro CLI log shapes.
 - Linux: expected to be close to macOS if `~/.codex/sessions`,
-  `~/.claude/projects`, `codex`, and `claude` are available, but it still needs
-  real-world validation.
+  `~/.claude/projects`, `~/.pi/agent/sessions`, `~/.kiro/sessions`, and the
+  matching CLIs are available, but it still needs real-world validation.
 - Windows: not fully validated. Path handling, Claude project directory
   decoding, fake-command tests, and native CLI resume behavior need dedicated
   Windows coverage.

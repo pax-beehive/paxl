@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"github.com/pax-oss/paxl/internal/model"
@@ -90,6 +89,8 @@ func NewDefaultRegistry() *Registry {
 		adapters: []Adapter{
 			NewCodexAdapter(),
 			NewClaudeAdapter(),
+			NewPiAdapter(),
+			NewKiroAdapter(),
 		},
 	}
 }
@@ -227,122 +228,6 @@ func (a *staticAdapter) StartSession(
 	return resp, nil
 }
 
-func NewCodexAdapter() Adapter {
-	return &staticAdapter{
-		agent: &model.AgentInfo{
-			Name:       model.AgentNameCodex,
-			Kind:       model.AgentKindLocal,
-			Capability: model.AgentCapabilityLocalCLI,
-			Command:    []string{"codex"},
-			Reason:     "Run Codex locally so ~/.codex/sessions exists and install the codex CLI.",
-		},
-		probe: func() bool {
-			return commandExists("codex") ||
-				pathExists(filepath.Join(homeDir(), ".codex", "sessions"))
-		},
-		listSessions: listCodexSessions,
-		getSession:   getCodexSession,
-		prompt:       promptCodexSession,
-		startSession: startCodexSession,
-	}
-}
-
-func NewClaudeAdapter() Adapter {
-	return &staticAdapter{
-		agent: &model.AgentInfo{
-			Name:       model.AgentNameClaude,
-			Kind:       model.AgentKindLocal,
-			Capability: model.AgentCapabilityLocalCLI,
-			Command:    []string{"claude"},
-			Reason:     "Run Claude Code locally so ~/.claude/projects exists and install the claude CLI.",
-		},
-		probe: func() bool {
-			return commandExists("claude") ||
-				pathExists(filepath.Join(homeDir(), ".claude", "projects"))
-		},
-		listSessions: listClaudeSessions,
-		getSession:   getClaudeSession,
-		prompt:       promptClaudeSession,
-		startSession: startClaudeSession,
-	}
-}
-
-func promptCodexSession(
-	ctx context.Context,
-	req *PromptRequest,
-	option *Option,
-) (*PromptResponse, error) {
-	if req == nil || req.NativeID == "" || req.Text == "" {
-		return nil, fmt.Errorf("native session id and prompt text are required")
-	}
-	if err := validateNativeSessionID(req.NativeID); err != nil {
-		return nil, err
-	}
-	return runPromptCommand(
-		ctx,
-		[]string{"codex", "exec", "resume", "--all", req.NativeID, "-"},
-		req.Text,
-		option,
-	)
-}
-
-func promptClaudeSession(
-	ctx context.Context,
-	req *PromptRequest,
-	option *Option,
-) (*PromptResponse, error) {
-	if req == nil || req.NativeID == "" || req.Text == "" {
-		return nil, fmt.Errorf("native session id and prompt text are required")
-	}
-	if err := validateNativeSessionID(req.NativeID); err != nil {
-		return nil, err
-	}
-	return runPromptCommand(
-		ctx,
-		[]string{"claude", "--print", "--resume", req.NativeID},
-		req.Text,
-		option,
-	)
-}
-
-func startCodexSession(
-	ctx context.Context,
-	req *StartSessionRequest,
-	option *Option,
-) (*StartSessionResponse, error) {
-	if req == nil || req.Text == "" {
-		return nil, fmt.Errorf("prompt text is required")
-	}
-	if _, err := runPromptCommand(
-		ctx,
-		[]string{"codex", "exec", "-"},
-		req.Text,
-		option,
-	); err != nil {
-		return nil, err
-	}
-	return &StartSessionResponse{}, nil
-}
-
-func startClaudeSession(
-	ctx context.Context,
-	req *StartSessionRequest,
-	option *Option,
-) (*StartSessionResponse, error) {
-	if req == nil || req.Text == "" {
-		return nil, fmt.Errorf("prompt text is required")
-	}
-	if _, err := runPromptCommand(
-		ctx,
-		[]string{"claude", "--print"},
-		req.Text,
-		option,
-	); err != nil {
-		return nil, err
-	}
-	return &StartSessionResponse{}, nil
-}
-
 func runPromptCommand(
 	ctx context.Context,
 	argv []string,
@@ -355,6 +240,31 @@ func runPromptCommand(
 	// The command name is selected by built-in adapters; external session ids are only CLI args.
 	command := exec.CommandContext(ctx, argv[0], argv[1:]...) // #nosec G204
 	command.Stdin = strings.NewReader(text)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		return nil, fmt.Errorf("run %s: %w: %s", strings.Join(argv, " "), err, stderr.String())
+	}
+	writeCommandOutput(option, "stdout", stdout.String())
+	writeCommandOutput(option, "stderr", stderr.String())
+	return &PromptResponse{}, nil
+}
+
+func runArgPromptCommand(
+	ctx context.Context,
+	argv []string,
+	text string,
+	option *Option,
+) (*PromptResponse, error) {
+	if len(argv) == 0 {
+		return nil, fmt.Errorf("prompt command is required")
+	}
+	commandArgv := append(append([]string{}, argv...), text)
+	// The command name is selected by built-in adapters; prompt text is passed
+	// as a single positional argument because Kiro CLI documents INPUT that way.
+	command := exec.CommandContext(ctx, commandArgv[0], commandArgv[1:]...) // #nosec G204
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	command.Stdout = &stdout

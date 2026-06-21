@@ -3,8 +3,10 @@ package facade
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -68,6 +70,7 @@ type InjectCapsuleRequest struct {
 	CapsuleID       string
 	TargetSessionID string
 	Agent           model.AgentName
+	NewSession      bool
 }
 
 type InjectCapsuleResponse struct {
@@ -208,6 +211,7 @@ func (f *CapsuleFacade) Inject(
 	if f.store == nil {
 		return nil, fmt.Errorf("inject capsule: store is required")
 	}
+	option := applyOptions(opts)
 	capsule, target, err := f.loadInjectionInputs(ctx, req)
 	if err != nil {
 		return nil, err
@@ -215,6 +219,26 @@ func (f *CapsuleFacade) Inject(
 	injectionID, err := newLocalID("kci")
 	if err != nil {
 		return nil, fmt.Errorf("create injection id: %w", err)
+	}
+	if req.NewSession {
+		injection, message, err := f.deliverCapsuleToNewSession(
+			ctx,
+			req,
+			capsule,
+			injectionID,
+			option,
+		)
+		if err != nil {
+			return nil, err
+		}
+		created, err := f.store.CreateKnowledgeInjection(
+			ctx,
+			&store.CreateKnowledgeInjectionRequest{Injection: injection},
+		)
+		if err != nil {
+			return nil, fmt.Errorf("store knowledge injection: %w", err)
+		}
+		return &InjectCapsuleResponse{Injection: created.Injection, Message: message}, nil
 	}
 	injection := &model.KnowledgeInjection{
 		InjectionID:         injectionID,
@@ -226,7 +250,7 @@ func (f *CapsuleFacade) Inject(
 		Status:              "delivered",
 	}
 	message := renderKnowledgeHandoff(capsule, injection)
-	if err := f.deliverInjection(ctx, target, message, applyOptions(opts)); err != nil {
+	if err := f.deliverInjection(ctx, target, message, option); err != nil {
 		return nil, fmt.Errorf("deliver knowledge capsule: %w", err)
 	}
 	created, err := f.store.CreateKnowledgeInjection(
@@ -488,24 +512,93 @@ func (f *CapsuleFacade) loadInjectionInputs(
 	ctx context.Context,
 	req *InjectCapsuleRequest,
 ) (*model.KnowledgeCapsule, *model.Session, error) {
-	capsule, err := f.store.GetKnowledgeCapsule(
-		ctx,
-		&store.GetKnowledgeCapsuleRequest{CapsuleID: req.CapsuleID},
-	)
+	capsule, err := f.loadActiveCapsule(ctx, req.CapsuleID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("get capsule %q: %w", req.CapsuleID, err)
 	}
-	if capsule.Capsule.Status != "active" {
-		return nil, nil, fmt.Errorf("capsule %q is not active", req.CapsuleID)
+	if req.NewSession {
+		return capsule, nil, nil
 	}
+	target, err := f.loadTargetSession(ctx, req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("find target session %q: %w", req.TargetSessionID, err)
+	}
+	return capsule, target, nil
+}
+
+func (f *CapsuleFacade) loadTargetSession(
+	ctx context.Context,
+	req *InjectCapsuleRequest,
+) (*model.Session, error) {
 	target, err := f.store.FindSession(ctx, &store.FindSessionRequest{
 		ID:    req.TargetSessionID,
 		Agent: req.Agent,
 	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("find target session %q: %w", req.TargetSessionID, err)
+	if err == nil {
+		return target.Session, nil
 	}
-	return capsule.Capsule, target.Session, nil
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	loaded, err := f.session.Get(ctx, &GetSessionRequest{
+		ID:    req.TargetSessionID,
+		Agent: req.Agent,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return loaded.Session, nil
+}
+
+func (f *CapsuleFacade) loadActiveCapsule(
+	ctx context.Context,
+	capsuleID string,
+) (*model.KnowledgeCapsule, error) {
+	capsule, err := f.store.GetKnowledgeCapsule(
+		ctx,
+		&store.GetKnowledgeCapsuleRequest{CapsuleID: capsuleID},
+	)
+	if err != nil {
+		return nil, err
+	}
+	if capsule.Capsule.Status != "active" {
+		return nil, fmt.Errorf("capsule %q is not active", capsuleID)
+	}
+	return capsule.Capsule, nil
+}
+
+func (f *CapsuleFacade) deliverCapsuleToNewSession(
+	ctx context.Context,
+	req *InjectCapsuleRequest,
+	capsule *model.KnowledgeCapsule,
+	injectionID string,
+	option *Option,
+) (*model.KnowledgeInjection, string, error) {
+	if req.Agent == model.AgentNameUnknown || req.Agent == "" {
+		return nil, "", fmt.Errorf("target agent is required")
+	}
+	injection := &model.KnowledgeInjection{
+		InjectionID:         injectionID,
+		CapsuleID:           capsule.CapsuleID,
+		TargetSessionID:     "(new " + string(req.Agent) + " session)",
+		TargetAgent:         req.Agent,
+		DeliveryMethod:      "cli_new_session",
+		DeliveryMessageType: "system_handoff",
+		Status:              "delivered",
+	}
+	message := renderKnowledgeHandoff(capsule, injection)
+	adapter, err := f.session.registry.Lookup(ctx, &adaptor.LookupRequest{Name: req.Agent})
+	if err != nil {
+		return nil, "", fmt.Errorf("lookup %s adapter: %w", req.Agent, err)
+	}
+	if _, err := adapter.Adapter.StartSession(
+		ctx,
+		&adaptor.StartSessionRequest{Text: message},
+		adaptor.WithVerboseWriter(option.VerboseWriter),
+	); err != nil {
+		return nil, "", fmt.Errorf("start target session: %w", err)
+	}
+	return injection, message, nil
 }
 
 func (f *CapsuleFacade) deliverMirror(
@@ -715,7 +808,7 @@ func parseGeneratedKnowledgeCapsule(
 	end := "PAX_KNOWLEDGE_CAPSULE_END " + capsuleID
 	for _, element := range elements {
 		// The generation prompt includes example markers, so only agent-authored output can count.
-		if element == nil || element.Role == "user" {
+		if element == nil || !isAssistantLikeRole(element.Role) {
 			continue
 		}
 		raw, ok := markerBlock(element.ContentText, start, end)
@@ -725,6 +818,15 @@ func parseGeneratedKnowledgeCapsule(
 		return generatedCapsuleFromJSON(capsuleID, session, keyword, raw)
 	}
 	return nil, false, nil
+}
+
+func isAssistantLikeRole(role string) bool {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "assistant", "agent", "model":
+		return true
+	default:
+		return false
+	}
 }
 
 func markerBlock(text string, start string, end string) (string, bool) {

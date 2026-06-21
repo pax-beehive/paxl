@@ -13,6 +13,8 @@
 coverage.out
 coverage.html
 *.coverprofile
+report.json
+go-mutesting-report.html
 
 # Local Go workspace files
 go.work

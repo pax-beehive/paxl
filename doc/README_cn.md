@@ -4,7 +4,7 @@
 
 它适合在多个本地 coding agent 之间切换工作时使用。比如 Claude Code 额度用完了，
 你可以把当前 Claude session mirror 到 Codex，让 Codex 带着同一份本地上下文继续工作。
-同样的模式也可以扩展给未来的 Pi agent 或其他 agent，只要实现对应 adapter。
+同样的模式也可以用于 Pi 和 Kiro。
 
 英文文档：[../README.md](../README.md)
 
@@ -24,6 +24,8 @@
 
 - `codex`：读取本地 Codex 日志，通过 Codex CLI 投递上下文。
 - `claude`：读取本地 Claude Code 日志，通过 Claude Code CLI 投递上下文。
+- `pi`：读取本地 Pi 日志，通过 Pi CLI 投递上下文。
+- `kiro`：读取本地 Kiro CLI 日志，通过 Kiro CLI 投递上下文。
 
 ## 安装
 
@@ -58,6 +60,60 @@ paxl --db .local/paxl.sqlite session list
 ```
 
 不指定 `--db` 时，`paxl` 会使用默认本地数据库路径。
+
+## 执行日志
+
+每次执行 `paxl` 命令时，都会在下面的目录写入一份 JSONL 执行日志：
+
+```text
+~/.pax/paxl/logs/
+```
+
+日志包含命令开始、结束、耗时、错误信息，以及被缓冲的 adapter diagnostic 输出。
+正常命令输出不变；`--verbose` 仍然只控制是否把投递细节同时打印到 stderr。
+
+## 质量指标
+
+语句覆盖率仍然是 merge gate：
+
+```sh
+make test-cover
+```
+
+分支覆盖率通过 [`gobco`](https://github.com/rillig/gobco) 作为非阻塞质量指标统计：
+
+```sh
+make branch-cover-install
+make branch-cover
+```
+
+分支覆盖率报告会输出每个 package 未覆盖的分支，并在最后给出总计，比如
+`Branch coverage total: 792/1186 (66.8%)`。它用于指导测试 review，不作为 CI 硬门禁。
+
+Mutation testing 通过 [`go-mutesting`](https://github.com/avito-tech/go-mutesting)
+作为另一个非阻塞质量信号使用。该工具已经通过 Go tool dependency 固定在
+`go.mod` 中，不需要额外安装：
+
+```sh
+make mutation-test
+make mutation-test MUTATION_TARGETS=./internal/model/...
+make mutation-test MUTATION_TARGETS=./internal/facade MUTATION_TIMEOUT=60
+```
+
+默认目标是 `./internal/model/store`，能覆盖非 trivial 的持久化行为，同时避免默认
+对整个仓库做 mutation testing。报告会输出 surviving mutations 和 mutation score。
+它适合用来判断高覆盖率区域是否真的断言了关键行为。
+
+Cognitive complexity 通过 [`gocognit`](https://github.com/uudashr/gocognit)
+统计，也已经固定为 Go tool dependency：
+
+```sh
+make cognitive-complexity
+make cognitive-complexity COGNITIVE_TARGETS=./pkg/adaptor COGNITIVE_TOP=10
+```
+
+默认报告会输出生产代码里 cognitive complexity 最高的 20 个函数，以及仓库平均值。
+它适合和 cyclomatic complexity 一起判断某个函数是否难以理解。
 
 ## 常用工作流
 
@@ -174,6 +230,12 @@ paxl capsule get <capsule-id>
 paxl capsule inject <capsule-id> codex:<target-session-id>
 ```
 
+用 capsule 直接启动一个新的目标 agent session：
+
+```sh
+paxl capsule inject <capsule-id> --new --agent codex
+```
+
 归档 capsule：
 
 ```sh
@@ -191,6 +253,16 @@ Claude 投递：
 
 - 已有 session：`claude --print --resume <session-id>`
 - 新 session：`claude --print`
+
+Pi 投递：
+
+- 已有 session：`pi --session <session-id> -p`
+- 新 session：`pi -p`
+
+Kiro 投递：
+
+- 已有 session：`kiro-cli chat --resume-id <session-id> --no-interactive <message>`
+- 新 session：`kiro-cli chat --no-interactive <message>`
 
 `paxl` 默认会缓冲子进程 stdout/stderr，避免污染命令输出。需要查看投递细节时使用
 `--verbose`。

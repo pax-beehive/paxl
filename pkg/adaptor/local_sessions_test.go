@@ -252,3 +252,27 @@ func (s *LocalSessionsSuite) TestListClaudeSessionsHonorsCanceledContext() {
 
 	s.ErrorIs(err, context.Canceled)
 }
+
+func (s *LocalSessionsSuite) TestListPiSessionsHonorsCanceledContext() {
+	piHome := s.T().TempDir()
+	s.Require().NoError(os.MkdirAll(filepath.Join(piHome, "sessions"), 0o700))
+	s.T().Setenv("PI_CODING_AGENT_DIR", piHome)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := listPiSessions(ctx, &ListSessionsRequest{})
+
+	s.ErrorIs(err, context.Canceled)
+}
+
+func (s *LocalSessionsSuite) TestListKiroSessionsHonorsCanceledContext() {
+	kiroHome := s.T().TempDir()
+	s.Require().NoError(os.MkdirAll(filepath.Join(kiroHome, "sessions", "cli"), 0o700))
+	s.T().Setenv("KIRO_HOME", kiroHome)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := listKiroSessions(ctx, &ListSessionsRequest{})
+
+	s.ErrorIs(err, context.Canceled)
+}
