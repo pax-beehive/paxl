@@ -23,9 +23,11 @@ Environment overrides:
   PAX_RELEASE_PLATFORMS   Space-separated GOOS/GOARCH platforms.
   PAX_RELEASE_BUILD_ID    Build id stored in metadata. Defaults to git short SHA.
   PAX_RELEASE_DIST_DIR    Local output directory. Defaults to dist.
+  PAX_RELEASE_INSTALLER_OBJECT GCS object for installer. Defaults to paxl/install.sh.
   PAX_RELEASE_DRY_RUN=1   Build and smoke-test without upload or git tag.
   PAX_RELEASE_SKIP_UPLOAD=1 Build only; also skips git tag.
   PAX_RELEASE_SKIP_VERIFY=1
+  PAX_RELEASE_SKIP_INSTALLER=1
   PAX_RELEASE_SKIP_TAG=1
   PAX_RELEASE_PUSH_TAG=1
   PAX_RELEASE_ALLOW_DIRTY=1
@@ -298,7 +300,7 @@ main() {
 
   local version_arg="${1:-patch}"
   local version tags bucket prefix_parent platforms dist_dir build_id tags_json created_at
-  local artifacts_jsonl manifest manifest_dst
+  local artifacts_jsonl manifest manifest_dst installer_object
 
   require_cmd go
   require_cmd git
@@ -315,6 +317,7 @@ main() {
   prefix_parent="${PAX_RELEASE_PREFIX:-paxl/releases}"
   platforms="${PAX_RELEASE_PLATFORMS:-darwin/amd64 darwin/arm64 linux/amd64 linux/arm64}"
   dist_dir="${PAX_RELEASE_DIST_DIR:-dist}"
+  installer_object="${PAX_RELEASE_INSTALLER_OBJECT:-paxl/install.sh}"
   build_id="${PAX_RELEASE_BUILD_ID:-$(git rev-parse --short HEAD)}"
   tags_json="$(tag_json_array "$tags")"
   created_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -364,6 +367,20 @@ main() {
   rm -f "$artifacts_jsonl"
   upload_file "$manifest" "$manifest_dst" "application/json"
   verify_gcs_object "$manifest_dst" "$(file_size "$manifest")"
+  local release_tag latest_manifest_dst
+  IFS=, read -r -a release_tags <<<"$tags"
+  for release_tag in "${release_tags[@]}"; do
+    [[ -n "$release_tag" ]] || continue
+    latest_manifest_dst="gs://${bucket}/${prefix_parent}/latest/${release_tag}/manifest.json"
+    upload_file "$manifest" "$latest_manifest_dst" "application/json"
+    verify_gcs_object "$latest_manifest_dst" "$(file_size "$manifest")"
+  done
+  if [[ "${PAX_RELEASE_SKIP_INSTALLER:-0}" != "1" ]]; then
+    upload_file "scripts/installer.sh" "gs://${bucket}/${installer_object}" "text/x-shellscript"
+    verify_gcs_object "gs://${bucket}/${installer_object}" "$(file_size scripts/installer.sh)"
+  else
+    log "skipping installer upload"
+  fi
   create_release_tag "$version"
 
   log "release ${version} complete"

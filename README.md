@@ -33,6 +33,18 @@ Current built-in agents:
 
 ## Install
 
+Install the latest stable hosted build:
+
+```sh
+curl -fsSL https://storage.googleapis.com/pax-tech-bucket/paxl/install.sh | bash
+```
+
+Install a specific uploaded version directly from its GCS manifest:
+
+```sh
+curl -fsSL https://storage.googleapis.com/pax-tech-bucket/paxl/install.sh | PAXL_VERSION=0.1.1 bash
+```
+
 Build from source:
 
 ```sh
@@ -153,6 +165,18 @@ the native host binary with `paxl version`, writes sha256 files and a
 
 ```text
 gs://pax-tech-bucket/paxl/releases/<version>/
+```
+
+For each release tag, it also updates:
+
+```text
+gs://pax-tech-bucket/paxl/releases/latest/<tag>/manifest.json
+```
+
+It also uploads the installer to:
+
+```text
+gs://pax-tech-bucket/paxl/install.sh
 ```
 
 After a successful upload it creates a local git tag:
