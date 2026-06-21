@@ -13,6 +13,47 @@ Chinese documentation: [doc/README_cn.md](doc/README_cn.md)
 
 Architecture documentation: [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md)
 
+## Quick Install
+
+Install the latest stable hosted build:
+
+```sh
+curl -fsSL https://api.paxtech.net/api/v1/public/paxl/install.sh | bash
+```
+
+Install a specific uploaded version:
+
+```sh
+curl -fsSL https://api.paxtech.net/api/v1/public/paxl/install.sh | PAXL_VERSION=0.1.0 bash
+```
+
+Check the installed binary:
+
+```sh
+paxl version
+```
+
+Build from source instead:
+
+```sh
+go build -trimpath -o ./paxl ./cmd/paxl
+mkdir -p ~/bin
+cp ./paxl ~/bin/paxl
+```
+
+## Agent Skill
+
+This repository includes a Codex skill for repeatable local knowledge transfer
+workflows:
+
+```sh
+mkdir -p ~/.codex/skills
+cp -R skills/knowledge-transfer ~/.codex/skills/
+```
+
+After installing the skill, ask Codex to use `knowledge-transfer` when moving
+context between Codex, Claude, Pi, Kiro, or Gemini sessions.
+
 ## What It Does
 
 - Lists supported local agents.
@@ -30,39 +71,6 @@ Current built-in agents:
 - `pi`: local Pi logs plus Pi CLI delivery.
 - `kiro`: local Kiro CLI logs plus Kiro CLI delivery.
 - `gemini`: local Gemini CLI logs plus Gemini CLI delivery.
-
-## Install
-
-Install the latest stable hosted build:
-
-```sh
-curl -fsSL https://storage.googleapis.com/pax-tech-bucket/paxl/install.sh | bash
-```
-
-Install a specific uploaded version directly from its GCS manifest:
-
-```sh
-curl -fsSL https://storage.googleapis.com/pax-tech-bucket/paxl/install.sh | PAXL_VERSION=0.1.1 bash
-```
-
-Build from source:
-
-```sh
-go build -trimpath -o ./paxl ./cmd/paxl
-```
-
-Optional local install:
-
-```sh
-mkdir -p ~/bin
-cp ./paxl ~/bin/paxl
-```
-
-Check the installed binary:
-
-```sh
-paxl version
-```
 
 ## Data Model
 

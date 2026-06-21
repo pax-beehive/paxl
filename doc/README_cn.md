@@ -10,6 +10,46 @@
 
 架构文档：[ARCHITECTURE.md](ARCHITECTURE.md)
 
+## 快速安装
+
+安装最新 stable 托管版本：
+
+```sh
+curl -fsSL https://api.paxtech.net/api/v1/public/paxl/install.sh | bash
+```
+
+安装指定上传版本：
+
+```sh
+curl -fsSL https://api.paxtech.net/api/v1/public/paxl/install.sh | PAXL_VERSION=0.1.0 bash
+```
+
+检查 binary：
+
+```sh
+paxl version
+```
+
+也可以从源码构建：
+
+```sh
+go build -trimpath -o ./paxl ./cmd/paxl
+mkdir -p ~/bin
+cp ./paxl ~/bin/paxl
+```
+
+## Agent Skill
+
+仓库内包含一个 Codex skill，用来稳定复用本地 knowledge transfer 流程：
+
+```sh
+mkdir -p ~/.codex/skills
+cp -R skills/knowledge-transfer ~/.codex/skills/
+```
+
+安装后，在需要跨 Codex、Claude、Pi、Kiro、Gemini session 转移上下文时，让
+Codex 使用 `knowledge-transfer` skill。
+
 ## 能做什么
 
 - 查看当前支持的本地 agents。
@@ -27,39 +67,6 @@
 - `pi`：读取本地 Pi 日志，通过 Pi CLI 投递上下文。
 - `kiro`：读取本地 Kiro CLI 日志，通过 Kiro CLI 投递上下文。
 - `gemini`：读取本地 Gemini CLI 日志，通过 Gemini CLI 投递上下文。
-
-## 安装
-
-安装最新 stable 托管版本：
-
-```sh
-curl -fsSL https://storage.googleapis.com/pax-tech-bucket/paxl/install.sh | bash
-```
-
-通过 GCS manifest 安装指定版本：
-
-```sh
-curl -fsSL https://storage.googleapis.com/pax-tech-bucket/paxl/install.sh | PAXL_VERSION=0.1.1 bash
-```
-
-从源码构建：
-
-```sh
-go build -trimpath -o ./paxl ./cmd/paxl
-```
-
-可选：安装到本地 bin：
-
-```sh
-mkdir -p ~/bin
-cp ./paxl ~/bin/paxl
-```
-
-检查 binary：
-
-```sh
-paxl version
-```
 
 ## 数据模型
 
