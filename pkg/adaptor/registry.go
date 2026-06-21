@@ -90,6 +90,8 @@ func NewDefaultRegistry() *Registry {
 		adapters: []Adapter{
 			NewCodexAdapter(),
 			NewClaudeAdapter(),
+			NewPiAdapter(),
+			NewKiroAdapter(),
 		},
 	}
 }
@@ -267,6 +269,46 @@ func NewClaudeAdapter() Adapter {
 	}
 }
 
+func NewPiAdapter() Adapter {
+	return &staticAdapter{
+		agent: &model.AgentInfo{
+			Name:       model.AgentNamePi,
+			Kind:       model.AgentKindLocal,
+			Capability: model.AgentCapabilityLocalCLI,
+			Command:    []string{"pi"},
+			Reason:     "Run Pi locally so ~/.pi/agent/sessions exists and install the pi CLI.",
+		},
+		probe: func() bool {
+			return commandExists("pi") ||
+				pathExists(filepath.Join(piRootNoError(), "sessions"))
+		},
+		listSessions: listPiSessions,
+		getSession:   getPiSession,
+		prompt:       promptPiSession,
+		startSession: startPiSession,
+	}
+}
+
+func NewKiroAdapter() Adapter {
+	return &staticAdapter{
+		agent: &model.AgentInfo{
+			Name:       model.AgentNameKiro,
+			Kind:       model.AgentKindLocal,
+			Capability: model.AgentCapabilityLocalCLI,
+			Command:    []string{"kiro-cli"},
+			Reason:     "Run Kiro CLI locally so ~/.kiro/sessions/cli exists and install kiro-cli.",
+		},
+		probe: func() bool {
+			return commandExists("kiro-cli") ||
+				pathExists(filepath.Join(kiroRootNoError(), "sessions", "cli"))
+		},
+		listSessions: listKiroSessions,
+		getSession:   getKiroSession,
+		prompt:       promptKiroSession,
+		startSession: startKiroSession,
+	}
+}
+
 func promptCodexSession(
 	ctx context.Context,
 	req *PromptRequest,
@@ -343,6 +385,77 @@ func startClaudeSession(
 	return &StartSessionResponse{}, nil
 }
 
+func promptPiSession(
+	ctx context.Context,
+	req *PromptRequest,
+	option *Option,
+) (*PromptResponse, error) {
+	if req == nil || req.NativeID == "" || req.Text == "" {
+		return nil, fmt.Errorf("native session id and prompt text are required")
+	}
+	if err := validateNativeSessionID(req.NativeID); err != nil {
+		return nil, err
+	}
+	return runPromptCommand(
+		ctx,
+		[]string{"pi", "--session", req.NativeID, "-p"},
+		req.Text,
+		option,
+	)
+}
+
+func startPiSession(
+	ctx context.Context,
+	req *StartSessionRequest,
+	option *Option,
+) (*StartSessionResponse, error) {
+	if req == nil || req.Text == "" {
+		return nil, fmt.Errorf("prompt text is required")
+	}
+	if _, err := runPromptCommand(ctx, []string{"pi", "-p"}, req.Text, option); err != nil {
+		return nil, err
+	}
+	return &StartSessionResponse{}, nil
+}
+
+func promptKiroSession(
+	ctx context.Context,
+	req *PromptRequest,
+	option *Option,
+) (*PromptResponse, error) {
+	if req == nil || req.NativeID == "" || req.Text == "" {
+		return nil, fmt.Errorf("native session id and prompt text are required")
+	}
+	if err := validateNativeSessionID(req.NativeID); err != nil {
+		return nil, err
+	}
+	return runArgPromptCommand(
+		ctx,
+		[]string{"kiro-cli", "chat", "--resume-id", req.NativeID, "--no-interactive"},
+		req.Text,
+		option,
+	)
+}
+
+func startKiroSession(
+	ctx context.Context,
+	req *StartSessionRequest,
+	option *Option,
+) (*StartSessionResponse, error) {
+	if req == nil || req.Text == "" {
+		return nil, fmt.Errorf("prompt text is required")
+	}
+	if _, err := runArgPromptCommand(
+		ctx,
+		[]string{"kiro-cli", "chat", "--no-interactive"},
+		req.Text,
+		option,
+	); err != nil {
+		return nil, err
+	}
+	return &StartSessionResponse{}, nil
+}
+
 func runPromptCommand(
 	ctx context.Context,
 	argv []string,
@@ -355,6 +468,31 @@ func runPromptCommand(
 	// The command name is selected by built-in adapters; external session ids are only CLI args.
 	command := exec.CommandContext(ctx, argv[0], argv[1:]...) // #nosec G204
 	command.Stdin = strings.NewReader(text)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		return nil, fmt.Errorf("run %s: %w: %s", strings.Join(argv, " "), err, stderr.String())
+	}
+	writeCommandOutput(option, "stdout", stdout.String())
+	writeCommandOutput(option, "stderr", stderr.String())
+	return &PromptResponse{}, nil
+}
+
+func runArgPromptCommand(
+	ctx context.Context,
+	argv []string,
+	text string,
+	option *Option,
+) (*PromptResponse, error) {
+	if len(argv) == 0 {
+		return nil, fmt.Errorf("prompt command is required")
+	}
+	commandArgv := append(append([]string{}, argv...), text)
+	// The command name is selected by built-in adapters; prompt text is passed
+	// as a single positional argument because Kiro CLI documents INPUT that way.
+	command := exec.CommandContext(ctx, commandArgv[0], commandArgv[1:]...) // #nosec G204
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	command.Stdout = &stdout

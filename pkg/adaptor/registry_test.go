@@ -21,15 +21,17 @@ func TestRegistrySuite(t *testing.T) {
 	suite.Run(t, new(RegistrySuite))
 }
 
-func (s *RegistrySuite) TestDefaultRegistryOnlyContainsCodexAndClaude() {
+func (s *RegistrySuite) TestDefaultRegistryContainsBuiltInAdapters() {
 	registry := adaptor.NewDefaultRegistry()
 
 	resp, err := registry.List(context.Background(), &adaptor.ListRequest{})
 	s.Require().NoError(err)
 
-	s.Len(resp.Agents, 2)
+	s.Len(resp.Agents, 4)
 	s.Equal(model.AgentNameCodex, resp.Agents[0].Name)
 	s.Equal(model.AgentNameClaude, resp.Agents[1].Name)
+	s.Equal(model.AgentNamePi, resp.Agents[2].Name)
+	s.Equal(model.AgentNameKiro, resp.Agents[3].Name)
 }
 
 func (s *RegistrySuite) TestListAcceptsVerboseWriterOption() {
@@ -43,7 +45,7 @@ func (s *RegistrySuite) TestListAcceptsVerboseWriterOption() {
 	)
 
 	s.Require().NoError(err)
-	s.Len(resp.Agents, 2)
+	s.Len(resp.Agents, 4)
 }
 
 func (s *RegistrySuite) TestLookupRejectsUnsupportedAgent() {
@@ -144,6 +146,141 @@ func (s *RegistrySuite) TestClaudeAdapterGetsSessionThroughPublicInterface() {
 	s.Equal("Hello", resp.Elements[0].ContentText)
 }
 
+func (s *RegistrySuite) TestPiAdapterListsSessionsThroughPublicInterface() {
+	piHome := s.T().TempDir()
+	sessionDir := filepath.Join(piHome, "sessions", "--tmp-project--")
+	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
+	s.T().Setenv("PI_CODING_AGENT_DIR", piHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(sessionDir, "2026-06-20T23-40-48-559Z_pi-session.jsonl"),
+		[]byte(
+			`{"type":"session","version":3,"id":"pi-session","timestamp":"2026-06-20T23:40:48.559Z","cwd":"/tmp/project"}`+"\n"+
+				`{"type":"message","id":"msg-user","timestamp":"2026-06-20T23:41:55.752Z","message":{"role":"user","content":[{"type":"text","text":"Explain paxl"}]}}`+"\n"+
+				`{"type":"message","id":"msg-assistant","timestamp":"2026-06-20T23:41:58.700Z","message":{"role":"assistant","content":[{"type":"text","text":"paxl moves context."}],"model":"z-ai/glm-5.2"}}`+"\n",
+		),
+		0o600,
+	))
+
+	resp, err := adaptor.NewPiAdapter().ListSessions(
+		context.Background(),
+		&adaptor.ListSessionsRequest{},
+	)
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Sessions, 1)
+	s.Equal("pi:pi-session", resp.Sessions[0].ID)
+	s.Equal(model.AgentNamePi, resp.Sessions[0].Agent)
+	s.Equal("Explain paxl", resp.Sessions[0].Title)
+	s.Equal("2026-06-20T23:41:58.700Z", resp.Sessions[0].UpdatedAt)
+	s.Equal("/tmp/project", resp.Sessions[0].ProjectID)
+}
+
+func (s *RegistrySuite) TestPiAdapterGetsSessionThroughPublicInterface() {
+	piHome := s.T().TempDir()
+	sessionDir := filepath.Join(piHome, "sessions", "--tmp-project--")
+	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
+	s.T().Setenv("PI_CODING_AGENT_DIR", piHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(sessionDir, "2026-06-20T23-40-48-559Z_pi-public.jsonl"),
+		[]byte(
+			`{"type":"session","version":3,"id":"pi-public","timestamp":"2026-06-20T23:40:48.559Z","cwd":"/tmp/project"}`+"\n"+
+				`{"type":"message","id":"msg-user","timestamp":"2026-06-20T23:41:55.752Z","message":{"role":"user","content":[{"type":"text","text":"Hello Pi"}]}}`+"\n"+
+				`{"type":"message","id":"msg-assistant","timestamp":"2026-06-20T23:41:58.700Z","message":{"role":"assistant","content":[{"type":"text","text":"Hello from Pi"}],"model":"z-ai/glm-5.2"}}`+"\n",
+		),
+		0o600,
+	))
+
+	resp, err := adaptor.NewPiAdapter().GetSession(
+		context.Background(),
+		&adaptor.GetSessionRequest{NativeID: "pi-public"},
+	)
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Elements, 2)
+	s.Equal("Hello Pi", resp.Elements[0].ContentText)
+	s.Equal("user", resp.Elements[0].Role)
+	s.Equal("Hello from Pi", resp.Elements[1].ContentText)
+	s.Equal("assistant", resp.Elements[1].Role)
+	s.Equal("z-ai/glm-5.2", resp.Elements[1].Model)
+}
+
+func (s *RegistrySuite) TestKiroAdapterListsSessionsThroughPublicInterface() {
+	kiroHome := s.T().TempDir()
+	sessionDir := filepath.Join(kiroHome, "sessions", "cli")
+	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
+	s.T().Setenv("KIRO_HOME", kiroHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(sessionDir, "kiro-session.json"),
+		[]byte(`{
+			"session_id":"kiro-session",
+			"cwd":"/tmp/project",
+			"created_at":"2026-06-20T23:55:57.801723Z",
+			"updated_at":"2026-06-20T23:59:07.433059Z",
+			"title":"Kiro title"
+		}`),
+		0o600,
+	))
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(sessionDir, "kiro-session.jsonl"),
+		[]byte(
+			`{"version":"v1","kind":"Prompt","data":{"message_id":"prompt","content":[{"kind":"text","data":"hello kiro"}],"meta":{"timestamp":1781999813}}}`+"\n"+
+				`{"version":"v1","kind":"AssistantMessage","data":{"message_id":"assistant","content":[{"kind":"text","data":"hello back"}]}}`+"\n",
+		),
+		0o600,
+	))
+
+	resp, err := adaptor.NewKiroAdapter().ListSessions(
+		context.Background(),
+		&adaptor.ListSessionsRequest{},
+	)
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Sessions, 1)
+	s.Equal("kiro:kiro-session", resp.Sessions[0].ID)
+	s.Equal(model.AgentNameKiro, resp.Sessions[0].Agent)
+	s.Equal("Kiro title", resp.Sessions[0].Title)
+	s.Equal("2026-06-20T23:59:07.433059Z", resp.Sessions[0].UpdatedAt)
+	s.Equal("/tmp/project", resp.Sessions[0].ProjectID)
+}
+
+func (s *RegistrySuite) TestKiroAdapterGetsSessionThroughPublicInterface() {
+	kiroHome := s.T().TempDir()
+	sessionDir := filepath.Join(kiroHome, "sessions", "cli")
+	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
+	s.T().Setenv("KIRO_HOME", kiroHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(sessionDir, "kiro-public.json"),
+		[]byte(`{
+			"session_id":"kiro-public",
+			"cwd":"/tmp/project",
+			"created_at":"2026-06-20T23:55:57.801723Z",
+			"updated_at":"2026-06-20T23:59:07.433059Z",
+			"title":"Kiro title"
+		}`),
+		0o600,
+	))
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(sessionDir, "kiro-public.jsonl"),
+		[]byte(
+			`{"version":"v1","kind":"Prompt","data":{"message_id":"prompt","content":[{"kind":"text","data":"Hello Kiro"}],"meta":{"timestamp":1781999813}}}`+"\n"+
+				`{"version":"v1","kind":"AssistantMessage","data":{"message_id":"assistant","content":[{"kind":"text","data":"Hello back"}]}}`+"\n",
+		),
+		0o600,
+	))
+
+	resp, err := adaptor.NewKiroAdapter().GetSession(
+		context.Background(),
+		&adaptor.GetSessionRequest{NativeID: "kiro-public"},
+	)
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Elements, 2)
+	s.Equal("user", resp.Elements[0].Role)
+	s.Equal("Hello Kiro", resp.Elements[0].ContentText)
+	s.Equal("assistant", resp.Elements[1].Role)
+	s.Equal("Hello back", resp.Elements[1].ContentText)
+}
+
 func (s *RegistrySuite) TestCodexAdapterGetSessionRequiresNativeID() {
 	_, err := adaptor.NewCodexAdapter().GetSession(
 		context.Background(),
@@ -191,6 +328,49 @@ func (s *RegistrySuite) TestClaudeAdapterPromptsThroughCLIResume() {
 	s.Equal("handoff text", string(rawPrompt))
 }
 
+func (s *RegistrySuite) TestPiAdapterPromptsThroughCLIResume() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	argsPath := filepath.Join(s.T().TempDir(), "args.txt")
+	s.installArgCapturingFakeCommand("pi", capturePath, argsPath)
+
+	resp, err := adaptor.NewPiAdapter().Prompt(
+		context.Background(),
+		&adaptor.PromptRequest{NativeID: "pi-public", Text: "handoff text"},
+	)
+
+	s.Require().NoError(err)
+	s.NotNil(resp)
+	rawPrompt, err := os.ReadFile(capturePath)
+	s.Require().NoError(err)
+	s.Equal("handoff text", string(rawPrompt))
+	rawArgs, err := os.ReadFile(argsPath)
+	s.Require().NoError(err)
+	s.Equal("--session\npi-public\n-p\n", string(rawArgs))
+}
+
+func (s *RegistrySuite) TestKiroAdapterPromptsThroughCLIResume() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	argsPath := filepath.Join(s.T().TempDir(), "args.txt")
+	s.installArgCapturingFakeCommand("kiro-cli", capturePath, argsPath)
+
+	resp, err := adaptor.NewKiroAdapter().Prompt(
+		context.Background(),
+		&adaptor.PromptRequest{NativeID: "kiro-public", Text: "handoff text"},
+	)
+
+	s.Require().NoError(err)
+	s.NotNil(resp)
+	rawArgs, err := os.ReadFile(argsPath)
+	s.Require().NoError(err)
+	s.Equal("chat\n--resume-id\nkiro-public\n--no-interactive\nhandoff text\n", string(rawArgs))
+}
+
 func (s *RegistrySuite) TestAdapterPromptWritesBufferedOutputWhenVerbose() {
 	if runtime.GOOS == "windows" {
 		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
@@ -231,6 +411,7 @@ func (s *RegistrySuite) TestAdaptersStartSessionsThroughCLI() {
 	}{
 		{name: "codex", command: "codex", adapter: adaptor.NewCodexAdapter()},
 		{name: "claude", command: "claude", adapter: adaptor.NewClaudeAdapter()},
+		{name: "pi", command: "pi", adapter: adaptor.NewPiAdapter()},
 	}
 
 	for _, tc := range cases {
@@ -252,6 +433,26 @@ func (s *RegistrySuite) TestAdaptersStartSessionsThroughCLI() {
 	}
 }
 
+func (s *RegistrySuite) TestKiroAdapterStartsSessionThroughCLI() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	argsPath := filepath.Join(s.T().TempDir(), "args.txt")
+	s.installArgCapturingFakeCommand("kiro-cli", capturePath, argsPath)
+
+	resp, err := adaptor.NewKiroAdapter().StartSession(
+		context.Background(),
+		&adaptor.StartSessionRequest{Text: "new handoff"},
+	)
+
+	s.Require().NoError(err)
+	s.NotNil(resp)
+	rawArgs, err := os.ReadFile(argsPath)
+	s.Require().NoError(err)
+	s.Equal("chat\n--no-interactive\nnew handoff\n", string(rawArgs))
+}
+
 func (s *RegistrySuite) TestAdapterPromptRequiresNativeIDAndText() {
 	cases := []struct {
 		name    string
@@ -266,6 +467,16 @@ func (s *RegistrySuite) TestAdapterPromptRequiresNativeIDAndText() {
 		{
 			name:    "claude",
 			adapter: adaptor.NewClaudeAdapter(),
+			req:     &adaptor.PromptRequest{NativeID: "session"},
+		},
+		{
+			name:    "pi",
+			adapter: adaptor.NewPiAdapter(),
+			req:     &adaptor.PromptRequest{Text: "handoff"},
+		},
+		{
+			name:    "kiro",
+			adapter: adaptor.NewKiroAdapter(),
 			req:     &adaptor.PromptRequest{NativeID: "session"},
 		},
 	}
@@ -290,6 +501,16 @@ func (s *RegistrySuite) TestAdapterStartSessionRequiresText() {
 			adapter: adaptor.NewClaudeAdapter(),
 			req:     &adaptor.StartSessionRequest{},
 		},
+		{
+			name:    "pi empty",
+			adapter: adaptor.NewPiAdapter(),
+			req:     &adaptor.StartSessionRequest{},
+		},
+		{
+			name:    "kiro empty",
+			adapter: adaptor.NewKiroAdapter(),
+			req:     &adaptor.StartSessionRequest{},
+		},
 	}
 
 	for _, tc := range cases {
@@ -306,6 +527,25 @@ func (s *RegistrySuite) installFakeCommand(name string, capturePath string) {
 	s.Require().NoError(os.WriteFile(
 		fakePath,
 		[]byte("#!/bin/sh\ncat > "+capturePath+"\n"),
+		0o700,
+	))
+	s.T().Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func (s *RegistrySuite) installArgCapturingFakeCommand(
+	name string,
+	capturePath string,
+	argsPath string,
+) {
+	binDir := s.T().TempDir()
+	fakePath := filepath.Join(binDir, name)
+	s.Require().NoError(os.WriteFile(
+		fakePath,
+		[]byte(
+			"#!/bin/sh\n"+
+				"printf '%s\\n' \"$@\" > "+argsPath+"\n"+
+				"cat > "+capturePath+"\n",
+		),
 		0o700,
 	))
 	s.T().Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))

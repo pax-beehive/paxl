@@ -139,7 +139,10 @@ func newSessionCommand(stdout io.Writer, stderr io.Writer) *cli.Command {
 				Name:  "list",
 				Usage: "List session metadata",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "agent", Usage: "Agent to scan: codex or claude"},
+					&cli.StringFlag{
+						Name:  "agent",
+						Usage: "Agent to scan: codex, claude, pi, or kiro",
+					},
 					&cli.StringFlag{
 						Name:  "updated-since",
 						Usage: "Only show sessions updated since a duration like 24h or 7d",
@@ -973,6 +976,8 @@ func agentInstallCommand(agent model.AgentName) ([]string, error) {
 		return []string{"npm", "install", "-g", "@openai/codex"}, nil
 	case model.AgentNameClaude:
 		return []string{"npm", "install", "-g", "@anthropic-ai/claude-code"}, nil
+	case model.AgentNamePi, model.AgentNameKiro:
+		return nil, fmt.Errorf("%s install is not managed by paxl setup", agent)
 	case model.AgentNameUnknown:
 		return nil, fmt.Errorf("unknown agent cannot be installed")
 	default:

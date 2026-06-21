@@ -109,6 +109,8 @@ Current adapters:
 
 - Codex: reads local Codex logs and delivers with Codex CLI.
 - Claude: reads local Claude Code logs and delivers with Claude Code CLI.
+- Pi: reads local Pi logs and delivers with Pi CLI.
+- Kiro: reads local Kiro CLI logs and delivers with Kiro CLI.
 
 Current delivery commands:
 
@@ -118,6 +120,12 @@ Codex new session:      codex exec -
 
 Claude existing session: claude --print --resume <session-id>
 Claude new session:      claude --print
+
+Pi existing session:     pi --session <session-id> -p
+Pi new session:          pi -p
+
+Kiro existing session:   kiro-cli chat --resume-id <session-id> --no-interactive <message>
+Kiro new session:        kiro-cli chat --no-interactive <message>
 ```
 
 Adapter stdout/stderr is buffered by default. `--verbose` can surface delivery
@@ -130,13 +138,15 @@ details without polluting normal command output.
 ```text
 codex:<native-id>
 claude:<native-id>
+pi:<native-id>
+kiro:<native-id>
 ```
 
 The facade parses these IDs before business logic uses them. Bare native IDs are
 allowed only when the caller also provides an agent.
 
 This separation matters because local transcript IDs are not necessarily ACP
-session IDs. For Codex and Claude, existing local sessions are resumed through
+session IDs. Existing local sessions are resumed through
 their native CLIs instead of pretending they are attachable ACP sessions.
 
 ## Session Mirror

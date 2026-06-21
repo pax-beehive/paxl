@@ -4,7 +4,7 @@
 
 它适合在多个本地 coding agent 之间切换工作时使用。比如 Claude Code 额度用完了，
 你可以把当前 Claude session mirror 到 Codex，让 Codex 带着同一份本地上下文继续工作。
-同样的模式也可以扩展给未来的 Pi agent 或其他 agent，只要实现对应 adapter。
+同样的模式也可以用于 Pi 和 Kiro。
 
 英文文档：[../README.md](../README.md)
 
@@ -24,6 +24,8 @@
 
 - `codex`：读取本地 Codex 日志，通过 Codex CLI 投递上下文。
 - `claude`：读取本地 Claude Code 日志，通过 Claude Code CLI 投递上下文。
+- `pi`：读取本地 Pi 日志，通过 Pi CLI 投递上下文。
+- `kiro`：读取本地 Kiro CLI 日志，通过 Kiro CLI 投递上下文。
 
 ## 安装
 
@@ -197,6 +199,16 @@ Claude 投递：
 
 - 已有 session：`claude --print --resume <session-id>`
 - 新 session：`claude --print`
+
+Pi 投递：
+
+- 已有 session：`pi --session <session-id> -p`
+- 新 session：`pi -p`
+
+Kiro 投递：
+
+- 已有 session：`kiro-cli chat --resume-id <session-id> --no-interactive <message>`
+- 新 session：`kiro-cli chat --no-interactive <message>`
 
 `paxl` 默认会缓冲子进程 stdout/stderr，避免污染命令输出。需要查看投递细节时使用
 `--verbose`。
