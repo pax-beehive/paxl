@@ -73,6 +73,28 @@ func (s *LocalSessionsSuite) TestListCodexSessionsDerivesReadableTitleFromRollou
 	s.Equal("Make the session title readable from user intent.", resp.Sessions[0].Title)
 }
 
+func (s *LocalSessionsSuite) TestListCodexSessionsPrefersStructuredUserMessageEventForTitle() {
+	codexHome := s.T().TempDir()
+	s.T().Setenv("CODEX_HOME", codexHome)
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-test-sess-rollout.jsonl"),
+		[]byte(
+			`{"type":"session_meta","payload":{"id":"sess-rollout","timestamp":"2026-06-20T02:00:00Z","cwd":"/tmp/project"}}`+"\n"+
+				`{"timestamp":"2026-06-20T02:01:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"The following is the Codex agent history added since your last approval assessment."}]}}`+"\n"+
+				`{"timestamp":"2026-06-20T02:02:00Z","type":"event_msg","payload":{"type":"user_message","message":"Use a structured source for Codex titles.","images":[],"local_images":[],"text_elements":[]}}`+"\n",
+		),
+		0o600,
+	))
+
+	resp, err := listCodexSessions(context.Background(), &ListSessionsRequest{})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Sessions, 1)
+	s.Equal("Use a structured source for Codex titles.", resp.Sessions[0].Title)
+}
+
 func (s *LocalSessionsSuite) TestListClaudeSessionsReadsProjectLogs() {
 	claudeHome := s.T().TempDir()
 	projectDir := filepath.Join(claudeHome, "projects", "sample")

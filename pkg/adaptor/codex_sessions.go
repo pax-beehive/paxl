@@ -55,6 +55,17 @@ type codexEnvelope struct {
 	Payload   json.RawMessage `json:"payload"`
 }
 
+type codexUserMessageEventLine struct {
+	Type    string                  `json:"type"`
+	Payload codexUserMessagePayload `json:"payload"`
+}
+
+type codexUserMessagePayload struct {
+	Type         string          `json:"type"`
+	Message      string          `json:"message"`
+	TextElements json.RawMessage `json:"text_elements"`
+}
+
 func listCodexSessions(
 	ctx context.Context,
 	req *ListSessionsRequest,
@@ -325,6 +336,9 @@ func readCodexMeta(path string) (*codexMetaLine, error) {
 }
 
 func readCodexTitle(path string) string {
+	if title := readCodexUserMessageEventTitle(path); title != "" {
+		return title
+	}
 	// Rollout filenames are stable identifiers, not useful titles. The first
 	// non-bootstrap user message is a better local-only approximation.
 	elements, err := readCodexElements(path, "")
@@ -339,6 +353,58 @@ func readCodexTitle(path string) string {
 		}
 	}
 	return ""
+}
+
+func readCodexUserMessageEventTitle(path string) string {
+	// Codex event messages represent user-visible input more directly than
+	// response_item messages, which may include injected model context.
+	// #nosec G304
+	file, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer closeFile(file)
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), scannerMaxTokenSize)
+	for scanner.Scan() {
+		var line codexUserMessageEventLine
+		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil ||
+			line.Type != "event_msg" ||
+			line.Payload.Type != "user_message" {
+			continue
+		}
+		if title := titleCandidate(codexUserMessageText(&line.Payload)); title != "" {
+			return title
+		}
+	}
+	return ""
+}
+
+func codexUserMessageText(payload *codexUserMessagePayload) string {
+	if payload == nil {
+		return ""
+	}
+	if strings.TrimSpace(payload.Message) != "" {
+		return payload.Message
+	}
+	var texts []string
+	if err := json.Unmarshal(payload.TextElements, &texts); err == nil {
+		return strings.Join(texts, "\n")
+	}
+	var elements []struct {
+		Text    string `json:"text"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(payload.TextElements, &elements); err != nil {
+		return ""
+	}
+	for _, element := range elements {
+		text := firstNonEmpty(element.Text, element.Content)
+		if text != "" {
+			texts = append(texts, text)
+		}
+	}
+	return strings.Join(texts, "\n")
 }
 
 func codexRoot() (string, error) {
