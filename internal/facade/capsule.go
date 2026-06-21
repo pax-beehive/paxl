@@ -808,7 +808,7 @@ func parseGeneratedKnowledgeCapsule(
 	end := "PAX_KNOWLEDGE_CAPSULE_END " + capsuleID
 	for _, element := range elements {
 		// The generation prompt includes example markers, so only agent-authored output can count.
-		if element == nil || element.Role == "user" {
+		if element == nil || !isAssistantLikeRole(element.Role) {
 			continue
 		}
 		raw, ok := markerBlock(element.ContentText, start, end)
@@ -818,6 +818,15 @@ func parseGeneratedKnowledgeCapsule(
 		return generatedCapsuleFromJSON(capsuleID, session, keyword, raw)
 	}
 	return nil, false, nil
+}
+
+func isAssistantLikeRole(role string) bool {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "assistant", "agent", "model":
+		return true
+	default:
+		return false
+	}
 }
 
 func markerBlock(text string, start string, end string) (string, bool) {

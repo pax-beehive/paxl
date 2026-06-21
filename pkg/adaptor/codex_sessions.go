@@ -1,0 +1,357 @@
+package adaptor
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/pax-oss/paxl/internal/model"
+)
+
+func NewCodexAdapter() Adapter {
+	return &staticAdapter{
+		agent: &model.AgentInfo{
+			Name:       model.AgentNameCodex,
+			Kind:       model.AgentKindLocal,
+			Capability: model.AgentCapabilityLocalCLI,
+			Command:    []string{"codex"},
+			Reason:     "Run Codex locally so ~/.codex/sessions exists and install the codex CLI.",
+		},
+		probe: func() bool {
+			return commandExists("codex") ||
+				pathExists(filepath.Join(homeDir(), ".codex", "sessions"))
+		},
+		listSessions: listCodexSessions,
+		getSession:   getCodexSession,
+		prompt:       promptCodexSession,
+		startSession: startCodexSession,
+	}
+}
+
+type codexIndexEntry struct {
+	ID         string `json:"id"`
+	ThreadName string `json:"thread_name"`
+	UpdatedAt  string `json:"updated_at"`
+}
+
+type codexMetaLine struct {
+	Type    string `json:"type"`
+	Payload struct {
+		ID        string `json:"id"`
+		Timestamp string `json:"timestamp"`
+		CWD       string `json:"cwd"`
+	} `json:"payload"`
+}
+
+type codexEnvelope struct {
+	Timestamp string          `json:"timestamp"`
+	Type      string          `json:"type"`
+	Payload   json.RawMessage `json:"payload"`
+}
+
+func listCodexSessions(
+	ctx context.Context,
+	req *ListSessionsRequest,
+) (*ListSessionsResponse, error) {
+	root, err := codexRoot()
+	if err != nil {
+		return nil, fmt.Errorf("resolve codex root: %w", err)
+	}
+	byID, err := readCodexIndex(filepath.Join(root, "session_index.jsonl"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("read codex session index: %w", err)
+	}
+	if err := readCodexRollouts(ctx, filepath.Join(root, "sessions"), byID); err != nil &&
+		!errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("read codex rollouts: %w", err)
+	}
+	return sortedSessions(byID, req), nil
+}
+
+func getCodexSession(ctx context.Context, req *GetSessionRequest) (*GetSessionResponse, error) {
+	_ = ctx
+	if req == nil || req.NativeID == "" {
+		return nil, fmt.Errorf("native session id is required")
+	}
+	path, err := findCodexRollout(req.NativeID)
+	if err != nil {
+		return nil, fmt.Errorf("find codex rollout: %w", err)
+	}
+	elements, err := readCodexElements(path, "codex:"+req.NativeID)
+	if err != nil {
+		return nil, fmt.Errorf("read codex elements: %w", err)
+	}
+	return &GetSessionResponse{Elements: elements}, nil
+}
+
+func promptCodexSession(
+	ctx context.Context,
+	req *PromptRequest,
+	option *Option,
+) (*PromptResponse, error) {
+	if req == nil || req.NativeID == "" || req.Text == "" {
+		return nil, fmt.Errorf("native session id and prompt text are required")
+	}
+	if err := validateNativeSessionID(req.NativeID); err != nil {
+		return nil, err
+	}
+	return runPromptCommand(
+		ctx,
+		[]string{"codex", "exec", "resume", "--all", req.NativeID, "-"},
+		req.Text,
+		option,
+	)
+}
+
+func startCodexSession(
+	ctx context.Context,
+	req *StartSessionRequest,
+	option *Option,
+) (*StartSessionResponse, error) {
+	if req == nil || req.Text == "" {
+		return nil, fmt.Errorf("prompt text is required")
+	}
+	if _, err := runPromptCommand(
+		ctx,
+		[]string{"codex", "exec", "-"},
+		req.Text,
+		option,
+	); err != nil {
+		return nil, err
+	}
+	return &StartSessionResponse{}, nil
+}
+
+func readCodexIndex(path string) (map[string]*model.Session, error) {
+	// The adapter only reads the index path resolved from the local Codex root.
+	// #nosec G304
+	file, err := os.Open(path)
+	if err != nil {
+		return map[string]*model.Session{}, err
+	}
+	defer closeFile(file)
+	out := map[string]*model.Session{}
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), scannerMaxTokenSize)
+	for scanner.Scan() {
+		var entry codexIndexEntry
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil || entry.ID == "" {
+			continue
+		}
+		out["codex:"+entry.ID] = &model.Session{
+			ID:         "codex:" + entry.ID,
+			Agent:      model.AgentNameCodex,
+			NativeID:   entry.ID,
+			Title:      entry.ThreadName,
+			Status:     "available",
+			LastActive: entry.UpdatedAt,
+			UpdatedAt:  entry.UpdatedAt,
+		}
+	}
+	return out, scanner.Err()
+}
+
+func findCodexRollout(nativeID string) (string, error) {
+	root, err := codexRoot()
+	if err != nil {
+		return "", err
+	}
+	for _, name := range []string{"sessions", "archived_sessions"} {
+		found, err := findCodexRolloutInDir(filepath.Join(root, name), nativeID)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		if found != "" {
+			return found, nil
+		}
+	}
+	return "", fmt.Errorf("codex rollout %q not found", nativeID)
+}
+
+func findCodexRolloutInDir(root string, nativeID string) (string, error) {
+	var found string
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if found != "" || entry.IsDir() {
+			return nil
+		}
+		if strings.HasPrefix(entry.Name(), "rollout-") &&
+			strings.HasSuffix(entry.Name(), nativeID+".jsonl") {
+			found = path
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return found, nil
+}
+
+func readCodexElements(path string, sessionID string) ([]*model.Element, error) {
+	// The adapter only reads rollout files discovered under the local Codex root.
+	// #nosec G304
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer closeFile(file)
+	var elements []*model.Element
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), scannerMaxTokenSize)
+	for scanner.Scan() {
+		element, ok := decodeCodexElement(scanner.Bytes(), int64(len(elements)+1), sessionID)
+		if ok {
+			elements = append(elements, element)
+		}
+	}
+	return elements, scanner.Err()
+}
+
+func decodeCodexElement(raw []byte, seq int64, sessionID string) (*model.Element, bool) {
+	var envelope codexEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil || envelope.Type != "response_item" {
+		return nil, false
+	}
+	var kind struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(envelope.Payload, &kind); err != nil || kind.Type != "message" {
+		return nil, false
+	}
+	var payload struct {
+		Role    string `json:"role"`
+		Content []struct {
+			Text       string `json:"text"`
+			InputText  string `json:"input_text"`
+			OutputText string `json:"output_text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+		return nil, false
+	}
+	element := &model.Element{
+		SessionID:   sessionID,
+		Seq:         seq,
+		Type:        "message",
+		Role:        payload.Role,
+		StartedAt:   envelope.Timestamp,
+		CompletedAt: envelope.Timestamp,
+		ContentText: codexContentText(payload.Content),
+		RawJSON:     string(raw),
+	}
+	return element, strings.TrimSpace(element.ContentText) != ""
+}
+
+func codexContentText(blocks []struct {
+	Text       string `json:"text"`
+	InputText  string `json:"input_text"`
+	OutputText string `json:"output_text"`
+}) string {
+	parts := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		text := firstNonEmpty(block.Text, block.InputText, block.OutputText)
+		if text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func readCodexRollouts(
+	ctx context.Context,
+	root string,
+	sessions map[string]*model.Session,
+) error {
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "rollout-") ||
+			!strings.HasSuffix(entry.Name(), ".jsonl") {
+			return nil
+		}
+		meta, metaErr := readCodexMeta(path)
+		if shouldSkipCodexMeta(meta, metaErr) {
+			return nil
+		}
+		id := "codex:" + meta.Payload.ID
+		session := sessions[id]
+		if session == nil {
+			session = &model.Session{ID: id, Agent: model.AgentNameCodex, NativeID: meta.Payload.ID}
+		}
+		if session.Title == "" {
+			session.Title = firstNonEmpty(readCodexTitle(path), entry.Name())
+		}
+		if session.UpdatedAt == "" {
+			session.UpdatedAt = meta.Payload.Timestamp
+		}
+		session.LastActive = firstNonEmpty(session.LastActive, session.UpdatedAt)
+		session.ProjectID = firstNonEmpty(session.ProjectID, meta.Payload.CWD)
+		session.Status = firstNonEmpty(session.Status, "available")
+		sessions[id] = session
+		return nil
+	})
+}
+
+func readCodexMeta(path string) (*codexMetaLine, error) {
+	// The adapter only reads files discovered under the local Codex session root.
+	// #nosec G304
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer closeFile(file)
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), scannerMaxTokenSize)
+	for scanner.Scan() {
+		var line codexMetaLine
+		if err := json.Unmarshal(scanner.Bytes(), &line); err == nil &&
+			line.Type == "session_meta" {
+			return &line, nil
+		}
+	}
+	return nil, scanner.Err()
+}
+
+func readCodexTitle(path string) string {
+	// Rollout filenames are stable identifiers, not useful titles. The first
+	// non-bootstrap user message is a better local-only approximation.
+	elements, err := readCodexElements(path, "")
+	if err != nil {
+		return ""
+	}
+	for _, element := range elements {
+		if element != nil && element.Role == "user" {
+			if title := titleCandidate(element.ContentText); title != "" {
+				return title
+			}
+		}
+	}
+	return ""
+}
+
+func codexRoot() (string, error) {
+	if value := os.Getenv("CODEX_HOME"); value != "" {
+		return value, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".codex"), nil
+}
+
+func shouldSkipCodexMeta(meta *codexMetaLine, err error) bool {
+	return err != nil || meta.Payload.ID == ""
+}

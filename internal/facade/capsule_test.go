@@ -150,6 +150,19 @@ func (s *CapsuleFacadeSuite) TestCreateSourceGenerationIgnoresUserMarkerEcho() {
 	s.Error(err)
 }
 
+func (s *CapsuleFacadeSuite) TestCreateSourceGenerationIgnoresToolResultMarkerEcho() {
+	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
+	rolloutPath := s.seedCodexRollout()
+	s.installFakeCodexToolResultMarkerGenerator(rolloutPath)
+
+	_, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
+		SourceSessionID: "codex:sess",
+		Keyword:         "bridge",
+	})
+
+	s.Error(err)
+}
+
 func (s *CapsuleFacadeSuite) TestInjectDeliversHandoffAndStoresInjection() {
 	if runtime.GOOS == "windows" {
 		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
@@ -486,6 +499,17 @@ func (s *CapsuleFacadeSuite) installFakeCodexUserMarkerGenerator(rolloutPath str
 		"prompt=$(cat)\n" +
 		"capsule_id=$(printf '%s\\n' \"$prompt\" | sed -n 's/^Capsule id: //p' | head -n 1)\n" +
 		"printf '%s\\n' \"{\\\"timestamp\\\":\\\"2026-06-20T01:03:00Z\\\",\\\"type\\\":\\\"response_item\\\",\\\"payload\\\":{\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"user\\\",\\\"content\\\":[{\\\"type\\\":\\\"input_text\\\",\\\"text\\\":\\\"PAX_KNOWLEDGE_CAPSULE_START ${capsule_id}\\\\n{\\\\\\\"title\\\\\\\":\\\\\\\"Echo\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Echo\\\\\\\",\\\\\\\"content\\\\\\\":\\\\\\\"Echo\\\\\\\"}\\\\nPAX_KNOWLEDGE_CAPSULE_END ${capsule_id}\\\"}]}}\" >> \"" + rolloutPath + "\"\n"
+	s.Require().NoError(os.WriteFile(fakePath, []byte(script), 0o700))
+	s.T().Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func (s *CapsuleFacadeSuite) installFakeCodexToolResultMarkerGenerator(rolloutPath string) {
+	binDir := s.T().TempDir()
+	fakePath := filepath.Join(binDir, "codex")
+	script := "#!/bin/sh\n" +
+		"prompt=$(cat)\n" +
+		"capsule_id=$(printf '%s\\n' \"$prompt\" | sed -n 's/^Capsule id: //p' | head -n 1)\n" +
+		"printf '%s\\n' \"{\\\"timestamp\\\":\\\"2026-06-20T01:03:00Z\\\",\\\"type\\\":\\\"response_item\\\",\\\"payload\\\":{\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"toolResult\\\",\\\"content\\\":[{\\\"type\\\":\\\"output_text\\\",\\\"text\\\":\\\"PAX_KNOWLEDGE_CAPSULE_START ${capsule_id}\\\\n{\\\\\\\"title\\\\\\\":\\\\\\\"Tool echo\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Tool echo\\\\\\\",\\\\\\\"content\\\\\\\":\\\\\\\"Tool echo\\\\\\\"}\\\\nPAX_KNOWLEDGE_CAPSULE_END ${capsule_id}\\\"}]}}\" >> \"" + rolloutPath + "\"\n"
 	s.Require().NoError(os.WriteFile(fakePath, []byte(script), 0o700))
 	s.T().Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
