@@ -61,6 +61,17 @@ paxl --db .local/paxl.sqlite session list
 
 不指定 `--db` 时，`paxl` 会使用默认本地数据库路径。
 
+## 执行日志
+
+每次执行 `paxl` 命令时，都会在下面的目录写入一份 JSONL 执行日志：
+
+```text
+~/.pax/paxl/logs/
+```
+
+日志包含命令开始、结束、耗时、错误信息，以及被缓冲的 adapter diagnostic 输出。
+正常命令输出不变；`--verbose` 仍然只控制是否把投递细节同时打印到 stderr。
+
 ## 常用工作流
 
 ### 查看可用 agents

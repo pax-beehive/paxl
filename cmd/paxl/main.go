@@ -12,6 +12,7 @@ import (
 	"runtime/debug"
 	"runtime/pprof"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -32,14 +33,27 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) error {
-	command := newCommand(stdout, stderr)
+	logger := openExecutionLogger(args)
+	defer closeExecutionLogger(logger)
+	command := newCommandWithDiagnostics(stdout, stderr, diagnosticWriter(logger))
 	if err := command.Run(ctx, append([]string{"paxl"}, args...)); err != nil {
-		return fmt.Errorf("run paxl command: %w", err)
+		wrapped := fmt.Errorf("run paxl command: %w", err)
+		finishExecutionLog(logger, wrapped)
+		return wrapped
 	}
+	finishExecutionLog(logger, nil)
 	return nil
 }
 
 func newCommand(stdout io.Writer, stderr io.Writer) *cli.Command {
+	return newCommandWithDiagnostics(stdout, stderr, nil)
+}
+
+func newCommandWithDiagnostics(
+	stdout io.Writer,
+	stderr io.Writer,
+	diagnostics io.Writer,
+) *cli.Command {
 	agentFacade := facade.NewAgentFacade(nil)
 	return &cli.Command{
 		Name:      "paxl",
@@ -56,9 +70,9 @@ func newCommand(stdout io.Writer, stderr io.Writer) *cli.Command {
 		},
 		Commands: []*cli.Command{
 			newVersionCommand(stdout),
-			newAgentCommand(agentFacade, stdout, stderr),
-			newSessionCommand(stdout, stderr),
-			newCapsuleCommand(stdout, stderr),
+			newAgentCommand(agentFacade, stdout, stderr, diagnostics),
+			newSessionCommand(stdout, stderr, diagnostics),
+			newCapsuleCommand(stdout, stderr, diagnostics),
 		},
 	}
 }
@@ -85,6 +99,7 @@ func newAgentCommand(
 	agentFacade *facade.AgentFacade,
 	stdout io.Writer,
 	stderr io.Writer,
+	diagnostics io.Writer,
 ) *cli.Command {
 	return &cli.Command{
 		Name:  "agent",
@@ -106,7 +121,7 @@ func newAgentCommand(
 					&cli.BoolFlag{Name: "verbose", Usage: "Print adapter probing details"},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					return agentList(ctx, cmd, agentFacade, stdout, stderr)
+					return agentList(ctx, cmd, agentFacade, stdout, stderr, diagnostics)
 				},
 			},
 			{
@@ -130,7 +145,7 @@ func newAgentCommand(
 	}
 }
 
-func newSessionCommand(stdout io.Writer, stderr io.Writer) *cli.Command {
+func newSessionCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer) *cli.Command {
 	return &cli.Command{
 		Name:  "session",
 		Usage: "List, render, and mirror local agent sessions",
@@ -165,7 +180,7 @@ func newSessionCommand(stdout io.Writer, stderr io.Writer) *cli.Command {
 					&cli.BoolFlag{Name: "verbose", Usage: "Print session scan details"},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					return sessionList(ctx, cmd, stdout, stderr)
+					return sessionList(ctx, cmd, stdout, stderr, diagnostics)
 				},
 			},
 			{
@@ -183,7 +198,7 @@ func newSessionCommand(stdout io.Writer, stderr io.Writer) *cli.Command {
 					&cli.BoolFlag{Name: "verbose", Usage: "Print session sync details"},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					return sessionGet(ctx, cmd, stdout, stderr)
+					return sessionGet(ctx, cmd, stdout, stderr, diagnostics)
 				},
 			},
 			{
@@ -210,14 +225,14 @@ func newSessionCommand(stdout io.Writer, stderr io.Writer) *cli.Command {
 					&cli.BoolFlag{Name: "verbose", Usage: "Print mirror delivery details"},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					return sessionMirror(ctx, cmd, stdout, stderr)
+					return sessionMirror(ctx, cmd, stdout, stderr, diagnostics)
 				},
 			},
 		},
 	}
 }
 
-func newCapsuleCommand(stdout io.Writer, stderr io.Writer) *cli.Command {
+func newCapsuleCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer) *cli.Command {
 	return &cli.Command{
 		Name:  "capsule",
 		Usage: "Create, list, and inject knowledge capsules",
@@ -253,7 +268,7 @@ func newCapsuleCommand(stdout io.Writer, stderr io.Writer) *cli.Command {
 					&cli.BoolFlag{Name: "verbose", Usage: "Print capsule creation details"},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					return capsuleCreate(ctx, cmd, stdout, stderr)
+					return capsuleCreate(ctx, cmd, stdout, stderr, diagnostics)
 				},
 			},
 			{
@@ -323,7 +338,7 @@ func newCapsuleCommand(stdout io.Writer, stderr io.Writer) *cli.Command {
 					&cli.BoolFlag{Name: "verbose", Usage: "Print injection delivery details"},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					return capsuleInject(ctx, cmd, stdout, stderr)
+					return capsuleInject(ctx, cmd, stdout, stderr, diagnostics)
 				},
 			},
 			{
@@ -352,12 +367,17 @@ func agentList(
 	agentFacade *facade.AgentFacade,
 	stdout io.Writer,
 	stderr io.Writer,
+	diagnostics io.Writer,
 ) error {
 	req, err := parseListAgentsRequest(cmd)
 	if err != nil {
 		return fmt.Errorf("parse agent list request: %w", err)
 	}
-	resp, err := agentFacade.List(ctx, req, facade.WithVerboseWriter(verboseWriter(cmd, stderr)))
+	resp, err := agentFacade.List(
+		ctx,
+		req,
+		facade.WithVerboseWriter(verboseWriter(cmd, stderr, diagnostics)),
+	)
 	if err != nil {
 		return fmt.Errorf("list agents: %w", err)
 	}
@@ -443,7 +463,13 @@ func agentSetup(ctx context.Context, cmd *cli.Command, stdout io.Writer, stderr 
 	return nil
 }
 
-func sessionList(ctx context.Context, cmd *cli.Command, stdout io.Writer, stderr io.Writer) error {
+func sessionList(
+	ctx context.Context,
+	cmd *cli.Command,
+	stdout io.Writer,
+	stderr io.Writer,
+	diagnostics io.Writer,
+) error {
 	req, err := parseListSessionsRequest(cmd)
 	if err != nil {
 		return fmt.Errorf("parse session list request: %w", err)
@@ -462,7 +488,7 @@ func sessionList(ctx context.Context, cmd *cli.Command, stdout io.Writer, stderr
 	resp, err := sessionFacade.List(
 		runCtx,
 		req,
-		facade.WithVerboseWriter(verboseWriter(cmd, stderr)),
+		facade.WithVerboseWriter(verboseWriter(cmd, stderr, diagnostics)),
 	)
 	if err != nil {
 		return fmt.Errorf("list sessions: %w", err)
@@ -473,7 +499,13 @@ func sessionList(ctx context.Context, cmd *cli.Command, stdout io.Writer, stderr
 	return nil
 }
 
-func sessionGet(ctx context.Context, cmd *cli.Command, stdout io.Writer, stderr io.Writer) error {
+func sessionGet(
+	ctx context.Context,
+	cmd *cli.Command,
+	stdout io.Writer,
+	stderr io.Writer,
+	diagnostics io.Writer,
+) error {
 	req, err := parseGetSessionRequest(cmd)
 	if err != nil {
 		return fmt.Errorf("parse session get request: %w", err)
@@ -484,7 +516,11 @@ func sessionGet(ctx context.Context, cmd *cli.Command, stdout io.Writer, stderr 
 	}
 	defer closeStore(opened.Store)
 	sessionFacade := facade.NewSessionFacade(nil, opened.Store)
-	resp, err := sessionFacade.Get(ctx, req, facade.WithVerboseWriter(verboseWriter(cmd, stderr)))
+	resp, err := sessionFacade.Get(
+		ctx,
+		req,
+		facade.WithVerboseWriter(verboseWriter(cmd, stderr, diagnostics)),
+	)
 	if err != nil {
 		return fmt.Errorf("get session: %w", err)
 	}
@@ -504,6 +540,7 @@ func sessionMirror(
 	cmd *cli.Command,
 	stdout io.Writer,
 	stderr io.Writer,
+	diagnostics io.Writer,
 ) error {
 	req, err := parseMirrorSessionRequest(cmd)
 	if err != nil {
@@ -523,7 +560,7 @@ func sessionMirror(
 	resp, err := capsuleFacade.MirrorSession(
 		runCtx,
 		req,
-		facade.WithVerboseWriter(verboseWriter(cmd, stderr)),
+		facade.WithVerboseWriter(verboseWriter(cmd, stderr, diagnostics)),
 	)
 	if err != nil {
 		return fmt.Errorf("mirror session: %w", err)
@@ -539,6 +576,7 @@ func capsuleCreate(
 	cmd *cli.Command,
 	stdout io.Writer,
 	stderr io.Writer,
+	diagnostics io.Writer,
 ) error {
 	req, err := parseCreateCapsuleRequest(cmd)
 	if err != nil {
@@ -563,7 +601,7 @@ func capsuleCreate(
 	resp, err := capsuleFacade.Create(
 		runCtx,
 		req,
-		facade.WithVerboseWriter(verboseWriter(cmd, stderr)),
+		facade.WithVerboseWriter(verboseWriter(cmd, stderr, diagnostics)),
 	)
 	if err != nil {
 		return fmt.Errorf("create capsule: %w", err)
@@ -644,6 +682,7 @@ func capsuleInject(
 	cmd *cli.Command,
 	stdout io.Writer,
 	stderr io.Writer,
+	diagnostics io.Writer,
 ) error {
 	req, err := parseInjectCapsuleRequest(cmd)
 	if err != nil {
@@ -663,7 +702,7 @@ func capsuleInject(
 	resp, err := capsuleFacade.Inject(
 		runCtx,
 		req,
-		facade.WithVerboseWriter(verboseWriter(cmd, stderr)),
+		facade.WithVerboseWriter(verboseWriter(cmd, stderr, diagnostics)),
 	)
 	if err != nil {
 		return fmt.Errorf("inject capsule: %w", err)
@@ -1443,11 +1482,134 @@ func availability(available bool) string {
 	return "missing"
 }
 
-func verboseWriter(cmd *cli.Command, stderr io.Writer) io.Writer {
+type executionLogger struct {
+	file      *os.File
+	encoder   *json.Encoder
+	mu        sync.Mutex
+	startedAt time.Time
+	finished  bool
+}
+
+type diagnosticLogWriter struct {
+	logger *executionLogger
+}
+
+func openExecutionLogger(args []string) *executionLogger {
+	dir, err := executionLogDir()
+	if err != nil {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil
+	}
+	now := time.Now().UTC()
+	path := filepath.Join(
+		dir,
+		fmt.Sprintf("paxl-%s-%d.log", now.Format("20060102T150405.000000000Z"), os.Getpid()),
+	)
+	// The path is constructed from os.UserHomeDir plus paxl's fixed log directory.
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) // #nosec G304
+	if err != nil {
+		return nil
+	}
+	logger := &executionLogger{
+		file:      file,
+		encoder:   json.NewEncoder(file),
+		startedAt: now,
+	}
+	logger.write("command_start", map[string]any{
+		"args":    args,
+		"cwd":     currentWorkingDirectory(),
+		"version": version,
+		"commit":  buildCommit,
+	})
+	return logger
+}
+
+func executionLogDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".pax", "paxl", "logs"), nil
+}
+
+func diagnosticWriter(logger *executionLogger) io.Writer {
+	if logger == nil {
+		return nil
+	}
+	return &diagnosticLogWriter{logger: logger}
+}
+
+func (w *diagnosticLogWriter) Write(data []byte) (int, error) {
+	message := strings.TrimSpace(string(data))
+	if message != "" {
+		w.logger.write("diagnostic", map[string]any{"message": message})
+	}
+	return len(data), nil
+}
+
+func finishExecutionLog(logger *executionLogger, runErr error) {
+	if logger == nil {
+		return
+	}
+	fields := map[string]any{
+		"durationMs": time.Since(logger.startedAt).Milliseconds(),
+		"status":     "ok",
+	}
+	if runErr != nil {
+		fields["status"] = "error"
+		fields["error"] = runErr.Error()
+	}
+	logger.mu.Lock()
+	if logger.finished {
+		logger.mu.Unlock()
+		return
+	}
+	logger.finished = true
+	logger.mu.Unlock()
+	logger.write("command_finish", fields)
+}
+
+func closeExecutionLogger(logger *executionLogger) {
+	if logger == nil {
+		return
+	}
+	_ = logger.file.Close()
+}
+
+func (l *executionLogger) write(event string, fields map[string]any) {
+	if l == nil || l.encoder == nil {
+		return
+	}
+	record := map[string]any{
+		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
+		"event":     event,
+	}
+	for key, value := range fields {
+		record[key] = value
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_ = l.encoder.Encode(record)
+}
+
+func currentWorkingDirectory() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return cwd
+}
+
+func verboseWriter(cmd *cli.Command, stderr io.Writer, diagnostics io.Writer) io.Writer {
+	if cmd.Bool("verbose") && diagnostics != nil {
+		return io.MultiWriter(stderr, diagnostics)
+	}
 	if cmd.Bool("verbose") {
 		return stderr
 	}
-	return nil
+	return diagnostics
 }
 
 func closeStore(sessionStore *store.Store) {

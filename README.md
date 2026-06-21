@@ -64,6 +64,18 @@ paxl --db .local/paxl.sqlite session list
 
 If `--db` is omitted, `paxl` uses its default local database path.
 
+## Execution Logs
+
+Every `paxl` command writes a JSONL execution log under:
+
+```text
+~/.pax/paxl/logs/
+```
+
+Logs include command start and finish events, duration, errors, and buffered
+adapter diagnostics. Normal command output is unchanged; `--verbose` still
+controls whether delivery diagnostics are also printed to stderr.
+
 ## Common Workflows
 
 ### List Available Agents

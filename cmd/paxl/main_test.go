@@ -30,6 +30,41 @@ func TestCommandSuite(t *testing.T) {
 func (s *CommandSuite) SetupTest() {
 	s.stdout.Reset()
 	s.stderr.Reset()
+	s.T().Setenv("HOME", s.T().TempDir())
+}
+
+func (s *CommandSuite) TestRunWritesExecutionLogUnderPaxHome() {
+	home := s.T().TempDir()
+	s.T().Setenv("HOME", home)
+
+	err := run(context.Background(), []string{"version"}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	entries, err := os.ReadDir(filepath.Join(home, ".pax", "paxl", "logs"))
+	s.Require().NoError(err)
+	s.Len(entries, 1)
+	raw, err := os.ReadFile(filepath.Join(home, ".pax", "paxl", "logs", entries[0].Name()))
+	s.Require().NoError(err)
+	s.Contains(string(raw), `"event":"command_start"`)
+	s.Contains(string(raw), `"event":"command_finish"`)
+	s.Contains(string(raw), `"args":["version"]`)
+}
+
+func (s *CommandSuite) TestRunWritesCommandErrorsToExecutionLog() {
+	home := s.T().TempDir()
+	s.T().Setenv("HOME", home)
+
+	err := run(context.Background(), []string{"version", "--format", "xml"}, &s.stdout, &s.stderr)
+
+	s.Require().Error(err)
+	entries, err := os.ReadDir(filepath.Join(home, ".pax", "paxl", "logs"))
+	s.Require().NoError(err)
+	s.Len(entries, 1)
+	raw, err := os.ReadFile(filepath.Join(home, ".pax", "paxl", "logs", entries[0].Name()))
+	s.Require().NoError(err)
+	s.Contains(string(raw), `"event":"command_finish"`)
+	s.Contains(string(raw), `"status":"error"`)
+	s.Contains(string(raw), "unsupported format")
 }
 
 func (s *CommandSuite) TestAgentListUsesSingularCommandAndOnlyShowsSupportedAgents() {
