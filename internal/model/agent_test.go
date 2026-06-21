@@ -24,6 +24,7 @@ func (s *AgentSuite) TestParseAgentNameAcceptsSupportedAgents() {
 		{raw: "claude", want: model.AgentNameClaude},
 		{raw: "pi", want: model.AgentNamePi},
 		{raw: "kiro", want: model.AgentNameKiro},
+		{raw: "gemini", want: model.AgentNameGemini},
 	}
 
 	for _, tc := range cases {

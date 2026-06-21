@@ -113,6 +113,7 @@ func (s *CommandSuite) TestAgentListUsesSingularCommandAndOnlyShowsSupportedAgen
 	s.Contains(s.stdout.String(), "claude")
 	s.Contains(s.stdout.String(), "pi")
 	s.Contains(s.stdout.String(), "kiro")
+	s.Contains(s.stdout.String(), "gemini")
 	s.NotContains(s.stdout.String(), "qwen")
 	s.Empty(s.stderr.String())
 }
@@ -159,7 +160,7 @@ func (s *CommandSuite) TestAgentListRejectsUnknownFormatBeforeFacadeCall() {
 func (s *CommandSuite) TestAgentSetupDryRunUsesSingularCommand() {
 	err := run(
 		context.Background(),
-		[]string{"agent", "setup", "--agent", "codex,claude", "--dry-run"},
+		[]string{"agent", "setup", "--agent", "codex,claude,gemini", "--dry-run"},
 		&s.stdout,
 		&s.stderr,
 	)
@@ -167,6 +168,7 @@ func (s *CommandSuite) TestAgentSetupDryRunUsesSingularCommand() {
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), "npm install -g @openai/codex")
 	s.Contains(s.stdout.String(), "npm install -g @anthropic-ai/claude-code")
+	s.Contains(s.stdout.String(), "npm install -g @google/gemini-cli")
 }
 
 func (s *CommandSuite) TestAgentSetupSkipsInstallWhenCommandAlreadyExists() {
@@ -231,6 +233,7 @@ func (s *CommandSuite) TestAgentSetupDryRunDefaultsToSupportedAgents() {
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), "@openai/codex")
 	s.Contains(s.stdout.String(), "@anthropic-ai/claude-code")
+	s.Contains(s.stdout.String(), "@google/gemini-cli")
 }
 
 func (s *CommandSuite) TestAgentInstallCommandRejectsUnknownAgent() {
@@ -400,6 +403,38 @@ func (s *CommandSuite) TestSessionListSyncsKiroLocalSessionsToSQLite() {
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), `"id":"kiro:kiro-session"`)
 	s.Contains(s.stdout.String(), `"title":"Kiro session title"`)
+}
+
+func (s *CommandSuite) TestSessionListSyncsGeminiLocalSessionsToSQLite() {
+	geminiHome := s.T().TempDir()
+	sessionDir := filepath.Join(geminiHome, "tmp", "sample-project", "chats")
+	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(geminiHome, "tmp", "sample-project", ".project_root"),
+		[]byte("/tmp/project"),
+		0o600,
+	))
+	s.T().Setenv("GEMINI_HOME", geminiHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(sessionDir, "session-2026-06-20T05-31-gemini-session.jsonl"),
+		[]byte(
+			`{"sessionId":"gemini-session","projectHash":"sample-project","startTime":"2026-06-20T05:31:20.160Z","lastUpdated":"2026-06-20T05:32:20.160Z","kind":"main"}`+"\n"+
+				`{"$set":{"messages":[{"id":"u1","timestamp":"2026-06-20T05:31:30.160Z","type":"user","content":[{"text":"Gemini session title"}]}],"lastUpdated":"2026-06-20T05:32:20.160Z"}}`+"\n",
+		),
+		0o600,
+	))
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+
+	err := run(
+		context.Background(),
+		[]string{"--db", dbPath, "session", "list", "--agent", "gemini", "--format", "jsonl"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"id":"gemini:gemini-session"`)
+	s.Contains(s.stdout.String(), `"title":"Gemini session title"`)
 }
 
 func (s *CommandSuite) TestSessionListAcceptsCommaSeparatedAgents() {

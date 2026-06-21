@@ -4,7 +4,7 @@
 
 它适合在多个本地 coding agent 之间切换工作时使用。比如 Claude Code 额度用完了，
 你可以把当前 Claude session mirror 到 Codex，让 Codex 带着同一份本地上下文继续工作。
-同样的模式也可以用于 Pi 和 Kiro。
+同样的模式也可以用于 Pi、Kiro 和 Gemini。
 
 英文文档：[../README.md](../README.md)
 
@@ -26,6 +26,7 @@
 - `claude`：读取本地 Claude Code 日志，通过 Claude Code CLI 投递上下文。
 - `pi`：读取本地 Pi 日志，通过 Pi CLI 投递上下文。
 - `kiro`：读取本地 Kiro CLI 日志，通过 Kiro CLI 投递上下文。
+- `gemini`：读取本地 Gemini CLI 日志，通过 Gemini CLI 投递上下文。
 
 ## 安装
 
@@ -264,6 +265,11 @@ Kiro 投递：
 - 已有 session：`kiro-cli chat --resume-id <session-id> --no-interactive <message>`
 - 新 session：`kiro-cli chat --no-interactive <message>`
 
+Gemini 投递：
+
+- 已有 session：`gemini --resume <session-id> -p <message>`
+- 新 session：`gemini -p <message>`
+
 `paxl` 默认会缓冲子进程 stdout/stderr，避免污染命令输出。需要查看投递细节时使用
 `--verbose`。
 
@@ -285,7 +291,7 @@ CI 的 coverage 门槛是 80%。
 ## 当前状态
 
 `paxl` 还是早期 open-source CLI。架构上支持继续扩展更多 agent adapters，
-但目前内置支持的是 Codex 和 Claude。
+目前内置支持 Codex、Claude、Pi、Kiro 和 Gemini。
 
 ## 平台支持边界
 
@@ -294,9 +300,10 @@ CLI 架构和 SQLite 存储本身是跨平台 Go 代码，但当前内置 adapte
 
 当前支持边界：
 
-- macOS：已经用本地 Codex 和 Claude Code 日志验证过。
-- Linux：如果存在 `~/.codex/sessions`、`~/.claude/projects`，并且 `codex`、
-  `claude` 在 `PATH` 中，理论上和 macOS 很接近，但还需要真实环境验证。
+- macOS：已经用本地 Codex、Claude Code、Pi、Kiro CLI 和 Gemini CLI 日志形态验证过。
+- Linux：如果存在 `~/.codex/sessions`、`~/.claude/projects`、
+  `~/.pi/agent/sessions`、`~/.kiro/sessions`、`~/.gemini/tmp`，并且对应 CLI
+  在 `PATH` 中，理论上和 macOS 很接近，但还需要真实环境验证。
 - Windows：还没有充分验证。路径处理、Claude project 目录名解码、fake command
   测试方式、native CLI resume 行为都需要单独覆盖。
 

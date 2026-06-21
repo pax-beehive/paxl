@@ -276,3 +276,15 @@ func (s *LocalSessionsSuite) TestListKiroSessionsHonorsCanceledContext() {
 
 	s.ErrorIs(err, context.Canceled)
 }
+
+func (s *LocalSessionsSuite) TestListGeminiSessionsHonorsCanceledContext() {
+	geminiHome := s.T().TempDir()
+	s.Require().NoError(os.MkdirAll(filepath.Join(geminiHome, "tmp"), 0o700))
+	s.T().Setenv("GEMINI_HOME", geminiHome)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := listGeminiSessions(ctx, &ListSessionsRequest{})
+
+	s.ErrorIs(err, context.Canceled)
+}

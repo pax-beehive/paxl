@@ -27,11 +27,12 @@ func (s *RegistrySuite) TestDefaultRegistryContainsBuiltInAdapters() {
 	resp, err := registry.List(context.Background(), &adaptor.ListRequest{})
 	s.Require().NoError(err)
 
-	s.Len(resp.Agents, 4)
+	s.Len(resp.Agents, 5)
 	s.Equal(model.AgentNameCodex, resp.Agents[0].Name)
 	s.Equal(model.AgentNameClaude, resp.Agents[1].Name)
 	s.Equal(model.AgentNamePi, resp.Agents[2].Name)
 	s.Equal(model.AgentNameKiro, resp.Agents[3].Name)
+	s.Equal(model.AgentNameGemini, resp.Agents[4].Name)
 }
 
 func (s *RegistrySuite) TestListAcceptsVerboseWriterOption() {
@@ -45,7 +46,7 @@ func (s *RegistrySuite) TestListAcceptsVerboseWriterOption() {
 	)
 
 	s.Require().NoError(err)
-	s.Len(resp.Agents, 4)
+	s.Len(resp.Agents, 5)
 }
 
 func (s *RegistrySuite) TestLookupRejectsUnsupportedAgent() {
@@ -315,6 +316,124 @@ func (s *RegistrySuite) TestKiroAdapterGetsSessionThroughMetadataFallback() {
 	s.Equal("Hello Kiro", resp.Elements[0].ContentText)
 }
 
+func (s *RegistrySuite) TestGeminiAdapterListsSessionsThroughPublicInterface() {
+	geminiHome := s.T().TempDir()
+	sessionDir := filepath.Join(geminiHome, "tmp", "sample-project", "chats")
+	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(geminiHome, "tmp", "sample-project", ".project_root"),
+		[]byte("/tmp/project"),
+		0o600,
+	))
+	s.T().Setenv("GEMINI_HOME", geminiHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(sessionDir, "session-2026-06-20T05-31-gemini123.jsonl"),
+		[]byte(
+			`{"sessionId":"gemini-session","projectHash":"sample-project","startTime":"2026-06-20T05:31:20.160Z","lastUpdated":"2026-06-20T05:32:20.160Z","kind":"main"}`+"\n"+
+				`{"$set":{"messages":[{"id":"u1","timestamp":"2026-06-20T05:31:30.160Z","type":"user","content":[{"text":"Explain paxl"}]},{"id":"a1","timestamp":"2026-06-20T05:32:20.160Z","type":"gemini","content":[{"text":"paxl moves context."}]}],"lastUpdated":"2026-06-20T05:32:20.160Z"}}`+"\n",
+		),
+		0o600,
+	))
+
+	resp, err := adaptor.NewGeminiAdapter().ListSessions(
+		context.Background(),
+		&adaptor.ListSessionsRequest{},
+	)
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Sessions, 1)
+	s.Equal("gemini:gemini-session", resp.Sessions[0].ID)
+	s.Equal(model.AgentNameGemini, resp.Sessions[0].Agent)
+	s.Equal("Explain paxl", resp.Sessions[0].Title)
+	s.Equal("2026-06-20T05:32:20.160Z", resp.Sessions[0].UpdatedAt)
+	s.Equal("/tmp/project", resp.Sessions[0].ProjectID)
+}
+
+func (s *RegistrySuite) TestGeminiAdapterGetsJSONLSessionThroughPublicInterface() {
+	geminiHome := s.T().TempDir()
+	sessionDir := filepath.Join(geminiHome, "tmp", "sample-project", "chats")
+	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
+	s.T().Setenv("GEMINI_HOME", geminiHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(sessionDir, "session-2026-06-20T05-31-gemini-public.jsonl"),
+		[]byte(
+			`{"sessionId":"gemini-public","projectHash":"sample-project","startTime":"2026-06-20T05:31:20.160Z","lastUpdated":"2026-06-20T05:32:20.160Z","kind":"main"}`+"\n"+
+				`{"$set":{"messages":[{"id":"u1","timestamp":"2026-06-20T05:31:30.160Z","type":"user","content":[{"text":"Hello Gemini"}]},{"id":"a1","timestamp":"2026-06-20T05:32:20.160Z","type":"gemini","content":[{"text":"Hello back"}]}]}}`+"\n",
+		),
+		0o600,
+	))
+
+	resp, err := adaptor.NewGeminiAdapter().GetSession(
+		context.Background(),
+		&adaptor.GetSessionRequest{NativeID: "gemini-public"},
+	)
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Elements, 2)
+	s.Equal("user", resp.Elements[0].Role)
+	s.Equal("Hello Gemini", resp.Elements[0].ContentText)
+	s.Equal("assistant", resp.Elements[1].Role)
+	s.Equal("Hello back", resp.Elements[1].ContentText)
+}
+
+func (s *RegistrySuite) TestGeminiAdapterGetsImportedJSONLSession() {
+	geminiHome := s.T().TempDir()
+	sessionDir := filepath.Join(geminiHome, "tmp", "sample-project", "chats")
+	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
+	s.T().Setenv("GEMINI_HOME", geminiHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(sessionDir, "session-2026-06-20T05-31-gemini-import.jsonl"),
+		[]byte(
+			`{"sessionId":"gemini-import","projectHash":"sample-project","startTime":"2026-06-20T05:31:20.160Z","lastUpdated":"2026-06-20T05:32:20.160Z","kind":"main"}`+"\n"+
+				`{"id":"u1","timestamp":"2026-06-20T05:31:30.160Z","type":"user","content":"Hello import"}`+"\n"+
+				`{"id":"a1","timestamp":"2026-06-20T05:32:20.160Z","type":"gemini","content":"Imported reply"}`+"\n",
+		),
+		0o600,
+	))
+
+	resp, err := adaptor.NewGeminiAdapter().GetSession(
+		context.Background(),
+		&adaptor.GetSessionRequest{NativeID: "gemini-import"},
+	)
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Elements, 2)
+	s.Equal("Hello import", resp.Elements[0].ContentText)
+	s.Equal("Imported reply", resp.Elements[1].ContentText)
+	s.Contains(resp.Elements[1].RawJSON, `"type":"gemini"`)
+}
+
+func (s *RegistrySuite) TestGeminiAdapterGetsJSONSessionThroughPublicInterface() {
+	geminiHome := s.T().TempDir()
+	sessionDir := filepath.Join(geminiHome, "tmp", "sample-project", "chats")
+	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
+	s.T().Setenv("GEMINI_HOME", geminiHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(sessionDir, "session-2026-06-20T05-31-gemini-json.json"),
+		[]byte(`{
+			"sessionId":"gemini-json",
+			"projectHash":"sample-project",
+			"startTime":"2026-06-20T05:31:20.160Z",
+			"lastUpdated":"2026-06-20T05:32:20.160Z",
+			"messages":[
+				{"id":"u1","timestamp":"2026-06-20T05:31:30.160Z","type":"user","content":[{"text":"Hello JSON"}]},
+				{"id":"a1","timestamp":"2026-06-20T05:32:20.160Z","type":"gemini","content":[{"text":"JSON reply"}]}
+			]
+		}`),
+		0o600,
+	))
+
+	resp, err := adaptor.NewGeminiAdapter().GetSession(
+		context.Background(),
+		&adaptor.GetSessionRequest{NativeID: "gemini-json"},
+	)
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Elements, 2)
+	s.Equal("Hello JSON", resp.Elements[0].ContentText)
+	s.Equal("JSON reply", resp.Elements[1].ContentText)
+}
+
 func (s *RegistrySuite) TestCodexAdapterGetSessionRequiresNativeID() {
 	_, err := adaptor.NewCodexAdapter().GetSession(
 		context.Background(),
@@ -405,6 +524,26 @@ func (s *RegistrySuite) TestKiroAdapterPromptsThroughCLIResume() {
 	s.Equal("chat\n--resume-id\nkiro-public\n--no-interactive\nhandoff text\n", string(rawArgs))
 }
 
+func (s *RegistrySuite) TestGeminiAdapterPromptsThroughCLIResume() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	argsPath := filepath.Join(s.T().TempDir(), "args.txt")
+	s.installArgCapturingFakeCommand("gemini", capturePath, argsPath)
+
+	resp, err := adaptor.NewGeminiAdapter().Prompt(
+		context.Background(),
+		&adaptor.PromptRequest{NativeID: "gemini-public", Text: "handoff text"},
+	)
+
+	s.Require().NoError(err)
+	s.NotNil(resp)
+	rawArgs, err := os.ReadFile(argsPath)
+	s.Require().NoError(err)
+	s.Equal("--resume\ngemini-public\n-p\nhandoff text\n", string(rawArgs))
+}
+
 func (s *RegistrySuite) TestAdapterPromptWritesBufferedOutputWhenVerbose() {
 	if runtime.GOOS == "windows" {
 		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
@@ -487,6 +626,26 @@ func (s *RegistrySuite) TestKiroAdapterStartsSessionThroughCLI() {
 	s.Equal("chat\n--no-interactive\nnew handoff\n", string(rawArgs))
 }
 
+func (s *RegistrySuite) TestGeminiAdapterStartsSessionThroughCLI() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	argsPath := filepath.Join(s.T().TempDir(), "args.txt")
+	s.installArgCapturingFakeCommand("gemini", capturePath, argsPath)
+
+	resp, err := adaptor.NewGeminiAdapter().StartSession(
+		context.Background(),
+		&adaptor.StartSessionRequest{Text: "new handoff"},
+	)
+
+	s.Require().NoError(err)
+	s.NotNil(resp)
+	rawArgs, err := os.ReadFile(argsPath)
+	s.Require().NoError(err)
+	s.Equal("-p\nnew handoff\n", string(rawArgs))
+}
+
 func (s *RegistrySuite) TestAdapterPromptRequiresNativeIDAndText() {
 	cases := []struct {
 		name    string
@@ -512,6 +671,11 @@ func (s *RegistrySuite) TestAdapterPromptRequiresNativeIDAndText() {
 			name:    "kiro",
 			adapter: adaptor.NewKiroAdapter(),
 			req:     &adaptor.PromptRequest{NativeID: "session"},
+		},
+		{
+			name:    "gemini",
+			adapter: adaptor.NewGeminiAdapter(),
+			req:     &adaptor.PromptRequest{Text: "handoff"},
 		},
 	}
 
@@ -543,6 +707,11 @@ func (s *RegistrySuite) TestAdapterStartSessionRequiresText() {
 		{
 			name:    "kiro empty",
 			adapter: adaptor.NewKiroAdapter(),
+			req:     &adaptor.StartSessionRequest{},
+		},
+		{
+			name:    "gemini empty",
+			adapter: adaptor.NewGeminiAdapter(),
 			req:     &adaptor.StartSessionRequest{},
 		},
 	}

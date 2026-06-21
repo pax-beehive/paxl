@@ -6,8 +6,8 @@ session context.
 It is useful when you work across multiple local coding agents and need a
 practical way to keep context moving without manually copying long transcripts.
 For example, if your Claude Code quota is exhausted, you can mirror the current
-Claude session into Codex, Pi, or Kiro so another local agent can continue from
-the same context.
+Claude session into Codex, Pi, Kiro, or Gemini so another local agent can
+continue from the same context.
 
 Chinese documentation: [doc/README_cn.md](doc/README_cn.md)
 
@@ -29,6 +29,7 @@ Current built-in agents:
 - `claude`: local Claude Code logs plus Claude Code CLI delivery.
 - `pi`: local Pi logs plus Pi CLI delivery.
 - `kiro`: local Kiro CLI logs plus Kiro CLI delivery.
+- `gemini`: local Gemini CLI logs plus Gemini CLI delivery.
 
 ## Install
 
@@ -276,6 +277,11 @@ Kiro delivery:
 - Existing session: `kiro-cli chat --resume-id <session-id> --no-interactive <message>`
 - New session: `kiro-cli chat --no-interactive <message>`
 
+Gemini delivery:
+
+- Existing session: `gemini --resume <session-id> -p <message>`
+- New session: `gemini -p <message>`
+
 `paxl` buffers child process output by default. Use `--verbose` when you want
 delivery details.
 
@@ -297,7 +303,7 @@ The CI coverage gate is 80%.
 ## Status
 
 `paxl` is an early open-source CLI. The architecture is designed for more agent
-adapters. Codex, Claude, Pi, and Kiro are built in today.
+adapters. Codex, Claude, Pi, Kiro, and Gemini are built in today.
 
 ## Platform Support
 
@@ -306,10 +312,12 @@ built-in adapters depend on local agent log locations and native CLIs.
 
 Current support boundary:
 
-- macOS: verified with local Codex, Claude Code, Pi, and Kiro CLI log shapes.
+- macOS: verified with local Codex, Claude Code, Pi, Kiro CLI, and Gemini CLI
+  log shapes.
 - Linux: expected to be close to macOS if `~/.codex/sessions`,
-  `~/.claude/projects`, `~/.pi/agent/sessions`, `~/.kiro/sessions`, and the
-  matching CLIs are available, but it still needs real-world validation.
+  `~/.claude/projects`, `~/.pi/agent/sessions`, `~/.kiro/sessions`,
+  `~/.gemini/tmp`, and the matching CLIs are available, but it still needs
+  real-world validation.
 - Windows: not fully validated. Path handling, Claude project directory
   decoding, fake-command tests, and native CLI resume behavior need dedicated
   Windows coverage.
