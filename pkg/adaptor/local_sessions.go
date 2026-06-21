@@ -57,6 +57,7 @@ func isNoisyTitleText(value string) bool {
 	trimmed := strings.TrimSpace(value)
 	lower := strings.ToLower(trimmed)
 	return strings.HasPrefix(lower, "<local-command-caveat>") ||
+		strings.HasPrefix(lower, "<session_context>") ||
 		strings.HasPrefix(lower, "system_handoff") ||
 		strings.HasPrefix(lower, "<environment_context>") ||
 		strings.HasPrefix(

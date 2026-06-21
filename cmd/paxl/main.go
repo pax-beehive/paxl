@@ -130,7 +130,7 @@ func newAgentCommand(
 				Flags: []cli.Flag{
 					&cli.StringFlag{
 						Name:  "agent",
-						Usage: "Comma-separated agents to install: codex or claude",
+						Usage: "Comma-separated agents to install: codex, claude, or gemini",
 					},
 					&cli.BoolFlag{
 						Name:  "dry-run",
@@ -156,7 +156,7 @@ func newSessionCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 				Flags: []cli.Flag{
 					&cli.StringFlag{
 						Name:  "agent",
-						Usage: "Agent to scan: codex, claude, pi, or kiro",
+						Usage: "Agent to scan: codex, claude, pi, kiro, or gemini",
 					},
 					&cli.StringFlag{
 						Name:  "updated-since",
@@ -953,7 +953,11 @@ func parseListAgentsRequest(cmd *cli.Command) (*facade.ListAgentsRequest, error)
 func parseAgentSelection(raw string) ([]model.AgentName, error) {
 	values := parseCSV(raw)
 	if len(values) == 0 {
-		return []model.AgentName{model.AgentNameCodex, model.AgentNameClaude}, nil
+		return []model.AgentName{
+			model.AgentNameCodex,
+			model.AgentNameClaude,
+			model.AgentNameGemini,
+		}, nil
 	}
 	agents := make([]model.AgentName, 0, len(values))
 	for _, value := range values {
@@ -1015,6 +1019,8 @@ func agentInstallCommand(agent model.AgentName) ([]string, error) {
 		return []string{"npm", "install", "-g", "@openai/codex"}, nil
 	case model.AgentNameClaude:
 		return []string{"npm", "install", "-g", "@anthropic-ai/claude-code"}, nil
+	case model.AgentNameGemini:
+		return []string{"npm", "install", "-g", "@google/gemini-cli"}, nil
 	case model.AgentNamePi, model.AgentNameKiro:
 		return nil, fmt.Errorf("%s install is not managed by paxl setup", agent)
 	case model.AgentNameUnknown:
