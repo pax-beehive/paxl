@@ -302,7 +302,11 @@ func readCodexRollouts(
 			session = &model.Session{ID: id, Agent: model.AgentNameCodex, NativeID: meta.Payload.ID}
 		}
 		if session.Title == "" {
-			session.Title = firstNonEmpty(readCodexTitle(path), entry.Name())
+			session.Title = firstNonEmpty(
+				readCodexTitle(path),
+				sessionProjectTitle(meta.Payload.CWD),
+				meta.Payload.ID,
+			)
 		}
 		if session.UpdatedAt == "" {
 			session.UpdatedAt = meta.Payload.Timestamp

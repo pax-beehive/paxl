@@ -95,6 +95,30 @@ func (s *LocalSessionsSuite) TestListCodexSessionsPrefersStructuredUserMessageEv
 	s.Equal("Use a structured source for Codex titles.", resp.Sessions[0].Title)
 }
 
+func (s *LocalSessionsSuite) TestListCodexSessionsUsesProjectNameInsteadOfRolloutFileName() {
+	codexHome := s.T().TempDir()
+	s.T().Setenv("CODEX_HOME", codexHome)
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(
+			rolloutDir,
+			"rollout-2026-06-20T18-05-45-019ee7b6-5192-7393-9ba9-968eeedf4760.jsonl",
+		),
+		[]byte(
+			`{"type":"session_meta","payload":{"id":"019ee7b6-5192-7393-9ba9-968eeedf4760","timestamp":"2026-06-21T01:05:45.925Z","cwd":"/tmp/paxl"}}`+"\n"+
+				`{"timestamp":"2026-06-21T01:05:45.925Z","type":"event_msg","payload":{"type":"user_message","message":"The following is the Codex agent history added since your last approval assessment. Continue the same review conversation.","images":[],"local_images":[],"text_elements":[]}}`+"\n",
+		),
+		0o600,
+	))
+
+	resp, err := listCodexSessions(context.Background(), &ListSessionsRequest{})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Sessions, 1)
+	s.Equal("paxl", resp.Sessions[0].Title)
+}
+
 func (s *LocalSessionsSuite) TestListClaudeSessionsReadsProjectLogs() {
 	claudeHome := s.T().TempDir()
 	projectDir := filepath.Join(claudeHome, "projects", "sample")

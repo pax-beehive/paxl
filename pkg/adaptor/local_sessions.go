@@ -2,6 +2,7 @@ package adaptor
 
 import (
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -95,6 +96,14 @@ func trimOneLine(value string, limit int) string {
 		return value
 	}
 	return string([]rune(value)[:limit])
+}
+
+func sessionProjectTitle(projectRoot string) string {
+	projectRoot = strings.TrimSpace(projectRoot)
+	if projectRoot == "" {
+		return ""
+	}
+	return filepath.Base(projectRoot)
 }
 
 func closeFile(file *os.File) {
