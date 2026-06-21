@@ -158,7 +158,7 @@ func (c *codexAppServerClient) deliver(threadID string, text string) (string, er
 		return "", err
 	}
 	if activeTurnID := activeCodexTurnID(resumeResult); activeTurnID != "" {
-		if err := c.send(&codexAppServerRequest{
+		steerErr := c.send(&codexAppServerRequest{
 			JSONRPC: "2.0",
 			ID:      3,
 			Method:  "turn/steer",
@@ -170,17 +170,26 @@ func (c *codexAppServerClient) deliver(threadID string, text string) (string, er
 					{"type": "text", "text": text},
 				},
 			},
-		}); err != nil {
-			return "", err
+		})
+		if steerErr == nil {
+			steerErr = c.waitForResponse(3)
 		}
-		if err := c.waitForResponse(3); err != nil {
-			return "", err
+		if steerErr == nil {
+			return codexAppServerSteerDeliveryMethod, nil
 		}
-		return codexAppServerSteerDeliveryMethod, nil
+		return c.startTurn(threadID, text, 4)
 	}
+	return c.startTurn(threadID, text, 3)
+}
+
+func (c *codexAppServerClient) startTurn(
+	threadID string,
+	text string,
+	requestID int,
+) (string, error) {
 	if err := c.send(&codexAppServerRequest{
 		JSONRPC: "2.0",
-		ID:      3,
+		ID:      requestID,
 		Method:  "turn/start",
 		Params: map[string]interface{}{
 			"threadId": threadID,
@@ -191,7 +200,7 @@ func (c *codexAppServerClient) deliver(threadID string, text string) (string, er
 	}); err != nil {
 		return "", err
 	}
-	return codexAppServerTurnDeliveryMethod, c.waitForTurnCompletion(3)
+	return codexAppServerTurnDeliveryMethod, c.waitForTurnCompletion(requestID)
 }
 
 func activeCodexTurnID(raw json.RawMessage) string {
