@@ -279,10 +279,20 @@ target node、target agent 和 target session；这些 metadata 会出现在 JSO
 paxl capsule create claude:<session-id> --keyword "release plan"
 ```
 
-改用本地 transcript 提取：
+本地 transcript 提取是离线 fallback。它保存匹配到的原文行，不会让源 agent 总结：
 
 ```sh
 paxl capsule create codex:<session-id> --keyword "sqlite schema" --local
+```
+
+如果要转发一条已经整理好的需求，可以直接从文件创建 capsule：
+
+```sh
+paxl capsule create codex:<session-id> \
+  --keyword "installer hosting" \
+  --title "paxl installer hosting" \
+  --summary "Installer upload and hosting requirement." \
+  --content-file capsule.md
 ```
 
 列出和查看 capsules：
@@ -314,7 +324,8 @@ paxl capsule archive <capsule-id>
 
 Codex 投递：
 
-- Codex App/Desktop 已有 session：`codex app-server` 的 `thread/resume` + `turn/start`
+- Codex App/Desktop 已有 session：`codex app-server` 的 `thread/resume` 后优先
+  `turn/steer`；没有可 steer 的 active turn 时回退到 `turn/start`
 - 其他已有 session 或 app-server 失败回退：`codex exec resume --all <session-id> -`
 - 新 session：`codex exec -`
 

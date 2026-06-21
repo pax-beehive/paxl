@@ -139,6 +139,22 @@ func (s *CapsuleFacadeSuite) TestCreateSourceGenerationAcceptsModelRole() {
 	s.Contains(resp.Capsule.Content, "Generated bridge content")
 }
 
+func (s *CapsuleFacadeSuite) TestCreateSourceGenerationUsesLatestAgentResult() {
+	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
+	rolloutPath := s.seedCodexRollout()
+	s.installFakeCodexTwoCapsuleGenerator(rolloutPath)
+
+	resp, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
+		SourceSessionID: "codex:sess",
+		Keyword:         "bridge",
+	})
+
+	s.Require().NoError(err)
+	s.Equal("Fresh bridge", resp.Capsule.Title)
+	s.Contains(resp.Capsule.Content, "Fresh generated bridge content")
+	s.NotContains(resp.Capsule.Content, "Stale generated bridge content")
+}
+
 func (s *CapsuleFacadeSuite) TestCreateSourceGenerationFailsWhenMarkersAreMissing() {
 	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
 	s.seedCodexRollout()
@@ -554,6 +570,18 @@ func (s *CapsuleFacadeSuite) installFakeCodexCapsuleGenerator(rolloutPath string
 
 func (s *CapsuleFacadeSuite) installFakeCodexModelCapsuleGenerator(rolloutPath string) {
 	s.installFakeCodexRoleCapsuleGenerator(rolloutPath, "model")
+}
+
+func (s *CapsuleFacadeSuite) installFakeCodexTwoCapsuleGenerator(rolloutPath string) {
+	binDir := s.T().TempDir()
+	fakePath := filepath.Join(binDir, "codex")
+	script := "#!/bin/sh\n" +
+		"prompt=$(cat)\n" +
+		"capsule_id=$(printf '%s\\n' \"$prompt\" | sed -n 's/^Capsule id: //p' | head -n 1)\n" +
+		"printf '%s\\n' \"{\\\"timestamp\\\":\\\"2026-06-20T01:03:00Z\\\",\\\"type\\\":\\\"response_item\\\",\\\"payload\\\":{\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"content\\\":[{\\\"type\\\":\\\"output_text\\\",\\\"text\\\":\\\"PAX_KNOWLEDGE_CAPSULE_START ${capsule_id}\\\\n{\\\\\\\"title\\\\\\\":\\\\\\\"Stale bridge\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Stale summary\\\\\\\",\\\\\\\"content\\\\\\\":\\\\\\\"Stale generated bridge content\\\\\\\"}\\\\nPAX_KNOWLEDGE_CAPSULE_END ${capsule_id}\\\"}]}}\" >> \"" + rolloutPath + "\"\n" +
+		"printf '%s\\n' \"{\\\"timestamp\\\":\\\"2026-06-20T01:04:00Z\\\",\\\"type\\\":\\\"response_item\\\",\\\"payload\\\":{\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"content\\\":[{\\\"type\\\":\\\"output_text\\\",\\\"text\\\":\\\"PAX_KNOWLEDGE_CAPSULE_START ${capsule_id}\\\\n{\\\\\\\"title\\\\\\\":\\\\\\\"Fresh bridge\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Fresh summary\\\\\\\",\\\\\\\"content\\\\\\\":\\\\\\\"Fresh generated bridge content\\\\\\\"}\\\\nPAX_KNOWLEDGE_CAPSULE_END ${capsule_id}\\\"}]}}\" >> \"" + rolloutPath + "\"\n"
+	s.Require().NoError(os.WriteFile(fakePath, []byte(script), 0o700))
+	s.T().Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 func (s *CapsuleFacadeSuite) installFakeCodexRoleCapsuleGenerator(rolloutPath string, role string) {

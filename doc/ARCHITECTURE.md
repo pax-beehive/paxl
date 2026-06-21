@@ -117,7 +117,8 @@ Current delivery commands:
 
 ```text
 Codex App/Desktop existing session:
-                        codex app-server thread/resume + turn/start
+                        codex app-server thread/resume + turn/steer when an
+                        active turn is steerable, otherwise turn/start
 Codex other existing session or app-server fallback:
                         codex exec resume --all <session-id> -
 Codex new session:      codex exec -
@@ -191,7 +192,10 @@ Knowledge capsules are reusable handoff artifacts.
 Unlike `session mirror`, capsule creation is keyword-driven:
 
 - Default mode asks the source agent to generate a portable capsule.
-- `--local` mode extracts matching local transcript lines.
+- `--local` mode extracts matching raw local transcript lines as an offline
+  fallback.
+- `--content-file` creates a capsule from prepared operator-written content
+  instead of prompting the source agent or extracting transcript lines.
 - Capsules store source node, source agent, and source session metadata.
 - Injections store target node, target agent, and target session metadata.
 - Capsules are stored in SQLite.
@@ -204,6 +208,7 @@ capsule create
   -> facade resolves source session, loading local logs on cache miss
   -> default: adapter prompts source agent to generate marked JSON
   -> local: facade extracts matching local transcript context
+  -> content-file: facade stores prepared content with source metadata
   -> store writes capsule
 
 capsule inject
