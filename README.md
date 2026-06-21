@@ -112,6 +112,19 @@ repository. The report prints surviving mutations and a mutation score. Use it
 when deciding whether a high-coverage area is actually asserting important
 behavior.
 
+Cognitive complexity is available through
+[`gocognit`](https://github.com/uudashr/gocognit), also pinned as a Go tool
+dependency:
+
+```sh
+make cognitive-complexity
+make cognitive-complexity COGNITIVE_TARGETS=./pkg/adaptor COGNITIVE_TOP=10
+```
+
+The default report prints the top 20 production functions and the repository
+average. Use it alongside cyclomatic complexity when deciding whether a function
+is hard to reason about.
+
 ## Common Workflows
 
 ### List Available Agents

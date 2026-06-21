@@ -27,6 +27,7 @@ require (
 	github.com/schollz/progressbar/v3 v3.14.2 // indirect
 	github.com/termie/go-shutil v0.0.0-20140729215957-bcacb06fecae // indirect
 	github.com/ulikunitz/xz v0.5.11 // indirect
+	github.com/uudashr/gocognit v1.2.1 // indirect
 	github.com/zimmski/osutil v1.6.1 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/term v0.17.0 // indirect
@@ -37,4 +38,7 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-tool github.com/avito-tech/go-mutesting/cmd/go-mutesting
+tool (
+	github.com/avito-tech/go-mutesting/cmd/go-mutesting
+	github.com/uudashr/gocognit/cmd/gocognit
+)

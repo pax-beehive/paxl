@@ -104,6 +104,17 @@ make mutation-test MUTATION_TARGETS=./internal/facade MUTATION_TIMEOUT=60
 对整个仓库做 mutation testing。报告会输出 surviving mutations 和 mutation score。
 它适合用来判断高覆盖率区域是否真的断言了关键行为。
 
+Cognitive complexity 通过 [`gocognit`](https://github.com/uudashr/gocognit)
+统计，也已经固定为 Go tool dependency：
+
+```sh
+make cognitive-complexity
+make cognitive-complexity COGNITIVE_TARGETS=./pkg/adaptor COGNITIVE_TOP=10
+```
+
+默认报告会输出生产代码里 cognitive complexity 最高的 20 个函数，以及仓库平均值。
+它适合和 cyclomatic complexity 一起判断某个函数是否难以理解。
+
 ## 常用工作流
 
 ### 查看可用 agents

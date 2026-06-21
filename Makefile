@@ -15,11 +15,14 @@ COVERAGE_MIN ?= 80
 MUTATION_TARGETS ?= ./internal/model/store
 MUTATION_TIMEOUT ?= 30
 MUTATION_FLAGS ?=
+COGNITIVE_TARGETS ?= .
+COGNITIVE_TOP ?= 20
+COGNITIVE_FLAGS ?= -top $(COGNITIVE_TOP) -avg
 
 GO_PACKAGES := ./...
 GO_FILES := $(shell find . -type f -name '*.go' -not -path './vendor/*')
 
-.PHONY: lint format format-check test test-cover branch-cover branch-cover-install mutation-test mock gen
+.PHONY: lint format format-check test test-cover branch-cover branch-cover-install mutation-test cognitive-complexity mock gen
 
 lint:
 	GOLANGCI_LINT_CACHE=$(GOLANGCI_LINT_CACHE) GOCACHE=$(GOCACHE) $(GOLANGCI_LINT) run $(GO_PACKAGES)
@@ -84,6 +87,9 @@ branch-cover-install:
 
 mutation-test:
 	GOCACHE=$(GOCACHE) $(GO) tool go-mutesting --exec-timeout=$(MUTATION_TIMEOUT) $(MUTATION_FLAGS) $(MUTATION_TARGETS)
+
+cognitive-complexity:
+	GOCACHE=$(GOCACHE) $(GO) tool gocognit $(COGNITIVE_FLAGS) $(COGNITIVE_TARGETS)
 
 mock:
 	GOCACHE=$(GOCACHE) $(MOCKERY) --config .mockery.yaml
