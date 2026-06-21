@@ -33,6 +33,9 @@ type CreateCapsuleRequest struct {
 	SourceSessionID string
 	Agent           model.AgentName
 	Keyword         string
+	Title           string
+	Summary         string
+	Content         string
 	Local           bool
 }
 
@@ -122,12 +125,18 @@ func (f *CapsuleFacade) Create(
 	option := applyOptions(opts)
 	var capsule *model.KnowledgeCapsule
 	var err error
-	if !req.Local {
+	switch {
+	case strings.TrimSpace(req.Content) != "":
+		capsule, err = f.buildProvidedCapsule(ctx, req, option)
+		if err != nil {
+			return nil, fmt.Errorf("build provided capsule: %w", err)
+		}
+	case !req.Local:
 		capsule, err = f.buildSourceGeneratedCapsule(ctx, req, option)
 		if err != nil {
 			return nil, fmt.Errorf("build source-generated capsule: %w", err)
 		}
-	} else {
+	default:
 		capsule, err = f.buildLocalCapsule(ctx, req, option)
 		if err != nil {
 			return nil, fmt.Errorf("build local capsule: %w", err)
@@ -471,6 +480,54 @@ func (f *CapsuleFacade) buildLocalCapsule(
 		Status:                 "active",
 		Truncated:              truncated,
 		OriginalEstimatedChars: int64(originalChars),
+		CreatedAt:              time.Now().UTC().Format(time.RFC3339),
+	}, nil
+}
+
+func (f *CapsuleFacade) buildProvidedCapsule(
+	ctx context.Context,
+	req *CreateCapsuleRequest,
+	option *Option,
+) (*model.KnowledgeCapsule, error) {
+	if strings.TrimSpace(req.Keyword) == "" {
+		return nil, fmt.Errorf("keyword is required")
+	}
+	content := strings.TrimSpace(req.Content)
+	if content == "" {
+		return nil, fmt.Errorf("content is required")
+	}
+	session, err := f.session.Get(ctx, &GetSessionRequest{
+		ID:    req.SourceSessionID,
+		Agent: req.Agent,
+	}, func(next *Option) {
+		next.VerboseWriter = option.VerboseWriter
+	})
+	if err != nil {
+		return nil, fmt.Errorf("load source session: %w", err)
+	}
+	capsuleID, err := newLocalID("kcap")
+	if err != nil {
+		return nil, fmt.Errorf("create capsule id: %w", err)
+	}
+	truncatedContent := truncateString(content, knowledgeContentLimit)
+	return &model.KnowledgeCapsule{
+		CapsuleID:       capsuleID,
+		SourceNodeID:    localNodeID(),
+		SourceSessionID: session.Session.ID,
+		SourceAgent:     session.Session.Agent,
+		Keyword:         req.Keyword,
+		Title: truncateString(
+			firstNonEmpty(strings.TrimSpace(req.Title), "Knowledge capsule: "+req.Keyword),
+			knowledgeTitleLimit,
+		),
+		Summary: truncateString(
+			firstNonEmpty(strings.TrimSpace(req.Summary), providedCapsuleSummary(req.Keyword)),
+			knowledgeSummaryLimit,
+		),
+		Content:                truncatedContent,
+		Status:                 "active",
+		Truncated:              len([]rune(truncatedContent)) < len([]rune(content)),
+		OriginalEstimatedChars: int64(len(content)),
 		CreatedAt:              time.Now().UTC().Format(time.RFC3339),
 	}, nil
 }
@@ -838,7 +895,8 @@ func parseGeneratedKnowledgeCapsule(
 ) (*model.KnowledgeCapsule, bool, error) {
 	start := "PAX_KNOWLEDGE_CAPSULE_START " + capsuleID
 	end := "PAX_KNOWLEDGE_CAPSULE_END " + capsuleID
-	for _, element := range elements {
+	for index := len(elements) - 1; index >= 0; index-- {
+		element := elements[index]
 		// The generation prompt includes example markers, so only agent-authored output can count.
 		if element == nil || !isAssistantLikeRole(element.Role) {
 			continue
@@ -936,6 +994,10 @@ func localCapsuleSummary(keyword string, sessionID string) string {
 		keyword,
 		sessionID,
 	)
+}
+
+func providedCapsuleSummary(keyword string) string {
+	return fmt.Sprintf("Provided reusable knowledge related to %q.", keyword)
 }
 
 func sessionMirrorSummary(sessionID string) string {

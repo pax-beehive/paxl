@@ -671,6 +671,36 @@ func (s *CommandSuite) TestCapsuleLocalLifecycleUsesSingularCommands() {
 	s.Contains(s.stdout.String(), "Archived "+capsuleID)
 }
 
+func (s *CommandSuite) TestCapsuleCreateSupportsContentFile() {
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+	contentPath := filepath.Join(s.T().TempDir(), "capsule.md")
+	s.Require().NoError(os.WriteFile(
+		contentPath,
+		[]byte("The paxl installer should be uploaded and hosted at GCS."),
+		0o600,
+	))
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"capsule", "create", "codex:sess-1",
+			"--keyword", "installer hosting",
+			"--title", "paxl installer hosting",
+			"--summary", "Installer upload and hosting requirement.",
+			"--content-file", contentPath,
+			"--format", "jsonl",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"title":"paxl installer hosting"`)
+	s.Contains(s.stdout.String(), "The paxl installer should be uploaded and hosted at GCS.")
+	s.NotContains(s.stdout.String(), "Bridge context")
+}
+
 func (s *CommandSuite) TestCapsuleCreateUsesSourceAgentGenerationByDefault() {
 	if runtime.GOOS == "windows" {
 		s.T().Skip("The fake CLI script uses POSIX shell syntax.")

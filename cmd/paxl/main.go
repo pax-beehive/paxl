@@ -251,6 +251,18 @@ func newCapsuleCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 						Usage: "Keyword to extract from the source session",
 					},
 					&cli.StringFlag{
+						Name:  "title",
+						Usage: "Title for a capsule created from provided content",
+					},
+					&cli.StringFlag{
+						Name:  "summary",
+						Usage: "Summary for a capsule created from provided content",
+					},
+					&cli.StringFlag{
+						Name:  "content-file",
+						Usage: "Create the capsule from this file instead of prompting the source agent",
+					},
+					&cli.StringFlag{
 						Name:  "format",
 						Value: "table",
 						Usage: "Output format: table or jsonl",
@@ -841,10 +853,20 @@ func parseCreateCapsuleRequest(cmd *cli.Command) (*facade.CreateCapsuleRequest, 
 	if sourceID == "" {
 		return nil, fmt.Errorf("source session id is required")
 	}
+	content, err := readCapsuleContentFile(cmd.String("content-file"))
+	if err != nil {
+		return nil, err
+	}
 	req := &facade.CreateCapsuleRequest{
 		SourceSessionID: sourceID,
 		Keyword:         strings.TrimSpace(cmd.String("keyword")),
+		Title:           strings.TrimSpace(cmd.String("title")),
+		Summary:         strings.TrimSpace(cmd.String("summary")),
+		Content:         content,
 		Local:           cmd.Bool("local"),
+	}
+	if req.Content != "" && req.Local {
+		return nil, fmt.Errorf("content-file cannot be used with local extraction")
 	}
 	if rawAgent := strings.TrimSpace(cmd.String("agent")); rawAgent != "" {
 		agent, err := model.ParseAgentName(rawAgent)
@@ -862,6 +884,21 @@ func parseCreateCapsuleRequest(cmd *cli.Command) (*facade.CreateCapsuleRequest, 
 	default:
 		return nil, fmt.Errorf("unsupported format %q", cmd.String("format"))
 	}
+}
+
+func readCapsuleContentFile(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", nil
+	}
+	content, err := os.ReadFile(path) // #nosec G304
+	if err != nil {
+		return "", fmt.Errorf("read content file: %w", err)
+	}
+	if strings.TrimSpace(string(content)) == "" {
+		return "", fmt.Errorf("content file is empty")
+	}
+	return string(content), nil
 }
 
 func parseListCapsulesRequest(cmd *cli.Command) (*facade.ListCapsulesRequest, error) {

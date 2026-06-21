@@ -267,7 +267,7 @@ func piRootNoError() string {
 func piMessageText(message *piMessage) string {
 	parts := make([]string, 0, len(message.Content))
 	for _, block := range message.Content {
-		text := firstNonEmpty(block.Text, block.Thinking, block.Name)
+		text := firstNonEmpty(block.Text, block.Name)
 		if text != "" {
 			parts = append(parts, text)
 		}

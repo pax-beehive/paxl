@@ -188,7 +188,7 @@ func (s *RegistrySuite) TestPiAdapterGetsSessionThroughPublicInterface() {
 		[]byte(
 			`{"type":"session","version":3,"id":"pi-public","timestamp":"2026-06-20T23:40:48.559Z","cwd":"/tmp/project"}`+"\n"+
 				`{"type":"message","id":"msg-user","timestamp":"2026-06-20T23:41:55.752Z","message":{"role":"user","content":[{"type":"text","text":"Hello Pi"}]}}`+"\n"+
-				`{"type":"message","id":"msg-assistant","timestamp":"2026-06-20T23:41:58.700Z","message":{"role":"assistant","content":[{"type":"text","text":"Hello from Pi"}],"model":"z-ai/glm-5.2"}}`+"\n",
+				`{"type":"message","id":"msg-assistant","timestamp":"2026-06-20T23:41:58.700Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Private reasoning should stay out of portable context."},{"type":"text","text":"Hello from Pi"}],"model":"z-ai/glm-5.2"}}`+"\n",
 		),
 		0o600,
 	))
@@ -203,6 +203,7 @@ func (s *RegistrySuite) TestPiAdapterGetsSessionThroughPublicInterface() {
 	s.Equal("Hello Pi", resp.Elements[0].ContentText)
 	s.Equal("user", resp.Elements[0].Role)
 	s.Equal("Hello from Pi", resp.Elements[1].ContentText)
+	s.NotContains(resp.Elements[1].ContentText, "Private reasoning")
 	s.Equal("assistant", resp.Elements[1].Role)
 	s.Equal("z-ai/glm-5.2", resp.Elements[1].Model)
 }

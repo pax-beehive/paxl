@@ -296,10 +296,22 @@ Ask the source agent to generate a capsule:
 paxl capsule create claude:<session-id> --keyword "release plan"
 ```
 
-Use local transcript extraction instead:
+Use local transcript extraction as an offline fallback. This stores matching raw
+transcript lines and does not ask the source agent to summarize:
 
 ```sh
 paxl capsule create codex:<session-id> --keyword "sqlite schema" --local
+```
+
+Create a capsule from prepared content when you need to transfer a precise
+operator-written requirement:
+
+```sh
+paxl capsule create codex:<session-id> \
+  --keyword "installer hosting" \
+  --title "paxl installer hosting" \
+  --summary "Installer upload and hosting requirement." \
+  --content-file capsule.md
 ```
 
 List and inspect capsules:
