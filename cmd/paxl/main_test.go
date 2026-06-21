@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,6 +66,43 @@ func (s *CommandSuite) TestRunWritesCommandErrorsToExecutionLog() {
 	s.Contains(string(raw), `"event":"command_finish"`)
 	s.Contains(string(raw), `"status":"error"`)
 	s.Contains(string(raw), "unsupported format")
+}
+
+func (s *CommandSuite) TestRunContinuesWhenExecutionLogDirectoryCannotBeCreated() {
+	homeFile := filepath.Join(s.T().TempDir(), "home")
+	s.Require().NoError(os.WriteFile(homeFile, []byte("not a directory"), 0o600))
+	s.T().Setenv("HOME", homeFile)
+
+	err := run(context.Background(), []string{"version"}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "paxl")
+}
+
+func (s *CommandSuite) TestRunWritesBufferedAdapterDiagnosticsToExecutionLog() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+	capsuleID := s.createLocalCapsule(dbPath, "bridge")
+	home := s.T().TempDir()
+	s.T().Setenv("HOME", home)
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	s.installVerboseFakeCommand("claude", capturePath)
+
+	err := run(
+		context.Background(),
+		[]string{"--db", dbPath, "capsule", "inject", capsuleID, "--new", "--agent", "claude"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Empty(s.stderr.String())
+	raw := s.readExecutionLogs(home)
+	s.Contains(raw, `"event":"diagnostic"`)
+	s.Contains(raw, "Command stdout: fake stdout.")
+	s.Contains(raw, "Command stderr: fake stderr.")
 }
 
 func (s *CommandSuite) TestAgentListUsesSingularCommandAndOnlyShowsSupportedAgents() {
@@ -1171,6 +1209,22 @@ func (s *CommandSuite) installFakeClaude(capturePath string) {
 	s.installFakeCommand("claude", capturePath)
 }
 
+func (s *CommandSuite) installVerboseFakeCommand(name string, capturePath string) {
+	binDir := s.T().TempDir()
+	fakePath := filepath.Join(binDir, name)
+	s.Require().NoError(os.WriteFile(
+		fakePath,
+		[]byte(
+			"#!/bin/sh\n"+
+				"cat > "+capturePath+"\n"+
+				"printf 'fake stdout.\\n'\n"+
+				"printf 'fake stderr.\\n' >&2\n",
+		),
+		0o700,
+	))
+	s.T().Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 func (s *CommandSuite) installFakeCommand(name string, capturePath string) {
 	binDir := s.T().TempDir()
 	fakePath := filepath.Join(binDir, name)
@@ -1191,6 +1245,19 @@ func (s *CommandSuite) installArgCapturingFakeCommand(name string, argsPath stri
 		0o700,
 	))
 	s.T().Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func (s *CommandSuite) readExecutionLogs(home string) string {
+	logDir := filepath.Join(home, ".pax", "paxl", "logs")
+	entries, err := os.ReadDir(logDir)
+	s.Require().NoError(err)
+	var out strings.Builder
+	for _, entry := range entries {
+		raw, err := os.ReadFile(filepath.Join(logDir, entry.Name()))
+		s.Require().NoError(err)
+		out.Write(raw)
+	}
+	return out.String()
 }
 
 func (s *CommandSuite) installFakeCodexCapsuleGenerator(rolloutPath string) {

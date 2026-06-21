@@ -281,6 +281,40 @@ func (s *RegistrySuite) TestKiroAdapterGetsSessionThroughPublicInterface() {
 	s.Equal("Hello back", resp.Elements[1].ContentText)
 }
 
+func (s *RegistrySuite) TestKiroAdapterGetsSessionThroughMetadataFallback() {
+	kiroHome := s.T().TempDir()
+	sessionDir := filepath.Join(kiroHome, "sessions", "cli")
+	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
+	s.T().Setenv("KIRO_HOME", kiroHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(sessionDir, "metadata-name.json"),
+		[]byte(`{
+			"session_id":"kiro-public",
+			"cwd":"/tmp/project",
+			"created_at":"2026-06-20T23:55:57.801723Z",
+			"updated_at":"2026-06-20T23:59:07.433059Z",
+			"title":"Kiro title"
+		}`),
+		0o600,
+	))
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(sessionDir, "metadata-name.jsonl"),
+		[]byte(
+			`{"version":"v1","kind":"Prompt","data":{"message_id":"prompt","content":[{"kind":"text","data":"Hello Kiro"}],"meta":{"timestamp":1781999813}}}`+"\n",
+		),
+		0o600,
+	))
+
+	resp, err := adaptor.NewKiroAdapter().GetSession(
+		context.Background(),
+		&adaptor.GetSessionRequest{NativeID: "kiro-public"},
+	)
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Elements, 1)
+	s.Equal("Hello Kiro", resp.Elements[0].ContentText)
+}
+
 func (s *RegistrySuite) TestCodexAdapterGetSessionRequiresNativeID() {
 	_, err := adaptor.NewCodexAdapter().GetSession(
 		context.Background(),
