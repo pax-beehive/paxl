@@ -313,12 +313,13 @@ func (s *Store) CreateKnowledgeCapsule(
 	defaultCapsuleFields(&capsule)
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO knowledge_capsules (
-			capsule_id, source_session_id, source_agent, keyword, title, summary, content,
+			capsule_id, source_node_id, source_session_id, source_agent, keyword, title, summary, content,
 			status, truncated, original_estimated_chars, created_at, archived_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, capsule.CapsuleID, capsule.SourceSessionID, capsule.SourceAgent, capsule.Keyword, capsule.Title,
-		capsule.Summary, capsule.Content, capsule.Status, boolInt(capsule.Truncated),
-		capsule.OriginalEstimatedChars, capsule.CreatedAt, nullString(capsule.ArchivedAt))
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, capsule.CapsuleID, capsule.SourceNodeID, capsule.SourceSessionID, capsule.SourceAgent,
+		capsule.Keyword, capsule.Title, capsule.Summary, capsule.Content, capsule.Status,
+		boolInt(capsule.Truncated), capsule.OriginalEstimatedChars, capsule.CreatedAt,
+		nullString(capsule.ArchivedAt))
 	if err != nil {
 		return nil, fmt.Errorf("insert knowledge capsule %q: %w", capsule.CapsuleID, err)
 	}
@@ -402,12 +403,17 @@ func (s *Store) CreateKnowledgeInjection(
 		ctx,
 		`
 		INSERT INTO session_knowledge_injections (
-			injection_id, capsule_id, target_session_id, target_agent, delivery_method,
+			injection_id, capsule_id, source_node_id, source_agent, source_session_id,
+			target_node_id, target_session_id, target_agent, delivery_method,
 			delivery_message_type, status, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		injection.InjectionID,
 		injection.CapsuleID,
+		injection.SourceNodeID,
+		injection.SourceAgent,
+		injection.SourceSessionID,
+		injection.TargetNodeID,
 		injection.TargetSessionID,
 		injection.TargetAgent,
 		injection.DeliveryMethod,
@@ -483,6 +489,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		capsule_id TEXT PRIMARY KEY,
 		source_session_id TEXT NOT NULL,
 		source_agent TEXT NOT NULL,
+		source_node_id TEXT,
 		keyword TEXT NOT NULL,
 		title TEXT NOT NULL,
 		summary TEXT NOT NULL,
@@ -497,6 +504,10 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	CREATE TABLE IF NOT EXISTS session_knowledge_injections (
 		injection_id TEXT PRIMARY KEY,
 		capsule_id TEXT NOT NULL,
+		source_node_id TEXT,
+		source_agent TEXT,
+		source_session_id TEXT,
+		target_node_id TEXT,
 		target_session_id TEXT NOT NULL,
 		target_agent TEXT NOT NULL,
 		delivery_method TEXT NOT NULL,
@@ -505,7 +516,48 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		created_at TEXT NOT NULL
 	);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	columns := []struct {
+		table      string
+		column     string
+		definition string
+	}{
+		{table: "knowledge_capsules", column: "source_node_id", definition: "source_node_id TEXT"},
+		{
+			table:      "session_knowledge_injections",
+			column:     "source_node_id",
+			definition: "source_node_id TEXT",
+		},
+		{
+			table:      "session_knowledge_injections",
+			column:     "source_agent",
+			definition: "source_agent TEXT",
+		},
+		{
+			table:      "session_knowledge_injections",
+			column:     "source_session_id",
+			definition: "source_session_id TEXT",
+		},
+		{
+			table:      "session_knowledge_injections",
+			column:     "target_node_id",
+			definition: "target_node_id TEXT",
+		},
+	}
+	for _, column := range columns {
+		if err := ensureColumn(
+			ctx,
+			db,
+			column.table,
+			column.column,
+			column.definition,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func upsertSession(
@@ -681,7 +733,7 @@ func (s *Store) getKnowledgeCapsule(
 ) (*model.KnowledgeCapsule, error) {
 	row := s.db.QueryRowContext(
 		ctx,
-		`SELECT capsule_id, source_session_id, source_agent, keyword, title, summary,
+		`SELECT capsule_id, COALESCE(source_node_id, ''), source_session_id, source_agent, keyword, title, summary,
 		content, status, truncated, original_estimated_chars, created_at, COALESCE(archived_at, '')
 		FROM knowledge_capsules WHERE capsule_id = ?`,
 		capsuleID,
@@ -703,6 +755,7 @@ func scanKnowledgeCapsule(scanner capsuleScanner) (*model.KnowledgeCapsule, erro
 	var truncated int
 	if err := scanner.Scan(
 		&capsule.CapsuleID,
+		&capsule.SourceNodeID,
 		&capsule.SourceSessionID,
 		&sourceAgent,
 		&capsule.Keyword,
@@ -741,7 +794,7 @@ func listKnowledgeCapsulesQuery(req *ListKnowledgeCapsulesRequest) (string, []an
 		where = append(where, "source_session_id = ?")
 		args = append(args, req.SourceSessionID)
 	}
-	query := `SELECT capsule_id, source_session_id, source_agent, keyword, title, summary,
+	query := `SELECT capsule_id, COALESCE(source_node_id, ''), source_session_id, source_agent, keyword, title, summary,
 		content, status, truncated, original_estimated_chars, created_at, COALESCE(archived_at, '')
 		FROM knowledge_capsules`
 	if len(where) > 0 {
@@ -769,7 +822,8 @@ func scanKnowledgeCapsules(rows *sql.Rows) ([]*model.KnowledgeCapsule, error) {
 
 func listKnowledgeInjectionsQuery(req *ListKnowledgeInjectionsRequest) (string, []any) {
 	args := []any{}
-	query := `SELECT injection_id, capsule_id, target_session_id, target_agent, delivery_method,
+	query := `SELECT injection_id, capsule_id, COALESCE(source_node_id, ''), COALESCE(source_agent, ''),
+		COALESCE(source_session_id, ''), COALESCE(target_node_id, ''), target_session_id, target_agent, delivery_method,
 		delivery_message_type, status, created_at FROM session_knowledge_injections`
 	if req.TargetSessionID != "" {
 		query += " WHERE target_session_id = ?"
@@ -788,9 +842,14 @@ func scanKnowledgeInjections(rows *sql.Rows) ([]*model.KnowledgeInjection, error
 	for rows.Next() {
 		injection := &model.KnowledgeInjection{}
 		var targetAgent string
+		var sourceAgent string
 		if err := rows.Scan(
 			&injection.InjectionID,
 			&injection.CapsuleID,
+			&injection.SourceNodeID,
+			&sourceAgent,
+			&injection.SourceSessionID,
+			&injection.TargetNodeID,
 			&injection.TargetSessionID,
 			&targetAgent,
 			&injection.DeliveryMethod,
@@ -800,10 +859,15 @@ func scanKnowledgeInjections(rows *sql.Rows) ([]*model.KnowledgeInjection, error
 		); err != nil {
 			return nil, fmt.Errorf("scan injection row: %w", err)
 		}
+		source, err := parseOptionalAgentName(sourceAgent)
+		if err != nil {
+			return nil, fmt.Errorf("parse injection source agent: %w", err)
+		}
 		agent, err := model.ParseAgentName(targetAgent)
 		if err != nil {
 			return nil, fmt.Errorf("parse injection target agent: %w", err)
 		}
+		injection.SourceAgent = source
 		injection.TargetAgent = agent
 		injections = append(injections, injection)
 	}
@@ -829,6 +893,76 @@ func defaultInjectionFields(injection *model.KnowledgeInjection) {
 	if injection.CreatedAt == "" {
 		injection.CreatedAt = time.Now().UTC().Format(time.RFC3339)
 	}
+}
+
+func ensureColumn(
+	ctx context.Context,
+	db *sql.DB,
+	table string,
+	column string,
+	definition string,
+) error {
+	if !knownMigrationColumn(table, column) {
+		return fmt.Errorf("ensure column: unknown migration column %s.%s", table, column)
+	}
+	rows, err := db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table)) // #nosec G201
+	if err != nil {
+		return fmt.Errorf("query table info for %s: %w", table, err)
+	}
+	defer closeRows(rows)
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var primaryKey int
+		if err := rows.Scan(
+			&cid,
+			&name,
+			&columnType,
+			&notNull,
+			&defaultValue,
+			&primaryKey,
+		); err != nil {
+			return fmt.Errorf("scan table info for %s: %w", table, err)
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate table info for %s: %w", table, err)
+	}
+	query := fmt.Sprintf(
+		"ALTER TABLE %s ADD COLUMN %s",
+		table,
+		definition,
+	) // #nosec G201
+	if _, err := db.ExecContext(ctx, query); err != nil {
+		return fmt.Errorf("add column %s.%s: %w", table, column, err)
+	}
+	return nil
+}
+
+func knownMigrationColumn(table string, column string) bool {
+	switch table + "." + column {
+	case "knowledge_capsules.source_node_id",
+		"session_knowledge_injections.source_node_id",
+		"session_knowledge_injections.source_agent",
+		"session_knowledge_injections.source_session_id",
+		"session_knowledge_injections.target_node_id":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseOptionalAgentName(raw string) (model.AgentName, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", nil
+	}
+	return model.ParseAgentName(raw)
 }
 
 func resolvePath(path string) (string, error) {

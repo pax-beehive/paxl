@@ -95,10 +95,11 @@ func (f *SessionFacade) Get(
 	if err != nil {
 		return nil, fmt.Errorf("find session %q: %w", req.ID, err)
 	}
-	if session.Session.CurrentSyncVersion == 0 {
-		if err := f.syncSessionElements(ctx, session.Session, option); err != nil {
+	if err := f.syncSessionElements(ctx, session.Session, option); err != nil {
+		if session.Session.CurrentSyncVersion == 0 {
 			return nil, fmt.Errorf("sync session elements: %w", err)
 		}
+	} else {
 		session, err = f.store.FindSession(ctx, &store.FindSessionRequest{ID: session.Session.ID})
 		if err != nil {
 			return nil, fmt.Errorf("reload session %q: %w", req.ID, err)

@@ -2,6 +2,7 @@ package adaptor
 
 import (
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -64,6 +65,10 @@ func isNoisyTitleText(value string) bool {
 			lower,
 			"the following is the codex agent history whose request action you are assessing.",
 		) ||
+		strings.HasPrefix(
+			lower,
+			"the following is the codex agent history added since your last approval assessment",
+		) ||
 		strings.HasPrefix(lower, "assess the exact planned action below.") ||
 		strings.HasPrefix(trimmed, "# AGENTS.md instructions for ") ||
 		strings.HasPrefix(trimmed, "AGENTS.md instructions for ") ||
@@ -91,6 +96,14 @@ func trimOneLine(value string, limit int) string {
 		return value
 	}
 	return string([]rune(value)[:limit])
+}
+
+func sessionProjectTitle(projectRoot string) string {
+	projectRoot = strings.TrimSpace(projectRoot)
+	if projectRoot == "" {
+		return ""
+	}
+	return filepath.Base(projectRoot)
 }
 
 func closeFile(file *os.File) {

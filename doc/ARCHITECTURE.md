@@ -107,7 +107,7 @@ capabilities, not for specific file formats or process invocations.
 
 Current adapters:
 
-- Codex: reads local Codex logs and delivers with Codex CLI.
+- Codex: reads local Codex logs and delivers with Codex app-server or CLI.
 - Claude: reads local Claude Code logs and delivers with Claude Code CLI.
 - Pi: reads local Pi logs and delivers with Pi CLI.
 - Kiro: reads local Kiro CLI logs and delivers with Kiro CLI.
@@ -116,7 +116,10 @@ Current adapters:
 Current delivery commands:
 
 ```text
-Codex existing session: codex exec resume --all <session-id> -
+Codex App/Desktop existing session:
+                        codex app-server thread/resume + turn/start
+Codex other existing session or app-server fallback:
+                        codex exec resume --all <session-id> -
 Codex new session:      codex exec -
 
 Claude existing session: claude --print --resume <session-id>
@@ -164,6 +167,7 @@ Important semantics:
 - It does not ask the source agent to summarize.
 - It does not use a keyword.
 - It sends a `system_handoff` message to the target agent.
+- It carries `From` and `To` metadata with node, agent, and session IDs.
 - The target agent decides whether to summarize, compress, or keep the context.
 
 High-level flow:
@@ -188,6 +192,8 @@ Unlike `session mirror`, capsule creation is keyword-driven:
 
 - Default mode asks the source agent to generate a portable capsule.
 - `--local` mode extracts matching local transcript lines.
+- Capsules store source node, source agent, and source session metadata.
+- Injections store target node, target agent, and target session metadata.
 - Capsules are stored in SQLite.
 - Capsules can be listed, rendered, archived, and injected later.
 
@@ -209,6 +215,11 @@ capsule inject
 
 Use capsules when the goal is reusable knowledge transfer. Use mirror when the
 goal is live session continuity.
+
+Node IDs are local identity hints, not pax-manager node records. `paxl` uses
+`PAXL_NODE_ID` when it is set, otherwise it falls back to the local hostname and
+then `local`. This keeps local transfers self-describing without requiring
+cloud registration.
 
 ## Verbose Output
 

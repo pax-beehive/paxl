@@ -256,6 +256,7 @@ func (s *StoreSuite) TestCapsuleLifecycleAndInjectionList() {
 	created, err := s.store.CreateKnowledgeCapsule(s.ctx, &store.CreateKnowledgeCapsuleRequest{
 		Capsule: &model.KnowledgeCapsule{
 			CapsuleID:       "kcap_1",
+			SourceNodeID:    "source-node",
 			SourceSessionID: "codex:sess-1",
 			SourceAgent:     model.AgentNameCodex,
 			Keyword:         "bridge",
@@ -276,12 +277,14 @@ func (s *StoreSuite) TestCapsuleLifecycleAndInjectionList() {
 	s.Require().NoError(err)
 	s.Require().Len(listed.Capsules, 1)
 	s.Equal("kcap_1", listed.Capsules[0].CapsuleID)
+	s.Equal("source-node", listed.Capsules[0].SourceNodeID)
 
 	got, err := s.store.GetKnowledgeCapsule(s.ctx, &store.GetKnowledgeCapsuleRequest{
 		CapsuleID: "kcap_1",
 	})
 	s.Require().NoError(err)
 	s.Equal("Bridge", got.Capsule.Title)
+	s.Equal("source-node", got.Capsule.SourceNodeID)
 
 	archived, err := s.store.ArchiveKnowledgeCapsule(s.ctx, &store.ArchiveKnowledgeCapsuleRequest{
 		CapsuleID: "kcap_1",
@@ -293,6 +296,10 @@ func (s *StoreSuite) TestCapsuleLifecycleAndInjectionList() {
 		Injection: &model.KnowledgeInjection{
 			InjectionID:     "kci_1",
 			CapsuleID:       "kcap_1",
+			SourceNodeID:    "source-node",
+			SourceAgent:     model.AgentNameCodex,
+			SourceSessionID: "codex:sess-1",
+			TargetNodeID:    "target-node",
 			TargetSessionID: "claude:target",
 			TargetAgent:     model.AgentNameClaude,
 			DeliveryMethod:  "cli_resume",
@@ -306,6 +313,10 @@ func (s *StoreSuite) TestCapsuleLifecycleAndInjectionList() {
 	s.Require().NoError(err)
 	s.Require().Len(injections.Injections, 1)
 	s.Equal("kci_1", injections.Injections[0].InjectionID)
+	s.Equal("source-node", injections.Injections[0].SourceNodeID)
+	s.Equal(model.AgentNameCodex, injections.Injections[0].SourceAgent)
+	s.Equal("codex:sess-1", injections.Injections[0].SourceSessionID)
+	s.Equal("target-node", injections.Injections[0].TargetNodeID)
 	s.Equal("system_handoff", injections.Injections[0].DeliveryMessageType)
 	s.Equal("rendered", injections.Injections[0].Status)
 }

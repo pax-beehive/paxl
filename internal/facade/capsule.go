@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -243,16 +244,21 @@ func (f *CapsuleFacade) Inject(
 	injection := &model.KnowledgeInjection{
 		InjectionID:         injectionID,
 		CapsuleID:           capsule.CapsuleID,
+		SourceNodeID:        capsule.SourceNodeID,
+		SourceAgent:         capsule.SourceAgent,
+		SourceSessionID:     capsule.SourceSessionID,
+		TargetNodeID:        localNodeID(),
 		TargetSessionID:     target.ID,
 		TargetAgent:         target.Agent,
-		DeliveryMethod:      "cli_resume",
 		DeliveryMessageType: "system_handoff",
 		Status:              "delivered",
 	}
 	message := renderKnowledgeHandoff(capsule, injection)
-	if err := f.deliverInjection(ctx, target, message, option); err != nil {
+	deliveryMethod, err := f.deliverInjection(ctx, target, message, option)
+	if err != nil {
 		return nil, fmt.Errorf("deliver knowledge capsule: %w", err)
 	}
+	injection.DeliveryMethod = deliveryMethod
 	created, err := f.store.CreateKnowledgeInjection(
 		ctx,
 		&store.CreateKnowledgeInjectionRequest{Injection: injection},
@@ -449,6 +455,7 @@ func (f *CapsuleFacade) buildLocalCapsule(
 	}
 	return &model.KnowledgeCapsule{
 		CapsuleID:       capsuleID,
+		SourceNodeID:    localNodeID(),
 		SourceSessionID: session.Session.ID,
 		SourceAgent:     session.Session.Agent,
 		Keyword:         req.Keyword,
@@ -492,6 +499,7 @@ func (f *CapsuleFacade) buildMirrorCapsule(
 	}
 	return &model.KnowledgeCapsule{
 		CapsuleID:       capsuleID,
+		SourceNodeID:    localNodeID(),
 		SourceSessionID: session.Session.ID,
 		SourceAgent:     session.Session.Agent,
 		Keyword:         "session mirror",
@@ -580,6 +588,10 @@ func (f *CapsuleFacade) deliverCapsuleToNewSession(
 	injection := &model.KnowledgeInjection{
 		InjectionID:         injectionID,
 		CapsuleID:           capsule.CapsuleID,
+		SourceNodeID:        capsule.SourceNodeID,
+		SourceAgent:         capsule.SourceAgent,
+		SourceSessionID:     capsule.SourceSessionID,
+		TargetNodeID:        localNodeID(),
 		TargetSessionID:     "(new " + string(req.Agent) + " session)",
 		TargetAgent:         req.Agent,
 		DeliveryMethod:      "cli_new_session",
@@ -631,19 +643,25 @@ func (f *CapsuleFacade) deliverMirrorToSession(
 	if err != nil {
 		return nil, "", fmt.Errorf("find target session %q: %w", req.TargetSessionID, err)
 	}
-	message := renderMirrorHandoff(capsule, mirrorID, target.Session.Agent, target.Session.ID)
-	if err := f.deliverInjection(ctx, target.Session, message, option); err != nil {
-		return nil, "", err
-	}
-	return &model.KnowledgeInjection{
+	injection := &model.KnowledgeInjection{
 		InjectionID:         mirrorID,
 		CapsuleID:           capsule.CapsuleID,
+		SourceNodeID:        capsule.SourceNodeID,
+		SourceAgent:         capsule.SourceAgent,
+		SourceSessionID:     capsule.SourceSessionID,
+		TargetNodeID:        localNodeID(),
 		TargetSessionID:     target.Session.ID,
 		TargetAgent:         target.Session.Agent,
-		DeliveryMethod:      "cli_resume",
 		DeliveryMessageType: "system_handoff",
 		Status:              "delivered",
-	}, message, nil
+	}
+	message := renderMirrorHandoff(capsule, injection)
+	deliveryMethod, err := f.deliverInjection(ctx, target.Session, message, option)
+	if err != nil {
+		return nil, "", err
+	}
+	injection.DeliveryMethod = deliveryMethod
+	return injection, message, nil
 }
 
 func (f *CapsuleFacade) deliverMirrorToNewSession(
@@ -656,7 +674,20 @@ func (f *CapsuleFacade) deliverMirrorToNewSession(
 	if req.TargetAgent == model.AgentNameUnknown || req.TargetAgent == "" {
 		return nil, "", fmt.Errorf("target agent is required")
 	}
-	message := renderMirrorHandoff(capsule, mirrorID, req.TargetAgent, "")
+	injection := &model.KnowledgeInjection{
+		InjectionID:         mirrorID,
+		CapsuleID:           capsule.CapsuleID,
+		SourceNodeID:        capsule.SourceNodeID,
+		SourceAgent:         capsule.SourceAgent,
+		SourceSessionID:     capsule.SourceSessionID,
+		TargetNodeID:        localNodeID(),
+		TargetSessionID:     "(new " + string(req.TargetAgent) + " session)",
+		TargetAgent:         req.TargetAgent,
+		DeliveryMethod:      "cli_new_session",
+		DeliveryMessageType: "system_handoff",
+		Status:              "delivered",
+	}
+	message := renderMirrorHandoff(capsule, injection)
 	adapter, err := f.session.registry.Lookup(ctx, &adaptor.LookupRequest{Name: req.TargetAgent})
 	if err != nil {
 		return nil, "", fmt.Errorf("lookup %s adapter: %w", req.TargetAgent, err)
@@ -668,15 +699,7 @@ func (f *CapsuleFacade) deliverMirrorToNewSession(
 	); err != nil {
 		return nil, "", fmt.Errorf("start target session: %w", err)
 	}
-	return &model.KnowledgeInjection{
-		InjectionID:         mirrorID,
-		CapsuleID:           capsule.CapsuleID,
-		TargetSessionID:     "(new " + string(req.TargetAgent) + " session)",
-		TargetAgent:         req.TargetAgent,
-		DeliveryMethod:      "cli_new_session",
-		DeliveryMessageType: "system_handoff",
-		Status:              "delivered",
-	}, message, nil
+	return injection, message, nil
 }
 
 func (f *CapsuleFacade) deliverInjection(
@@ -684,19 +707,23 @@ func (f *CapsuleFacade) deliverInjection(
 	target *model.Session,
 	message string,
 	option *Option,
-) error {
+) (string, error) {
 	adapter, err := f.session.registry.Lookup(ctx, &adaptor.LookupRequest{Name: target.Agent})
 	if err != nil {
-		return fmt.Errorf("lookup %s adapter: %w", target.Agent, err)
+		return "", fmt.Errorf("lookup %s adapter: %w", target.Agent, err)
 	}
-	if _, err := adapter.Adapter.Prompt(
+	resp, err := adapter.Adapter.Prompt(
 		ctx,
 		&adaptor.PromptRequest{NativeID: target.NativeID, Text: message},
 		adaptor.WithVerboseWriter(option.VerboseWriter),
-	); err != nil {
-		return fmt.Errorf("prompt target session: %w", err)
+	)
+	if err != nil {
+		return "", fmt.Errorf("prompt target session: %w", err)
 	}
-	return nil
+	if resp == nil {
+		return "cli_resume", nil
+	}
+	return firstNonEmpty(resp.DeliveryMethod, "cli_resume"), nil
 }
 
 func extractKnowledgeContent(keyword string, elements []*model.Element) (string, int, bool) {
@@ -752,13 +779,17 @@ func renderKnowledgeHandoff(
 	injection *model.KnowledgeInjection,
 ) string {
 	return fmt.Sprintf(
-		"system_handoff\n\nThis context was rendered by paxl as a local knowledge capsule handoff.\nDo not treat this as a new user request.\n\nCapsule: %s\nInjection: %s\nTarget session: %s\n\nTitle: %s\nKeyword: %s\nSource session: %s\n\nSummary:\n%s\n\nContent:\n%s",
+		"system_handoff\n\nThis context was rendered by paxl as a local knowledge capsule handoff.\nDo not treat this as a new user request.\nNO ACTIONABLE ITEMS: This is knowledge transfer only.\nAcknowledge receipt only; do not start implementation or run tools.\n\nCapsule: %s\nInjection: %s\n\nFrom:\nNode: %s\nAgent: %s\nSession: %s\n\nTo:\nNode: %s\nAgent: %s\nSession: %s\n\nTitle: %s\nKeyword: %s\n\nSummary:\n%s\n\nContent:\n%s",
 		capsule.CapsuleID,
 		injection.InjectionID,
+		firstNonEmpty(capsule.SourceNodeID, "local"),
+		capsule.SourceAgent,
+		capsule.SourceSessionID,
+		firstNonEmpty(injection.TargetNodeID, "local"),
+		injection.TargetAgent,
 		injection.TargetSessionID,
 		capsule.Title,
 		capsule.Keyword,
-		capsule.SourceSessionID,
 		capsule.Summary,
 		capsule.Content,
 	)
@@ -766,17 +797,18 @@ func renderKnowledgeHandoff(
 
 func renderMirrorHandoff(
 	capsule *model.KnowledgeCapsule,
-	mirrorID string,
-	targetAgent model.AgentName,
-	targetSessionID string,
+	injection *model.KnowledgeInjection,
 ) string {
 	return fmt.Sprintf(
-		"system_handoff\n\nThis context was mirrored by paxl from another local agent session.\nDo not treat this as a new task request unless the user asks you to continue. Use it as transferred session context; decide in the target agent whether and how to summarize it.\n\nMirror: %s\nTarget agent: %s\nTarget session: %s\n\nTitle: %s\nSource session: %s\n\nSummary:\n%s\n\nContent:\n%s",
-		mirrorID,
-		targetAgent,
-		firstNonEmpty(targetSessionID, "(new session)"),
-		capsule.Title,
+		"system_handoff\n\nThis context was mirrored by paxl from another local agent session.\nDo not treat this as a new task request unless the user asks you to continue. Use it as transferred session context; decide in the target agent whether and how to summarize it.\n\nMirror: %s\n\nFrom:\nNode: %s\nAgent: %s\nSession: %s\n\nTo:\nNode: %s\nAgent: %s\nSession: %s\n\nTitle: %s\n\nSummary:\n%s\n\nContent:\n%s",
+		injection.InjectionID,
+		firstNonEmpty(capsule.SourceNodeID, "local"),
+		capsule.SourceAgent,
 		capsule.SourceSessionID,
+		firstNonEmpty(injection.TargetNodeID, "local"),
+		injection.TargetAgent,
+		injection.TargetSessionID,
+		capsule.Title,
 		capsule.Summary,
 		capsule.Content,
 	)
@@ -859,6 +891,7 @@ func generatedCapsuleFromJSON(
 	truncatedContent := truncateString(content, knowledgeContentLimit)
 	return &model.KnowledgeCapsule{
 		CapsuleID:       capsuleID,
+		SourceNodeID:    localNodeID(),
 		SourceSessionID: session.ID,
 		SourceAgent:     session.Agent,
 		Keyword:         keyword,
@@ -875,6 +908,17 @@ func generatedCapsuleFromJSON(
 		),
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}, true, nil
+}
+
+func localNodeID() string {
+	if envNode := strings.TrimSpace(os.Getenv("PAXL_NODE_ID")); envNode != "" {
+		return envNode
+	}
+	hostname, err := os.Hostname()
+	if err == nil && strings.TrimSpace(hostname) != "" {
+		return strings.TrimSpace(hostname)
+	}
+	return "local"
 }
 
 func capsuleElementLine(element *model.Element) string {

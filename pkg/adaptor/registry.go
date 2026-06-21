@@ -72,7 +72,9 @@ type PromptRequest struct {
 	Text     string
 }
 
-type PromptResponse struct{}
+type PromptResponse struct {
+	DeliveryMethod string
+}
 
 type StartSessionRequest struct {
 	Text string
@@ -250,7 +252,7 @@ func runPromptCommand(
 	}
 	writeCommandOutput(option, "stdout", stdout.String())
 	writeCommandOutput(option, "stderr", stderr.String())
-	return &PromptResponse{}, nil
+	return &PromptResponse{DeliveryMethod: "cli_resume"}, nil
 }
 
 func runArgPromptCommand(
@@ -275,7 +277,7 @@ func runArgPromptCommand(
 	}
 	writeCommandOutput(option, "stdout", stdout.String())
 	writeCommandOutput(option, "stderr", stderr.String())
-	return &PromptResponse{}, nil
+	return &PromptResponse{DeliveryMethod: "cli_resume"}, nil
 }
 
 func validateNativeSessionID(nativeID string) error {

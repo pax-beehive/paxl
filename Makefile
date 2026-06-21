@@ -18,11 +18,13 @@ MUTATION_FLAGS ?=
 COGNITIVE_TARGETS ?= .
 COGNITIVE_TOP ?= 20
 COGNITIVE_FLAGS ?= -top $(COGNITIVE_TOP) -avg
+RELEASE_VERSION ?= patch
+RELEASE_TAGS ?= stable
 
 GO_PACKAGES := ./...
 GO_FILES := $(shell find . -type f -name '*.go' -not -path './vendor/*')
 
-.PHONY: lint format format-check test test-cover branch-cover branch-cover-install mutation-test cognitive-complexity mock gen
+.PHONY: lint format format-check test test-cover branch-cover branch-cover-install mutation-test cognitive-complexity release-paxl release-paxl-dry-run mock gen
 
 lint:
 	GOLANGCI_LINT_CACHE=$(GOLANGCI_LINT_CACHE) GOCACHE=$(GOCACHE) $(GOLANGCI_LINT) run $(GO_PACKAGES)
@@ -90,6 +92,12 @@ mutation-test:
 
 cognitive-complexity:
 	GOCACHE=$(GOCACHE) $(GO) tool gocognit $(COGNITIVE_FLAGS) $(COGNITIVE_TARGETS)
+
+release-paxl:
+	scripts/release_paxl.sh $(RELEASE_VERSION) $(RELEASE_TAGS)
+
+release-paxl-dry-run:
+	PAX_RELEASE_DRY_RUN=1 scripts/release_paxl.sh $(RELEASE_VERSION) $(RELEASE_TAGS)
 
 mock:
 	GOCACHE=$(GOCACHE) $(MOCKERY) --config .mockery.yaml

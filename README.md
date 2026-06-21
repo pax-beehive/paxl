@@ -25,13 +25,25 @@ Architecture documentation: [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md)
 
 Current built-in agents:
 
-- `codex`: local Codex logs plus Codex CLI delivery.
+- `codex`: local Codex logs plus Codex app-server or CLI delivery.
 - `claude`: local Claude Code logs plus Claude Code CLI delivery.
 - `pi`: local Pi logs plus Pi CLI delivery.
 - `kiro`: local Kiro CLI logs plus Kiro CLI delivery.
 - `gemini`: local Gemini CLI logs plus Gemini CLI delivery.
 
 ## Install
+
+Install the latest stable hosted build:
+
+```sh
+curl -fsSL https://storage.googleapis.com/pax-tech-bucket/paxl/install.sh | bash
+```
+
+Install a specific uploaded version directly from its GCS manifest:
+
+```sh
+curl -fsSL https://storage.googleapis.com/pax-tech-bucket/paxl/install.sh | PAXL_VERSION=0.1.1 bash
+```
 
 Build from source:
 
@@ -126,6 +138,57 @@ The default report prints the top 20 production functions and the repository
 average. Use it alongside cyclomatic complexity when deciding whether a function
 is hard to reason about.
 
+## Release Uploads
+
+`paxl` releases are native Go binaries uploaded to GCS. The release script
+defaults to the next patch version, derived from the latest local
+`paxl/vX.Y.Z` git tag. If no release tag exists, it starts from the version in
+`cmd/paxl/main.go`.
+
+Dry-run the release without uploading or tagging:
+
+```sh
+make release-paxl-dry-run
+make release-paxl-dry-run RELEASE_VERSION=minor RELEASE_TAGS=beta
+```
+
+Upload a stable release:
+
+```sh
+make release-paxl
+```
+
+The script builds `darwin/amd64`, `darwin/arm64`, `linux/amd64`, and
+`linux/arm64`, stamps the binary with version and commit metadata, smoke-tests
+the native host binary with `paxl version`, writes sha256 files and a
+`manifest.json`, uploads to:
+
+```text
+gs://pax-tech-bucket/paxl/releases/<version>/
+```
+
+For each release tag, it also updates:
+
+```text
+gs://pax-tech-bucket/paxl/releases/latest/<tag>/manifest.json
+```
+
+It also uploads the installer to:
+
+```text
+gs://pax-tech-bucket/paxl/install.sh
+```
+
+After a successful upload it creates a local git tag:
+
+```text
+paxl/v<version>
+```
+
+Set `PAX_RELEASE_PUSH_TAG=1` to push the tag. Use `RELEASE_VERSION=0.2.0` for an
+explicit semantic version, or `RELEASE_VERSION=major|minor|patch` for automatic
+incrementing.
+
 ## Common Workflows
 
 ### List Available Agents
@@ -161,6 +224,10 @@ Mirror transfers the source session context into a target agent session. It does
 not ask the source agent to summarize with a keyword. The target agent receives a
 `system_handoff` message and can decide whether to summarize, compress, or keep
 the full context.
+
+Mirror handoffs include `From` and `To` metadata with node, agent, and session
+IDs. The node ID comes from `PAXL_NODE_ID` when set, otherwise from the local
+hostname.
 
 Mirror Claude into an existing Codex session:
 
@@ -209,14 +276,19 @@ paxl session mirror \
      --verbose
    ```
 
-Codex will receive the mirrored context through its native resume path. You can
-then ask Codex to continue the work, review the handoff, or compress the context.
+Codex App/Desktop sessions are delivered through `codex app-server` when paxl
+can identify them from local rollout metadata. Other Codex sessions, or
+app-server failures, fall back to the native CLI resume path.
 
 ### Create a Knowledge Capsule
 
 Capsules are reusable handoff artifacts. Unlike `session mirror`, capsule
 creation is keyword-driven and asks the source agent to produce a portable
 summary by default.
+
+Capsules store their source node, source agent, and source session. Injection
+records add the target node, target agent, and target session, and this metadata
+is included in JSONL output and delivered handoff text.
 
 Ask the source agent to generate a capsule:
 

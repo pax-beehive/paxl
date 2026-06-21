@@ -1124,8 +1124,10 @@ func renderMirrorResult(
 			"schemaVersion":   "paxl.session.mirror.v1",
 			"mirrorId":        resp.Injection.InjectionID,
 			"capsuleId":       resp.Capsule.CapsuleID,
+			"sourceNodeId":    resp.Capsule.SourceNodeID,
 			"sourceSessionId": resp.Capsule.SourceSessionID,
 			"sourceAgent":     resp.Capsule.SourceAgent,
+			"targetNodeId":    resp.Injection.TargetNodeID,
 			"targetAgent":     resp.Injection.TargetAgent,
 			"targetSessionId": resp.Injection.TargetSessionID,
 			"deliveryMethod":  resp.Injection.DeliveryMethod,
@@ -1175,6 +1177,10 @@ func renderInjectionList(
 				"schemaVersion":       "paxl.knowledge_injection.v1",
 				"injectionId":         injection.InjectionID,
 				"capsuleId":           injection.CapsuleID,
+				"sourceNodeId":        injection.SourceNodeID,
+				"sourceAgent":         injection.SourceAgent,
+				"sourceSessionId":     injection.SourceSessionID,
+				"targetNodeId":        injection.TargetNodeID,
 				"targetSessionId":     injection.TargetSessionID,
 				"targetAgent":         injection.TargetAgent,
 				"deliveryMethod":      injection.DeliveryMethod,
@@ -1244,9 +1250,10 @@ func renderCapsule(stdout io.Writer, resp *facade.GetCapsuleResponse, format str
 
 func renderCapsuleText(capsule *model.KnowledgeCapsule) string {
 	return fmt.Sprintf(
-		"Title: %s\nKeyword: %s\nSource session: %s\nStatus: %s\nCreated: %s\n\nSummary:\n%s\n\nContent:\n%s",
+		"Title: %s\nKeyword: %s\nSource node: %s\nSource session: %s\nStatus: %s\nCreated: %s\n\nSummary:\n%s\n\nContent:\n%s",
 		capsule.Title,
 		capsule.Keyword,
+		capsule.SourceNodeID,
 		capsule.SourceSessionID,
 		capsule.Status,
 		capsule.CreatedAt,
@@ -1259,6 +1266,7 @@ func encodeCapsuleJSONL(stdout io.Writer, capsule *model.KnowledgeCapsule) error
 	if err := json.NewEncoder(stdout).Encode(map[string]any{
 		"schemaVersion":          "paxl.knowledge_capsule.v1",
 		"capsuleId":              capsule.CapsuleID,
+		"sourceNodeId":           capsule.SourceNodeID,
 		"sourceSessionId":        capsule.SourceSessionID,
 		"sourceAgent":            capsule.SourceAgent,
 		"keyword":                capsule.Keyword,

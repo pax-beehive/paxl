@@ -182,6 +182,7 @@ func (s *CapsuleFacadeSuite) TestInjectDeliversHandoffAndStoresInjection() {
 	if runtime.GOOS == "windows" {
 		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
 	}
+	s.T().Setenv("PAXL_NODE_ID", "local-node")
 	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
 	created, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
 		SourceSessionID: "codex:sess",
@@ -201,7 +202,13 @@ func (s *CapsuleFacadeSuite) TestInjectDeliversHandoffAndStoresInjection() {
 	s.Require().NoError(err)
 	s.Equal(created.Capsule.CapsuleID, injected.Injection.CapsuleID)
 	s.Equal("codex:target", injected.Injection.TargetSessionID)
+	s.Equal("local-node", injected.Injection.SourceNodeID)
+	s.Equal(model.AgentNameCodex, injected.Injection.SourceAgent)
+	s.Equal("codex:sess", injected.Injection.SourceSessionID)
+	s.Equal("local-node", injected.Injection.TargetNodeID)
 	s.Contains(injected.Message, "system_handoff")
+	s.Contains(injected.Message, "From:\nNode: local-node\nAgent: codex\nSession: codex:sess")
+	s.Contains(injected.Message, "To:\nNode: local-node\nAgent: codex\nSession: codex:target")
 	s.Contains(injected.Message, "Bridge content")
 	rawPrompt, err := os.ReadFile(capturePath)
 	s.Require().NoError(err)
@@ -244,6 +251,14 @@ func (s *CapsuleFacadeSuite) TestInjectStartsNewTargetSession() {
 	rawPrompt, err := os.ReadFile(capturePath)
 	s.Require().NoError(err)
 	s.Equal(injected.Message, string(rawPrompt))
+	s.Contains(
+		injected.Message,
+		"NO ACTIONABLE ITEMS: This is knowledge transfer only.",
+	)
+	s.Contains(
+		injected.Message,
+		"Acknowledge receipt only; do not start implementation or run tools.",
+	)
 }
 
 func (s *CapsuleFacadeSuite) TestInjectRejectsMissingTargetAgentForNewSession() {
@@ -301,6 +316,14 @@ func (s *CapsuleFacadeSuite) TestInjectLoadsUncachedTargetSessionBeforeDelivery(
 	rawPrompt, err := os.ReadFile(capturePath)
 	s.Require().NoError(err)
 	s.Equal(injected.Message, string(rawPrompt))
+	s.Contains(
+		injected.Message,
+		"NO ACTIONABLE ITEMS: This is knowledge transfer only.",
+	)
+	s.Contains(
+		injected.Message,
+		"Acknowledge receipt only; do not start implementation or run tools.",
+	)
 }
 
 func (s *CapsuleFacadeSuite) TestInjectRejectsArchivedCapsule() {
@@ -328,6 +351,7 @@ func (s *CapsuleFacadeSuite) TestMirrorSessionDeliversToExistingSession() {
 	if runtime.GOOS == "windows" {
 		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
 	}
+	s.T().Setenv("PAXL_NODE_ID", "local-node")
 	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
 	s.seedTargetSession()
 	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
@@ -341,11 +365,17 @@ func (s *CapsuleFacadeSuite) TestMirrorSessionDeliversToExistingSession() {
 	s.Require().NoError(err)
 	s.Equal("cli_resume", resp.Injection.DeliveryMethod)
 	s.Equal("codex:target", resp.Injection.TargetSessionID)
+	s.Equal("local-node", resp.Injection.SourceNodeID)
+	s.Equal(model.AgentNameCodex, resp.Injection.SourceAgent)
+	s.Equal("codex:sess", resp.Injection.SourceSessionID)
+	s.Equal("local-node", resp.Injection.TargetNodeID)
 	s.Contains(resp.Capsule.Title, "Session mirror")
 	s.Contains(resp.Capsule.Summary, "without asking the source agent to summarize")
 	rawPrompt, err := os.ReadFile(capturePath)
 	s.Require().NoError(err)
 	s.Contains(string(rawPrompt), "This context was mirrored by paxl")
+	s.Contains(string(rawPrompt), "From:\nNode: local-node\nAgent: codex\nSession: codex:sess")
+	s.Contains(string(rawPrompt), "To:\nNode: local-node\nAgent: codex\nSession: codex:target")
 	s.Contains(string(rawPrompt), "Bridge content")
 	s.Contains(string(rawPrompt), "Assistant context")
 }
@@ -354,6 +384,7 @@ func (s *CapsuleFacadeSuite) TestMirrorSessionStartsNewTargetSession() {
 	if runtime.GOOS == "windows" {
 		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
 	}
+	s.T().Setenv("PAXL_NODE_ID", "local-node")
 	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
 	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
 	s.installFakeClaude(capturePath)
@@ -369,7 +400,10 @@ func (s *CapsuleFacadeSuite) TestMirrorSessionStartsNewTargetSession() {
 	s.Contains(resp.Injection.TargetSessionID, "new claude session")
 	rawPrompt, err := os.ReadFile(capturePath)
 	s.Require().NoError(err)
-	s.Contains(string(rawPrompt), "Target agent: claude")
+	s.Contains(
+		string(rawPrompt),
+		"To:\nNode: local-node\nAgent: claude\nSession: (new claude session)",
+	)
 	s.Contains(string(rawPrompt), "Bridge content")
 	s.Contains(string(rawPrompt), "Assistant context")
 }
