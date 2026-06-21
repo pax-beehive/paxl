@@ -96,6 +96,22 @@ The branch coverage report prints per-package missed branches and a total such
 as `Branch coverage total: 792/1186 (66.8%)`. Use it to guide test review; it is
 not part of CI enforcement.
 
+Mutation testing is available as another non-gating quality signal through
+[`go-mutesting`](https://github.com/avito-tech/go-mutesting). The tool is pinned
+in `go.mod` as a Go tool dependency, so no separate install step is required:
+
+```sh
+make mutation-test
+make mutation-test MUTATION_TARGETS=./internal/model/...
+make mutation-test MUTATION_TARGETS=./internal/facade MUTATION_TIMEOUT=60
+```
+
+The default target is `./internal/model/store`, which exercises non-trivial
+persistence behavior without running mutation testing across the whole
+repository. The report prints surviving mutations and a mutation score. Use it
+when deciding whether a high-coverage area is actually asserting important
+behavior.
+
 ## Common Workflows
 
 ### List Available Agents

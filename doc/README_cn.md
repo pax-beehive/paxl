@@ -90,6 +90,20 @@ make branch-cover
 分支覆盖率报告会输出每个 package 未覆盖的分支，并在最后给出总计，比如
 `Branch coverage total: 792/1186 (66.8%)`。它用于指导测试 review，不作为 CI 硬门禁。
 
+Mutation testing 通过 [`go-mutesting`](https://github.com/avito-tech/go-mutesting)
+作为另一个非阻塞质量信号使用。该工具已经通过 Go tool dependency 固定在
+`go.mod` 中，不需要额外安装：
+
+```sh
+make mutation-test
+make mutation-test MUTATION_TARGETS=./internal/model/...
+make mutation-test MUTATION_TARGETS=./internal/facade MUTATION_TIMEOUT=60
+```
+
+默认目标是 `./internal/model/store`，能覆盖非 trivial 的持久化行为，同时避免默认
+对整个仓库做 mutation testing。报告会输出 surviving mutations 和 mutation score。
+它适合用来判断高覆盖率区域是否真的断言了关键行为。
+
 ## 常用工作流
 
 ### 查看可用 agents

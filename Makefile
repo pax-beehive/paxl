@@ -12,11 +12,14 @@ GOBCO ?= $(GO_BIN)/gobco
 GOCACHE ?= /tmp/paxl-go-cache
 GOLANGCI_LINT_CACHE ?= /tmp/paxl-golangci-lint-cache
 COVERAGE_MIN ?= 80
+MUTATION_TARGETS ?= ./internal/model/store
+MUTATION_TIMEOUT ?= 30
+MUTATION_FLAGS ?=
 
 GO_PACKAGES := ./...
 GO_FILES := $(shell find . -type f -name '*.go' -not -path './vendor/*')
 
-.PHONY: lint format format-check test test-cover branch-cover branch-cover-install mock gen
+.PHONY: lint format format-check test test-cover branch-cover branch-cover-install mutation-test mock gen
 
 lint:
 	GOLANGCI_LINT_CACHE=$(GOLANGCI_LINT_CACHE) GOCACHE=$(GOCACHE) $(GOLANGCI_LINT) run $(GO_PACKAGES)
@@ -78,6 +81,9 @@ branch-cover:
 
 branch-cover-install:
 	GOCACHE=$(GOCACHE) $(GO) install github.com/rillig/gobco@latest
+
+mutation-test:
+	GOCACHE=$(GOCACHE) $(GO) tool go-mutesting --exec-timeout=$(MUTATION_TIMEOUT) $(MUTATION_FLAGS) $(MUTATION_TARGETS)
 
 mock:
 	GOCACHE=$(GOCACHE) $(MOCKERY) --config .mockery.yaml
