@@ -169,6 +169,46 @@ func (s *CommandSuite) TestAgentSetupDryRunUsesSingularCommand() {
 	s.Contains(s.stdout.String(), "npm install -g @anthropic-ai/claude-code")
 }
 
+func (s *CommandSuite) TestAgentSetupSkipsInstallWhenCommandAlreadyExists() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	s.installFakeCodex(capturePath)
+
+	err := run(
+		context.Background(),
+		[]string{"agent", "setup", "--agent", "codex"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "codex already available.")
+	_, err = os.Stat(capturePath)
+	s.ErrorIs(err, os.ErrNotExist)
+}
+
+func (s *CommandSuite) TestAgentSetupRejectsAgentsWithoutManagedInstallCommand() {
+	for _, agent := range []string{"pi", "kiro"} {
+		s.Run(agent, func() {
+			s.T().Setenv("PATH", s.T().TempDir())
+
+			err := run(
+				context.Background(),
+				[]string{"agent", "setup", "--agent", agent},
+				&s.stdout,
+				&s.stderr,
+			)
+
+			s.Require().Error(err)
+			s.Contains(err.Error(), agent+" install is not managed")
+			s.stdout.Reset()
+			s.stderr.Reset()
+		})
+	}
+}
+
 func (s *CommandSuite) TestAgentSetupRejectsUnsupportedAgentBeforeInstall() {
 	err := run(
 		context.Background(),

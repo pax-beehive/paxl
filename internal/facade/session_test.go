@@ -2,6 +2,7 @@ package facade_test
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -160,6 +161,40 @@ func (s *SessionFacadeSuite) TestGetLoadsUncachedSessionFromAgentLogs() {
 	)
 	s.Require().NoError(err)
 	s.NotZero(cached.Session.CurrentSyncVersion)
+}
+
+func (s *SessionFacadeSuite) TestGetLoadsBareNativeIDWhenAgentIsProvided() {
+	codexHome := s.T().TempDir()
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.T().Setenv("CODEX_HOME", codexHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-test-bare-native.jsonl"),
+		[]byte(
+			`{"type":"session_meta","payload":{"id":"bare-native","timestamp":"2026-06-20T01:00:00Z","cwd":"/tmp/project"}}`+"\n"+
+				`{"timestamp":"2026-06-20T01:01:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Bare native content"}]}}`+"\n",
+		),
+		0o600,
+	))
+	sessionFacade := facade.NewSessionFacade(nil, s.store)
+
+	resp, err := sessionFacade.Get(s.ctx, &facade.GetSessionRequest{
+		ID:    "bare-native",
+		Agent: model.AgentNameCodex,
+	})
+
+	s.Require().NoError(err)
+	s.Equal("codex:bare-native", resp.Session.ID)
+	s.Require().Len(resp.Elements, 1)
+	s.Equal("Bare native content", resp.Elements[0].ContentText)
+}
+
+func (s *SessionFacadeSuite) TestGetBareNativeIDRequiresAgentForUncachedLookup() {
+	sessionFacade := facade.NewSessionFacade(nil, s.store)
+
+	_, err := sessionFacade.Get(s.ctx, &facade.GetSessionRequest{ID: "native-only"})
+
+	s.ErrorIs(err, sql.ErrNoRows)
 }
 
 func (s *SessionFacadeSuite) TestListRequiresRequestAndStore() {

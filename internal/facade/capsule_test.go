@@ -124,6 +124,21 @@ func (s *CapsuleFacadeSuite) TestCreateSourceGenerationMarksTruncatedContent() {
 	s.Less(len(resp.Capsule.Content), int(resp.Capsule.OriginalEstimatedChars))
 }
 
+func (s *CapsuleFacadeSuite) TestCreateSourceGenerationAcceptsModelRole() {
+	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
+	rolloutPath := s.seedCodexRollout()
+	s.installFakeCodexModelCapsuleGenerator(rolloutPath)
+
+	resp, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
+		SourceSessionID: "codex:sess",
+		Keyword:         "bridge",
+	})
+
+	s.Require().NoError(err)
+	s.Equal("Generated bridge", resp.Capsule.Title)
+	s.Contains(resp.Capsule.Content, "Generated bridge content")
+}
+
 func (s *CapsuleFacadeSuite) TestCreateSourceGenerationFailsWhenMarkersAreMissing() {
 	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
 	s.seedCodexRollout()
@@ -229,6 +244,24 @@ func (s *CapsuleFacadeSuite) TestInjectStartsNewTargetSession() {
 	rawPrompt, err := os.ReadFile(capturePath)
 	s.Require().NoError(err)
 	s.Equal(injected.Message, string(rawPrompt))
+}
+
+func (s *CapsuleFacadeSuite) TestInjectRejectsMissingTargetAgentForNewSession() {
+	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
+	created, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
+		SourceSessionID: "codex:sess",
+		Keyword:         "bridge",
+		Local:           true,
+	})
+	s.Require().NoError(err)
+
+	_, err = capsuleFacade.Inject(s.ctx, &facade.InjectCapsuleRequest{
+		CapsuleID:  created.Capsule.CapsuleID,
+		NewSession: true,
+	})
+
+	s.Require().Error(err)
+	s.Contains(err.Error(), "target agent is required")
 }
 
 func (s *CapsuleFacadeSuite) TestInjectLoadsUncachedTargetSessionBeforeDelivery() {
@@ -482,12 +515,20 @@ func (s *CapsuleFacadeSuite) seedCodexRollout() string {
 }
 
 func (s *CapsuleFacadeSuite) installFakeCodexCapsuleGenerator(rolloutPath string) {
+	s.installFakeCodexRoleCapsuleGenerator(rolloutPath, "assistant")
+}
+
+func (s *CapsuleFacadeSuite) installFakeCodexModelCapsuleGenerator(rolloutPath string) {
+	s.installFakeCodexRoleCapsuleGenerator(rolloutPath, "model")
+}
+
+func (s *CapsuleFacadeSuite) installFakeCodexRoleCapsuleGenerator(rolloutPath string, role string) {
 	binDir := s.T().TempDir()
 	fakePath := filepath.Join(binDir, "codex")
 	script := "#!/bin/sh\n" +
 		"prompt=$(cat)\n" +
 		"capsule_id=$(printf '%s\\n' \"$prompt\" | sed -n 's/^Capsule id: //p' | head -n 1)\n" +
-		"printf '%s\\n' \"{\\\"timestamp\\\":\\\"2026-06-20T01:03:00Z\\\",\\\"type\\\":\\\"response_item\\\",\\\"payload\\\":{\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"content\\\":[{\\\"type\\\":\\\"output_text\\\",\\\"text\\\":\\\"PAX_KNOWLEDGE_CAPSULE_START ${capsule_id}\\\\n{\\\\\\\"title\\\\\\\":\\\\\\\"Generated bridge\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Generated summary\\\\\\\",\\\\\\\"content\\\\\\\":\\\\\\\"Generated bridge content\\\\\\\"}\\\\nPAX_KNOWLEDGE_CAPSULE_END ${capsule_id}\\\"}]}}\" >> \"" + rolloutPath + "\"\n"
+		"printf '%s\\n' \"{\\\"timestamp\\\":\\\"2026-06-20T01:03:00Z\\\",\\\"type\\\":\\\"response_item\\\",\\\"payload\\\":{\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"" + role + "\\\",\\\"content\\\":[{\\\"type\\\":\\\"output_text\\\",\\\"text\\\":\\\"PAX_KNOWLEDGE_CAPSULE_START ${capsule_id}\\\\n{\\\\\\\"title\\\\\\\":\\\\\\\"Generated bridge\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Generated summary\\\\\\\",\\\\\\\"content\\\\\\\":\\\\\\\"Generated bridge content\\\\\\\"}\\\\nPAX_KNOWLEDGE_CAPSULE_END ${capsule_id}\\\"}]}}\" >> \"" + rolloutPath + "\"\n"
 	s.Require().NoError(os.WriteFile(fakePath, []byte(script), 0o700))
 	s.T().Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
