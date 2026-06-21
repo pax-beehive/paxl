@@ -60,7 +60,8 @@ func (s *LocalSessionsSuite) TestListCodexSessionsDerivesReadableTitleFromRollou
 				`{"timestamp":"2026-06-20T02:01:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /tmp/project\nIgnore this bootstrap context."}]}}`+"\n"+
 				`{"timestamp":"2026-06-20T02:02:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>/tmp/project</cwd>\n</environment_context>"}]}}`+"\n"+
 				`{"timestamp":"2026-06-20T02:03:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"The following is the Codex agent history whose request action you are assessing."}]}}`+"\n"+
-				`{"timestamp":"2026-06-20T02:04:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Make the session title readable from user intent."}]}}`+"\n",
+				`{"timestamp":"2026-06-20T02:04:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"The following is the Codex agent history added since your last approval assessment."}]}}`+"\n"+
+				`{"timestamp":"2026-06-20T02:05:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Make the session title readable from user intent."}]}}`+"\n",
 		),
 		0o600,
 	))

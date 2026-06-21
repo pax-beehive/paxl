@@ -64,6 +64,10 @@ func isNoisyTitleText(value string) bool {
 			lower,
 			"the following is the codex agent history whose request action you are assessing.",
 		) ||
+		strings.HasPrefix(
+			lower,
+			"the following is the codex agent history added since your last approval assessment",
+		) ||
 		strings.HasPrefix(lower, "assess the exact planned action below.") ||
 		strings.HasPrefix(trimmed, "# AGENTS.md instructions for ") ||
 		strings.HasPrefix(trimmed, "AGENTS.md instructions for ") ||
