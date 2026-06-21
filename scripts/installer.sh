@@ -19,6 +19,7 @@ if [[ -t 1 ]] && command -v tput >/dev/null 2>&1 && [[ "$(tput colors 2>/dev/nul
   red="$(tput setaf 1)"
   green="$(tput setaf 2)"
   yellow="$(tput setaf 3)"
+  magenta="$(tput setaf 5)"
   cyan="$(tput setaf 6)"
 else
   bold=""
@@ -26,6 +27,7 @@ else
   red=""
   green=""
   yellow=""
+  magenta=""
   cyan=""
 fi
 
@@ -40,6 +42,26 @@ warn() {
 fail() {
   printf '%s\n' "${red}error:${reset} $*" >&2
   exit 1
+}
+
+print_banner() {
+  local width=52
+  banner_line() {
+    local color="$1"
+    local text="$2"
+    printf '%b|%b %b%-*s%b %b|%b\n' \
+      "${cyan}${bold}" "${reset}" "$color" $((width - 4)) "$text" "${reset}" "${cyan}${bold}" "${reset}"
+  }
+
+  printf '%b\n' "${cyan}${bold}+--------------------------------------------------+${reset}"
+  banner_line "${magenta}${bold}" "    ____  ___   _  __"
+  banner_line "${magenta}${bold}" "   / __ \\/   | | |/ /"
+  banner_line "${magenta}${bold}" "  / /_/ / /| | |   /"
+  banner_line "${yellow}${bold}" " / ____/ ___ |/   |"
+  banner_line "${yellow}${bold}" "/_/   /_/  |_/_/|_|"
+  banner_line "${green}${bold}" "                 installer for agent context"
+  printf '%b\n' "${cyan}${bold}+--------------------------------------------------+${reset}"
+  printf '\n'
 }
 
 require_cmd() {
@@ -202,6 +224,7 @@ resolve_from_api() {
 }
 
 main() {
+  print_banner
   require_cmd curl
   require_cmd python3
 
