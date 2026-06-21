@@ -72,6 +72,24 @@ paxl --db .local/paxl.sqlite session list
 日志包含命令开始、结束、耗时、错误信息，以及被缓冲的 adapter diagnostic 输出。
 正常命令输出不变；`--verbose` 仍然只控制是否把投递细节同时打印到 stderr。
 
+## 质量指标
+
+语句覆盖率仍然是 merge gate：
+
+```sh
+make test-cover
+```
+
+分支覆盖率通过 [`gobco`](https://github.com/rillig/gobco) 作为非阻塞质量指标统计：
+
+```sh
+make branch-cover-install
+make branch-cover
+```
+
+分支覆盖率报告会输出每个 package 未覆盖的分支，并在最后给出总计，比如
+`Branch coverage total: 792/1186 (66.8%)`。它用于指导测试 review，不作为 CI 硬门禁。
+
 ## 常用工作流
 
 ### 查看可用 agents

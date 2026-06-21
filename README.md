@@ -76,6 +76,26 @@ Logs include command start and finish events, duration, errors, and buffered
 adapter diagnostics. Normal command output is unchanged; `--verbose` still
 controls whether delivery diagnostics are also printed to stderr.
 
+## Quality Metrics
+
+Statement coverage remains the merge gate:
+
+```sh
+make test-cover
+```
+
+Branch coverage is available as a non-gating quality metric through
+[`gobco`](https://github.com/rillig/gobco):
+
+```sh
+make branch-cover-install
+make branch-cover
+```
+
+The branch coverage report prints per-package missed branches and a total such
+as `Branch coverage total: 792/1186 (66.8%)`. Use it to guide test review; it is
+not part of CI enforcement.
+
 ## Common Workflows
 
 ### List Available Agents

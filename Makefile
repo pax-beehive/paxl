@@ -8,6 +8,7 @@ GOLANGCI_LINT ?= $(GO_BIN)/golangci-lint
 GOIMPORTS ?= $(GO_BIN)/goimports
 GOLINES ?= $(GO_BIN)/golines
 MOCKERY ?= $(GO_BIN)/mockery
+GOBCO ?= $(GO_BIN)/gobco
 GOCACHE ?= /tmp/paxl-go-cache
 GOLANGCI_LINT_CACHE ?= /tmp/paxl-golangci-lint-cache
 COVERAGE_MIN ?= 80
@@ -15,7 +16,7 @@ COVERAGE_MIN ?= 80
 GO_PACKAGES := ./...
 GO_FILES := $(shell find . -type f -name '*.go' -not -path './vendor/*')
 
-.PHONY: lint format format-check test test-cover mock gen
+.PHONY: lint format format-check test test-cover branch-cover branch-cover-install mock gen
 
 lint:
 	GOLANGCI_LINT_CACHE=$(GOLANGCI_LINT_CACHE) GOCACHE=$(GOCACHE) $(GOLANGCI_LINT) run $(GO_PACKAGES)
@@ -66,6 +67,17 @@ test-cover:
 		} \
 		printf "Coverage %.1f%% meets %.1f%%.\n", $$3, min; \
 	}'
+
+branch-cover:
+	@if [ ! -x "$(GOBCO)" ]; then \
+		echo "Missing gobco at $(GOBCO)."; \
+		echo "Install it with: go install github.com/rillig/gobco@latest"; \
+		exit 1; \
+	fi
+	GOCACHE=$(GOCACHE) ./scripts/branch_coverage.sh "$(GOBCO)"
+
+branch-cover-install:
+	GOCACHE=$(GOCACHE) $(GO) install github.com/rillig/gobco@latest
 
 mock:
 	GOCACHE=$(GOCACHE) $(MOCKERY) --config .mockery.yaml
