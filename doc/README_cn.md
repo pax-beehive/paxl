@@ -47,6 +47,15 @@ mkdir -p ~/.codex/skills
 cp -R skills/knowledge-transfer ~/.codex/skills/
 ```
 
+如果想让 agent 帮你安装，可以让 agent 先阅读这个仓库，再从
+`skills/knowledge-transfer` 安装 skill。可以直接这样说：
+
+```text
+Read this repository, inspect skills/knowledge-transfer/SKILL.md, then install
+the knowledge-transfer skill into the Codex skills directory for all future
+sessions on this machine.
+```
+
 安装后，在需要跨 Codex、Claude、Pi、Kiro、Gemini session 转移上下文时，让
 Codex 使用 `knowledge-transfer` skill。
 

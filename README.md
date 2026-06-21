@@ -51,6 +51,16 @@ mkdir -p ~/.codex/skills
 cp -R skills/knowledge-transfer ~/.codex/skills/
 ```
 
+If you want an agent to install it for you, ask the agent to read this
+repository first and then install the skill from `skills/knowledge-transfer`.
+A good prompt is:
+
+```text
+Read this repository, inspect skills/knowledge-transfer/SKILL.md, then install
+the knowledge-transfer skill into the Codex skills directory for all future
+sessions on this machine.
+```
+
 After installing the skill, ask Codex to use `knowledge-transfer` when moving
 context between Codex, Claude, Pi, Kiro, or Gemini sessions.
 
