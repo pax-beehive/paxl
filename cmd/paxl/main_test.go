@@ -699,6 +699,7 @@ func (s *CommandSuite) TestSessionMirrorDeliversHandoffToExistingSession() {
 	if runtime.GOOS == "windows" {
 		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
 	}
+	s.T().Setenv("PAXL_NODE_ID", "local-node")
 	dbPath := s.seedCodexSessionWithKeyword("bridge")
 	s.seedCodexTargetSession(dbPath)
 	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
@@ -718,11 +719,15 @@ func (s *CommandSuite) TestSessionMirrorDeliversHandoffToExistingSession() {
 
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), `"schemaVersion":"paxl.session.mirror.v1"`)
+	s.Contains(s.stdout.String(), `"sourceNodeId":"local-node"`)
+	s.Contains(s.stdout.String(), `"targetNodeId":"local-node"`)
 	s.Contains(s.stdout.String(), `"targetSessionId":"codex:target"`)
 	rawPrompt, err := os.ReadFile(capturePath)
 	s.Require().NoError(err)
 	s.Contains(string(rawPrompt), "system_handoff")
 	s.Contains(string(rawPrompt), "This context was mirrored by paxl")
+	s.Contains(string(rawPrompt), "From:\nNode: local-node\nAgent: codex\nSession: codex:sess-1")
+	s.Contains(string(rawPrompt), "To:\nNode: local-node\nAgent: codex\nSession: codex:target")
 	s.Contains(string(rawPrompt), "Bridge context")
 	s.Contains(string(rawPrompt), "Bridge answer")
 }
@@ -731,6 +736,7 @@ func (s *CommandSuite) TestSessionMirrorStartsNewTargetSession() {
 	if runtime.GOOS == "windows" {
 		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
 	}
+	s.T().Setenv("PAXL_NODE_ID", "local-node")
 	dbPath := s.seedCodexSessionWithKeyword("bridge")
 	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
 	s.installFakeClaude(capturePath)
@@ -751,7 +757,10 @@ func (s *CommandSuite) TestSessionMirrorStartsNewTargetSession() {
 	s.Contains(s.stdout.String(), "new claude session")
 	rawPrompt, err := os.ReadFile(capturePath)
 	s.Require().NoError(err)
-	s.Contains(string(rawPrompt), "Target agent: claude")
+	s.Contains(
+		string(rawPrompt),
+		"To:\nNode: local-node\nAgent: claude\nSession: (new claude session)",
+	)
 	s.Contains(string(rawPrompt), "Bridge context")
 	s.Contains(string(rawPrompt), "Bridge answer")
 }
@@ -843,6 +852,7 @@ func (s *CommandSuite) TestCapsuleInjectDeliversHandoffAndListsInjection() {
 	if runtime.GOOS == "windows" {
 		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
 	}
+	s.T().Setenv("PAXL_NODE_ID", "local-node")
 	dbPath := s.seedCodexSessionWithKeyword("bridge")
 	capsuleID := s.createLocalCapsule(dbPath, "bridge")
 	s.seedCodexTargetSession(dbPath)
@@ -880,6 +890,9 @@ func (s *CommandSuite) TestCapsuleInjectDeliversHandoffAndListsInjection() {
 	)
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), `"targetSessionId":"codex:target"`)
+	s.Contains(s.stdout.String(), `"sourceNodeId":"local-node"`)
+	s.Contains(s.stdout.String(), `"targetNodeId":"local-node"`)
+	s.Contains(s.stdout.String(), `"sourceSessionId":"codex:sess-1"`)
 	s.Contains(s.stdout.String(), `"capsuleId":"`+capsuleID+`"`)
 }
 
@@ -1138,14 +1151,16 @@ func (s *CommandSuite) TestRenderCapsuleListRejectsUnknownFormat() {
 func (s *CommandSuite) TestRenderCapsuleSupportsJSONLFormat() {
 	err := renderCapsule(&s.stdout, &facade.GetCapsuleResponse{
 		Capsule: &model.KnowledgeCapsule{
-			CapsuleID: "kcap_1",
-			Keyword:   "bridge",
-			Content:   "Bridge context",
+			CapsuleID:    "kcap_1",
+			SourceNodeID: "source-node",
+			Keyword:      "bridge",
+			Content:      "Bridge context",
 		},
 	}, "jsonl")
 
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), `"capsuleId":"kcap_1"`)
+	s.Contains(s.stdout.String(), `"sourceNodeId":"source-node"`)
 }
 
 func (s *CommandSuite) TestRenderCapsuleRejectsUnknownFormat() {
@@ -1162,6 +1177,10 @@ func (s *CommandSuite) TestRenderInjectionListSupportsFormats() {
 			{
 				InjectionID:         "kci_1",
 				CapsuleID:           "kcap_1",
+				SourceNodeID:        "source-node",
+				SourceAgent:         model.AgentNameCodex,
+				SourceSessionID:     "codex:sess",
+				TargetNodeID:        "target-node",
 				TargetSessionID:     "codex:target",
 				Status:              "delivered",
 				DeliveryMessageType: "system_handoff",
@@ -1176,6 +1195,8 @@ func (s *CommandSuite) TestRenderInjectionListSupportsFormats() {
 	s.SetupTest()
 	s.Require().NoError(renderInjectionList(&s.stdout, resp, "jsonl"))
 	s.Contains(s.stdout.String(), `"injectionId":"kci_1"`)
+	s.Contains(s.stdout.String(), `"sourceNodeId":"source-node"`)
+	s.Contains(s.stdout.String(), `"targetNodeId":"target-node"`)
 }
 
 func (s *CommandSuite) TestRenderInjectionListRejectsUnknownFormat() {

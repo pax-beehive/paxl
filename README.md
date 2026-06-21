@@ -225,6 +225,10 @@ not ask the source agent to summarize with a keyword. The target agent receives 
 `system_handoff` message and can decide whether to summarize, compress, or keep
 the full context.
 
+Mirror handoffs include `From` and `To` metadata with node, agent, and session
+IDs. The node ID comes from `PAXL_NODE_ID` when set, otherwise from the local
+hostname.
+
 Mirror Claude into an existing Codex session:
 
 ```sh
@@ -281,6 +285,10 @@ app-server failures, fall back to the native CLI resume path.
 Capsules are reusable handoff artifacts. Unlike `session mirror`, capsule
 creation is keyword-driven and asks the source agent to produce a portable
 summary by default.
+
+Capsules store their source node, source agent, and source session. Injection
+records add the target node, target agent, and target session, and this metadata
+is included in JSONL output and delivered handoff text.
 
 Ask the source agent to generate a capsule:
 

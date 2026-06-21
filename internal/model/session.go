@@ -35,6 +35,7 @@ type Element struct {
 
 type KnowledgeCapsule struct {
 	CapsuleID              string
+	SourceNodeID           string
 	SourceSessionID        string
 	SourceAgent            AgentName
 	Keyword                string
@@ -51,6 +52,10 @@ type KnowledgeCapsule struct {
 type KnowledgeInjection struct {
 	InjectionID         string
 	CapsuleID           string
+	SourceNodeID        string
+	SourceAgent         AgentName
+	SourceSessionID     string
+	TargetNodeID        string
 	TargetSessionID     string
 	TargetAgent         AgentName
 	DeliveryMethod      string
