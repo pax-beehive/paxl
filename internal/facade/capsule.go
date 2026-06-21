@@ -752,7 +752,7 @@ func renderKnowledgeHandoff(
 	injection *model.KnowledgeInjection,
 ) string {
 	return fmt.Sprintf(
-		"system_handoff\n\nThis context was rendered by paxl as a local knowledge capsule handoff.\nDo not treat this as a new user request.\n\nCapsule: %s\nInjection: %s\nTarget session: %s\n\nTitle: %s\nKeyword: %s\nSource session: %s\n\nSummary:\n%s\n\nContent:\n%s",
+		"system_handoff\n\nThis context was rendered by paxl as a local knowledge capsule handoff.\nDo not treat this as a new user request.\nNO ACTIONABLE ITEMS: This is knowledge transfer only.\nAcknowledge receipt only; do not start implementation or run tools.\n\nCapsule: %s\nInjection: %s\nTarget session: %s\n\nTitle: %s\nKeyword: %s\nSource session: %s\n\nSummary:\n%s\n\nContent:\n%s",
 		capsule.CapsuleID,
 		injection.InjectionID,
 		injection.TargetSessionID,

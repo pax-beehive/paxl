@@ -244,6 +244,14 @@ func (s *CapsuleFacadeSuite) TestInjectStartsNewTargetSession() {
 	rawPrompt, err := os.ReadFile(capturePath)
 	s.Require().NoError(err)
 	s.Equal(injected.Message, string(rawPrompt))
+	s.Contains(
+		injected.Message,
+		"NO ACTIONABLE ITEMS: This is knowledge transfer only.",
+	)
+	s.Contains(
+		injected.Message,
+		"Acknowledge receipt only; do not start implementation or run tools.",
+	)
 }
 
 func (s *CapsuleFacadeSuite) TestInjectRejectsMissingTargetAgentForNewSession() {
@@ -301,6 +309,14 @@ func (s *CapsuleFacadeSuite) TestInjectLoadsUncachedTargetSessionBeforeDelivery(
 	rawPrompt, err := os.ReadFile(capturePath)
 	s.Require().NoError(err)
 	s.Equal(injected.Message, string(rawPrompt))
+	s.Contains(
+		injected.Message,
+		"NO ACTIONABLE ITEMS: This is knowledge transfer only.",
+	)
+	s.Contains(
+		injected.Message,
+		"Acknowledge receipt only; do not start implementation or run tools.",
+	)
 }
 
 func (s *CapsuleFacadeSuite) TestInjectRejectsArchivedCapsule() {
