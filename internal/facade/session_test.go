@@ -133,6 +133,81 @@ func (s *SessionFacadeSuite) TestGetSyncsSessionElementsWhenNeeded() {
 	s.Equal("Hello", resp.Elements[0].ContentText)
 }
 
+func (s *SessionFacadeSuite) TestGetRefreshesCachedSessionElements() {
+	codexHome := s.T().TempDir()
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.T().Setenv("CODEX_HOME", codexHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-test-sess-refresh.jsonl"),
+		[]byte(
+			`{"timestamp":"2026-06-20T01:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Old cached"}]}}`+"\n"+
+				`{"timestamp":"2026-06-20T01:01:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"New live"}]}}`+"\n",
+		),
+		0o600,
+	))
+	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+		Agent: model.AgentNameCodex,
+		Sessions: []*model.Session{
+			{NativeID: "sess-refresh", Title: "Refresh"},
+		},
+	})
+	s.Require().NoError(err)
+	_, err = s.store.ReplaceSessionElements(s.ctx, &store.ReplaceSessionElementsRequest{
+		SessionID: "codex:sess-refresh",
+		Elements: []*model.Element{
+			{
+				SessionID:   "codex:sess-refresh",
+				Seq:         1,
+				Type:        "message",
+				Role:        "user",
+				ContentText: "Old cached",
+			},
+		},
+	})
+	s.Require().NoError(err)
+	sessionFacade := facade.NewSessionFacade(nil, s.store)
+
+	resp, err := sessionFacade.Get(s.ctx, &facade.GetSessionRequest{ID: "codex:sess-refresh"})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Elements, 2)
+	s.Equal("Old cached", resp.Elements[0].ContentText)
+	s.Equal("New live", resp.Elements[1].ContentText)
+}
+
+func (s *SessionFacadeSuite) TestGetReturnsCachedSessionElementsWhenRefreshFails() {
+	codexHome := s.T().TempDir()
+	s.T().Setenv("CODEX_HOME", codexHome)
+	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+		Agent: model.AgentNameCodex,
+		Sessions: []*model.Session{
+			{NativeID: "cached-only", Title: "Cached only"},
+		},
+	})
+	s.Require().NoError(err)
+	_, err = s.store.ReplaceSessionElements(s.ctx, &store.ReplaceSessionElementsRequest{
+		SessionID: "codex:cached-only",
+		Elements: []*model.Element{
+			{
+				SessionID:   "codex:cached-only",
+				Seq:         1,
+				Type:        "message",
+				Role:        "user",
+				ContentText: "Cached content",
+			},
+		},
+	})
+	s.Require().NoError(err)
+	sessionFacade := facade.NewSessionFacade(nil, s.store)
+
+	resp, err := sessionFacade.Get(s.ctx, &facade.GetSessionRequest{ID: "codex:cached-only"})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Elements, 1)
+	s.Equal("Cached content", resp.Elements[0].ContentText)
+}
+
 func (s *SessionFacadeSuite) TestGetLoadsUncachedSessionFromAgentLogs() {
 	codexHome := s.T().TempDir()
 	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
