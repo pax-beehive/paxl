@@ -39,7 +39,7 @@ Codex and Claude should be modeled as local-log plus native delivery, not as arb
 
 Important behavior to preserve:
 
-- Codex App/Desktop existing session delivery uses `codex app-server` `thread/resume` plus `turn/start`, with `codex exec resume --all <session-id> -` as fallback.
+- Codex App/Desktop existing session delivery uses `codex app-server` `thread/resume` plus `turn/steer` when an active turn is steerable; it falls back to `turn/start` for idle app sessions and to `codex exec resume --all <session-id> -` when app-server delivery fails.
 - Codex non-App existing session delivery uses `codex exec resume --all <session-id> -`.
 - Codex new session delivery uses `codex exec -`.
 - Claude existing session delivery uses `claude --print --resume <session-id>`.

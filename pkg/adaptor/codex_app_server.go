@@ -11,7 +11,10 @@ import (
 	"strings"
 )
 
-const codexAppServerDeliveryMethod = "app_server_turn"
+const (
+	codexAppServerTurnDeliveryMethod  = "app_server_turn"
+	codexAppServerSteerDeliveryMethod = "app_server_steer"
+)
 
 type codexAppServerRequest struct {
 	JSONRPC string      `json:"jsonrpc"`
@@ -24,6 +27,7 @@ type codexAppServerResponse struct {
 	ID     int                  `json:"id"`
 	Error  *codexAppServerError `json:"error"`
 	Method string               `json:"method"`
+	Result json.RawMessage      `json:"result"`
 }
 
 type codexAppServerError struct {
@@ -93,7 +97,8 @@ func promptCodexAppServer(
 		stderr:  &stderr,
 	}
 	client.scanner.Buffer(make([]byte, 0, 64*1024), scannerMaxTokenSize)
-	if err := client.deliver(req.NativeID, req.Text); err != nil {
+	deliveryMethod, err := client.deliver(req.NativeID, req.Text)
+	if err != nil {
 		_ = stdin.Close()
 		_ = command.Wait()
 		return nil, err
@@ -105,7 +110,7 @@ func promptCodexAppServer(
 		return nil, fmt.Errorf("run codex app-server: %w: %s", err, stderr.String())
 	}
 	writeCommandOutput(option, "stderr", stderr.String())
-	return &PromptResponse{DeliveryMethod: codexAppServerDeliveryMethod}, nil
+	return &PromptResponse{DeliveryMethod: deliveryMethod}, nil
 }
 
 type codexAppServerClient struct {
@@ -114,7 +119,7 @@ type codexAppServerClient struct {
 	stderr  *bytes.Buffer
 }
 
-func (c *codexAppServerClient) deliver(threadID string, text string) error {
+func (c *codexAppServerClient) deliver(threadID string, text string) (string, error) {
 	if err := c.send(&codexAppServerRequest{
 		JSONRPC: "2.0",
 		ID:      1,
@@ -128,17 +133,17 @@ func (c *codexAppServerClient) deliver(threadID string, text string) error {
 			"capabilities": map[string]bool{"experimentalApi": true},
 		},
 	}); err != nil {
-		return err
+		return "", err
 	}
 	if err := c.waitForResponse(1); err != nil {
-		return err
+		return "", err
 	}
 	if err := c.send(&codexAppServerRequest{
 		JSONRPC: "2.0",
 		Method:  "initialized",
 		Params:  map[string]interface{}{},
 	}); err != nil {
-		return err
+		return "", err
 	}
 	if err := c.send(&codexAppServerRequest{
 		JSONRPC: "2.0",
@@ -146,10 +151,32 @@ func (c *codexAppServerClient) deliver(threadID string, text string) error {
 		Method:  "thread/resume",
 		Params:  map[string]string{"threadId": threadID},
 	}); err != nil {
-		return err
+		return "", err
 	}
-	if err := c.waitForResponse(2); err != nil {
-		return err
+	resumeResult, err := c.waitForResponseResult(2)
+	if err != nil {
+		return "", err
+	}
+	if activeTurnID := activeCodexTurnID(resumeResult); activeTurnID != "" {
+		if err := c.send(&codexAppServerRequest{
+			JSONRPC: "2.0",
+			ID:      3,
+			Method:  "turn/steer",
+			Params: map[string]interface{}{
+				"threadId":            threadID,
+				"expectedTurnId":      activeTurnID,
+				"clientUserMessageId": nil,
+				"input": []map[string]string{
+					{"type": "text", "text": text},
+				},
+			},
+		}); err != nil {
+			return "", err
+		}
+		if err := c.waitForResponse(3); err != nil {
+			return "", err
+		}
+		return codexAppServerSteerDeliveryMethod, nil
 	}
 	if err := c.send(&codexAppServerRequest{
 		JSONRPC: "2.0",
@@ -162,9 +189,30 @@ func (c *codexAppServerClient) deliver(threadID string, text string) error {
 			},
 		},
 	}); err != nil {
-		return err
+		return "", err
 	}
-	return c.waitForTurnCompletion(3)
+	return codexAppServerTurnDeliveryMethod, c.waitForTurnCompletion(3)
+}
+
+func activeCodexTurnID(raw json.RawMessage) string {
+	var result struct {
+		Thread struct {
+			Turns []struct {
+				ID     string `json:"id"`
+				Status string `json:"status"`
+			} `json:"turns"`
+		} `json:"thread"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return ""
+	}
+	for index := len(result.Thread.Turns) - 1; index >= 0; index-- {
+		turn := result.Thread.Turns[index]
+		if turn.ID != "" && turn.Status == "inProgress" {
+			return turn.ID
+		}
+	}
+	return ""
 }
 
 func (c *codexAppServerClient) send(req *codexAppServerRequest) error {
@@ -179,28 +227,33 @@ func (c *codexAppServerClient) send(req *codexAppServerRequest) error {
 }
 
 func (c *codexAppServerClient) waitForResponse(id int) error {
+	_, err := c.waitForResponseResult(id)
+	return err
+}
+
+func (c *codexAppServerClient) waitForResponseResult(id int) (json.RawMessage, error) {
 	for c.scanner.Scan() {
 		var resp codexAppServerResponse
 		if err := json.Unmarshal(c.scanner.Bytes(), &resp); err != nil {
-			return fmt.Errorf("decode app-server response: %w", err)
+			return nil, fmt.Errorf("decode app-server response: %w", err)
 		}
 		if resp.ID != id {
 			continue
 		}
 		if resp.Error != nil {
-			return fmt.Errorf(
+			return nil, fmt.Errorf(
 				"app-server response %d failed: %d %s",
 				id,
 				resp.Error.Code,
 				resp.Error.Message,
 			)
 		}
-		return nil
+		return resp.Result, nil
 	}
 	if err := c.scanner.Err(); err != nil {
-		return fmt.Errorf("read app-server response: %w", err)
+		return nil, fmt.Errorf("read app-server response: %w", err)
 	}
-	return fmt.Errorf("app-server closed before response %d: %s", id, c.stderr.String())
+	return nil, fmt.Errorf("app-server closed before response %d: %s", id, c.stderr.String())
 }
 
 func (c *codexAppServerClient) waitForTurnCompletion(id int) error {

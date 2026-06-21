@@ -117,7 +117,8 @@ Current delivery commands:
 
 ```text
 Codex App/Desktop existing session:
-                        codex app-server thread/resume + turn/start
+                        codex app-server thread/resume + turn/steer when an
+                        active turn is steerable, otherwise turn/start
 Codex other existing session or app-server fallback:
                         codex exec resume --all <session-id> -
 Codex new session:      codex exec -

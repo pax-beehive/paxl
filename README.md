@@ -343,7 +343,10 @@ paxl capsule archive <capsule-id>
 
 Codex delivery:
 
-- Existing session: `codex exec resume --all <session-id> -`
+- Codex App/Desktop existing session: `codex app-server` `thread/resume`, then
+  `turn/steer` when an active turn is steerable, otherwise `turn/start`.
+- Other existing sessions or app-server fallback:
+  `codex exec resume --all <session-id> -`
 - New session: `codex exec -`
 
 Claude delivery:

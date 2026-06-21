@@ -324,7 +324,8 @@ paxl capsule archive <capsule-id>
 
 Codex 投递：
 
-- Codex App/Desktop 已有 session：`codex app-server` 的 `thread/resume` + `turn/start`
+- Codex App/Desktop 已有 session：`codex app-server` 的 `thread/resume` 后优先
+  `turn/steer`；没有可 steer 的 active turn 时回退到 `turn/start`
 - 其他已有 session 或 app-server 失败回退：`codex exec resume --all <session-id> -`
 - 新 session：`codex exec -`
 
