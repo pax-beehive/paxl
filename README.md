@@ -126,6 +126,45 @@ The default report prints the top 20 production functions and the repository
 average. Use it alongside cyclomatic complexity when deciding whether a function
 is hard to reason about.
 
+## Release Uploads
+
+`paxl` releases are native Go binaries uploaded to GCS. The release script
+defaults to the next patch version, derived from the latest local
+`paxl/vX.Y.Z` git tag. If no release tag exists, it starts from the version in
+`cmd/paxl/main.go`.
+
+Dry-run the release without uploading or tagging:
+
+```sh
+make release-paxl-dry-run
+make release-paxl-dry-run RELEASE_VERSION=minor RELEASE_TAGS=beta
+```
+
+Upload a stable release:
+
+```sh
+make release-paxl
+```
+
+The script builds `darwin/amd64`, `darwin/arm64`, `linux/amd64`, and
+`linux/arm64`, stamps the binary with version and commit metadata, smoke-tests
+the native host binary with `paxl version`, writes sha256 files and a
+`manifest.json`, uploads to:
+
+```text
+gs://pax-tech-bucket/paxl/releases/<version>/
+```
+
+After a successful upload it creates a local git tag:
+
+```text
+paxl/v<version>
+```
+
+Set `PAX_RELEASE_PUSH_TAG=1` to push the tag. Use `RELEASE_VERSION=0.2.0` for an
+explicit semantic version, or `RELEASE_VERSION=major|minor|patch` for automatic
+incrementing.
+
 ## Common Workflows
 
 ### List Available Agents

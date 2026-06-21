@@ -116,6 +116,42 @@ make cognitive-complexity COGNITIVE_TARGETS=./pkg/adaptor COGNITIVE_TOP=10
 默认报告会输出生产代码里 cognitive complexity 最高的 20 个函数，以及仓库平均值。
 它适合和 cyclomatic complexity 一起判断某个函数是否难以理解。
 
+## Release 上传
+
+`paxl` 以原生 Go binary 的形式发布到 GCS。release 脚本默认从最新本地
+`paxl/vX.Y.Z` git tag 递增 patch 版本；如果没有 release tag，则从
+`cmd/paxl/main.go` 里的版本开始递增。
+
+不上传、不打 tag 的 dry run：
+
+```sh
+make release-paxl-dry-run
+make release-paxl-dry-run RELEASE_VERSION=minor RELEASE_TAGS=beta
+```
+
+上传 stable release：
+
+```sh
+make release-paxl
+```
+
+脚本会构建 `darwin/amd64`、`darwin/arm64`、`linux/amd64` 和 `linux/arm64`，
+通过 ldflags 写入 version 和 commit metadata，用 `paxl version` 对当前主机平台
+binary 做 smoke test，生成 sha256 文件和 `manifest.json`，并上传到：
+
+```text
+gs://pax-tech-bucket/paxl/releases/<version>/
+```
+
+上传成功后，脚本会创建本地 git tag：
+
+```text
+paxl/v<version>
+```
+
+设置 `PAX_RELEASE_PUSH_TAG=1` 会推送 tag。`RELEASE_VERSION=0.2.0` 可以指定明确
+semantic version；`RELEASE_VERSION=major|minor|patch` 则按语义版本自动递增。
+
 ## 常用工作流
 
 ### 查看可用 agents
