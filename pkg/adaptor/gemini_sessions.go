@@ -3,6 +3,8 @@ package adaptor
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -43,6 +45,10 @@ type geminiConversation struct {
 
 type geminiPatchLine struct {
 	Set geminiConversation `json:"$set"`
+}
+
+type geminiProjectsIndex struct {
+	Projects map[string]string `json:"projects"`
 }
 
 type geminiMessage struct {
@@ -271,13 +277,21 @@ func mergeGeminiMetadata(target *geminiConversation, source *geminiConversation)
 
 func geminiSession(path string, conversation *geminiConversation) *model.Session {
 	updatedAt := geminiUpdatedAt(conversation)
+	projectRoot := firstNonEmpty(
+		geminiProjectRoot(path),
+		geminiProjectRootForHash(conversation.ProjectHash),
+	)
 	return &model.Session{
-		ID:         "gemini:" + conversation.SessionID,
-		Agent:      model.AgentNameGemini,
-		NativeID:   conversation.SessionID,
-		Title:      firstNonEmpty(geminiTitle(conversation), conversation.SessionID),
+		ID:       "gemini:" + conversation.SessionID,
+		Agent:    model.AgentNameGemini,
+		NativeID: conversation.SessionID,
+		Title: firstNonEmpty(
+			geminiTitle(conversation),
+			geminiProjectTitle(projectRoot),
+			conversation.SessionID,
+		),
 		Status:     "available",
-		ProjectID:  geminiProjectRoot(path),
+		ProjectID:  projectRoot,
 		LastActive: updatedAt,
 		UpdatedAt:  updatedAt,
 	}
@@ -330,11 +344,32 @@ func geminiTitle(conversation *geminiConversation) string {
 }
 
 func geminiUpdatedAt(conversation *geminiConversation) string {
-	updatedAt := conversation.LastUpdated
+	updatedAt := firstNonEmpty(conversation.LastUpdated, conversation.StartTime)
 	for _, message := range conversation.Messages {
-		updatedAt = firstNonEmpty(message.Timestamp, updatedAt)
+		updatedAt = laterGeminiTimestamp(updatedAt, message.Timestamp)
 	}
-	return firstNonEmpty(updatedAt, conversation.StartTime)
+	return updatedAt
+}
+
+func laterGeminiTimestamp(current string, candidate string) string {
+	if current == "" {
+		return candidate
+	}
+	if candidate == "" {
+		return current
+	}
+	currentTime, currentOK := parseSessionTime(current)
+	candidateTime, candidateOK := parseSessionTime(candidate)
+	if currentOK && candidateOK {
+		if candidateTime.After(currentTime) {
+			return candidate
+		}
+		return current
+	}
+	if candidate > current {
+		return candidate
+	}
+	return current
 }
 
 func geminiProjectRoot(path string) string {
@@ -344,6 +379,40 @@ func geminiProjectRoot(path string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(raw))
+}
+
+func geminiProjectRootForHash(projectHash string) string {
+	projectHash = strings.TrimSpace(projectHash)
+	if projectHash == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(filepath.Join(geminiRootNoError(), "projects.json"))
+	if err != nil {
+		return ""
+	}
+	var index geminiProjectsIndex
+	if err := json.Unmarshal(raw, &index); err != nil {
+		return ""
+	}
+	for projectRoot, projectName := range index.Projects {
+		if projectHash == projectName || projectHash == sha256Hex(projectRoot) {
+			return projectRoot
+		}
+	}
+	return ""
+}
+
+func sha256Hex(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func geminiProjectTitle(projectRoot string) string {
+	projectRoot = strings.TrimSpace(projectRoot)
+	if projectRoot == "" {
+		return ""
+	}
+	return filepath.Base(projectRoot)
 }
 
 func geminiRoot() (string, error) {

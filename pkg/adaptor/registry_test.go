@@ -3,6 +3,8 @@ package adaptor_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -347,6 +349,96 @@ func (s *RegistrySuite) TestGeminiAdapterListsSessionsThroughPublicInterface() {
 	s.Equal("Explain paxl", resp.Sessions[0].Title)
 	s.Equal("2026-06-20T05:32:20.160Z", resp.Sessions[0].UpdatedAt)
 	s.Equal("/tmp/project", resp.Sessions[0].ProjectID)
+}
+
+func (s *RegistrySuite) TestGeminiAdapterListsSessionTitleFromPatchMessages() {
+	geminiHome := s.T().TempDir()
+	sessionDir := filepath.Join(geminiHome, "tmp", "sample-project", "chats")
+	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
+	s.T().Setenv("GEMINI_HOME", geminiHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(sessionDir, "session-2026-06-20T05-31-00346688.jsonl"),
+		[]byte(
+			`{"sessionId":"00346688-3a4e-4309-ad11-9c34f25c4e29","projectHash":"sample-project","startTime":"2026-06-20T05:31:20.160Z","lastUpdated":"2026-06-20T05:31:20.160Z","kind":"main"}`+"\n"+
+				`{"$set":{"messages":[{"id":"u1","timestamp":"2026-06-20T05:31:30.160Z","type":"user","content":[{"text":"Explain Gemini title extraction"}]}],"lastUpdated":"2026-06-20T05:32:20.160Z"}}`+"\n",
+		),
+		0o600,
+	))
+
+	resp, err := adaptor.NewGeminiAdapter().ListSessions(
+		context.Background(),
+		&adaptor.ListSessionsRequest{},
+	)
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Sessions, 1)
+	s.Equal("Explain Gemini title extraction", resp.Sessions[0].Title)
+	s.Equal("2026-06-20T05:32:20.160Z", resp.Sessions[0].UpdatedAt)
+}
+
+func (s *RegistrySuite) TestGeminiAdapterUsesProjectNameWhenOnlyBootstrapContextExists() {
+	geminiHome := s.T().TempDir()
+	sessionDir := filepath.Join(geminiHome, "tmp", "sample-project", "chats")
+	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(geminiHome, "tmp", "sample-project", ".project_root"),
+		[]byte("/tmp/pax-console"),
+		0o600,
+	))
+	s.T().Setenv("GEMINI_HOME", geminiHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(sessionDir, "session-2026-06-20T05-31-00346688.jsonl"),
+		[]byte(
+			`{"sessionId":"00346688-3a4e-4309-ad11-9c34f25c4e29","projectHash":"sample-project","startTime":"2026-06-20T05:31:20.160Z","lastUpdated":"2026-06-20T05:31:20.160Z","kind":"main"}`+"\n"+
+				`{"$set":{"messages":[{"id":"u1","timestamp":"2026-06-20T05:31:20.160Z","type":"user","content":[{"text":"<session_context>\nGemini CLI bootstrap context.\n</session_context>"}]}]}}`+"\n",
+		),
+		0o600,
+	))
+
+	resp, err := adaptor.NewGeminiAdapter().ListSessions(
+		context.Background(),
+		&adaptor.ListSessionsRequest{},
+	)
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Sessions, 1)
+	s.Equal("pax-console", resp.Sessions[0].Title)
+}
+
+func (s *RegistrySuite) TestGeminiAdapterResolvesProjectNameFromProjectHash() {
+	geminiHome := s.T().TempDir()
+	projectRoot := "/tmp/pax-console"
+	hashBytes := sha256.Sum256([]byte(projectRoot))
+	projectHash := hex.EncodeToString(hashBytes[:])
+	sessionDir := filepath.Join(geminiHome, "tmp", projectHash, "chats")
+	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(geminiHome, "projects.json"),
+		[]byte(`{"projects":{"/tmp/pax-console":"pax-console"}}`),
+		0o600,
+	))
+	s.T().Setenv("GEMINI_HOME", geminiHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(sessionDir, "session-2026-06-20T05-31-e89d8200.json"),
+		[]byte(`{
+			"sessionId":"e89d8200-6c10-4abd-9d25-4a6641ee8667",
+			"projectHash":"`+projectHash+`",
+			"startTime":"2026-06-20T05:31:20.160Z",
+			"lastUpdated":"2026-06-20T05:31:20.160Z",
+			"messages":[{"id":"i1","timestamp":"2026-06-20T05:31:20.160Z","type":"info","content":"Loaded project."}]
+		}`),
+		0o600,
+	))
+
+	resp, err := adaptor.NewGeminiAdapter().ListSessions(
+		context.Background(),
+		&adaptor.ListSessionsRequest{},
+	)
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Sessions, 1)
+	s.Equal("pax-console", resp.Sessions[0].Title)
+	s.Equal(projectRoot, resp.Sessions[0].ProjectID)
 }
 
 func (s *RegistrySuite) TestGeminiAdapterGetsJSONLSessionThroughPublicInterface() {
