@@ -247,7 +247,8 @@ paxl capsule archive <capsule-id>
 
 Codex 投递：
 
-- 已有 session：`codex exec resume --all <session-id> -`
+- Codex App/Desktop 已有 session：`codex app-server` 的 `thread/resume` + `turn/start`
+- 其他已有 session 或 app-server 失败回退：`codex exec resume --all <session-id> -`
 - 新 session：`codex exec -`
 
 Claude 投递：

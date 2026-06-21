@@ -35,11 +35,12 @@ The CLI should preserve the important user-facing capabilities from the earlier 
 - List, get, archive, and inject knowledge capsules.
 - Mirror one session into another agent session.
 
-Codex and Claude should be modeled as local-log plus native CLI delivery, not as arbitrary ACP attachment to existing local sessions.
+Codex and Claude should be modeled as local-log plus native delivery, not as arbitrary ACP attachment to existing local sessions.
 
 Important behavior to preserve:
 
-- Codex existing session delivery uses `codex exec resume --all <session-id> -`.
+- Codex App/Desktop existing session delivery uses `codex app-server` `thread/resume` plus `turn/start`, with `codex exec resume --all <session-id> -` as fallback.
+- Codex non-App existing session delivery uses `codex exec resume --all <session-id> -`.
 - Codex new session delivery uses `codex exec -`.
 - Claude existing session delivery uses `claude --print --resume <session-id>`.
 - Claude new session delivery uses `claude --print`.

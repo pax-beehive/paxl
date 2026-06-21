@@ -43,9 +43,12 @@ type codexIndexEntry struct {
 type codexMetaLine struct {
 	Type    string `json:"type"`
 	Payload struct {
-		ID        string `json:"id"`
-		Timestamp string `json:"timestamp"`
-		CWD       string `json:"cwd"`
+		ID           string          `json:"id"`
+		Timestamp    string          `json:"timestamp"`
+		CWD          string          `json:"cwd"`
+		Originator   string          `json:"originator"`
+		Source       json.RawMessage `json:"source"`
+		ThreadSource string          `json:"thread_source"`
 	} `json:"payload"`
 }
 
@@ -111,6 +114,17 @@ func promptCodexSession(
 	}
 	if err := validateNativeSessionID(req.NativeID); err != nil {
 		return nil, err
+	}
+	if isCodexAppSession(req.NativeID) {
+		resp, err := promptCodexAppServer(ctx, req, option)
+		if err == nil {
+			return resp, nil
+		}
+		writeCommandOutput(
+			option,
+			"stderr",
+			"Codex app-server delivery failed; falling back to CLI resume: "+err.Error(),
+		)
 	}
 	return runPromptCommand(
 		ctx,

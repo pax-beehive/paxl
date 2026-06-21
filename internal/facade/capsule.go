@@ -245,14 +245,15 @@ func (f *CapsuleFacade) Inject(
 		CapsuleID:           capsule.CapsuleID,
 		TargetSessionID:     target.ID,
 		TargetAgent:         target.Agent,
-		DeliveryMethod:      "cli_resume",
 		DeliveryMessageType: "system_handoff",
 		Status:              "delivered",
 	}
 	message := renderKnowledgeHandoff(capsule, injection)
-	if err := f.deliverInjection(ctx, target, message, option); err != nil {
+	deliveryMethod, err := f.deliverInjection(ctx, target, message, option)
+	if err != nil {
 		return nil, fmt.Errorf("deliver knowledge capsule: %w", err)
 	}
+	injection.DeliveryMethod = deliveryMethod
 	created, err := f.store.CreateKnowledgeInjection(
 		ctx,
 		&store.CreateKnowledgeInjectionRequest{Injection: injection},
@@ -632,7 +633,8 @@ func (f *CapsuleFacade) deliverMirrorToSession(
 		return nil, "", fmt.Errorf("find target session %q: %w", req.TargetSessionID, err)
 	}
 	message := renderMirrorHandoff(capsule, mirrorID, target.Session.Agent, target.Session.ID)
-	if err := f.deliverInjection(ctx, target.Session, message, option); err != nil {
+	deliveryMethod, err := f.deliverInjection(ctx, target.Session, message, option)
+	if err != nil {
 		return nil, "", err
 	}
 	return &model.KnowledgeInjection{
@@ -640,7 +642,7 @@ func (f *CapsuleFacade) deliverMirrorToSession(
 		CapsuleID:           capsule.CapsuleID,
 		TargetSessionID:     target.Session.ID,
 		TargetAgent:         target.Session.Agent,
-		DeliveryMethod:      "cli_resume",
+		DeliveryMethod:      deliveryMethod,
 		DeliveryMessageType: "system_handoff",
 		Status:              "delivered",
 	}, message, nil
@@ -684,19 +686,23 @@ func (f *CapsuleFacade) deliverInjection(
 	target *model.Session,
 	message string,
 	option *Option,
-) error {
+) (string, error) {
 	adapter, err := f.session.registry.Lookup(ctx, &adaptor.LookupRequest{Name: target.Agent})
 	if err != nil {
-		return fmt.Errorf("lookup %s adapter: %w", target.Agent, err)
+		return "", fmt.Errorf("lookup %s adapter: %w", target.Agent, err)
 	}
-	if _, err := adapter.Adapter.Prompt(
+	resp, err := adapter.Adapter.Prompt(
 		ctx,
 		&adaptor.PromptRequest{NativeID: target.NativeID, Text: message},
 		adaptor.WithVerboseWriter(option.VerboseWriter),
-	); err != nil {
-		return fmt.Errorf("prompt target session: %w", err)
+	)
+	if err != nil {
+		return "", fmt.Errorf("prompt target session: %w", err)
 	}
-	return nil
+	if resp == nil {
+		return "cli_resume", nil
+	}
+	return firstNonEmpty(resp.DeliveryMethod, "cli_resume"), nil
 }
 
 func extractKnowledgeContent(keyword string, elements []*model.Element) (string, int, bool) {

@@ -25,7 +25,7 @@ Architecture documentation: [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md)
 
 Current built-in agents:
 
-- `codex`: local Codex logs plus Codex CLI delivery.
+- `codex`: local Codex logs plus Codex app-server or CLI delivery.
 - `claude`: local Claude Code logs plus Claude Code CLI delivery.
 - `pi`: local Pi logs plus Pi CLI delivery.
 - `kiro`: local Kiro CLI logs plus Kiro CLI delivery.
@@ -209,8 +209,9 @@ paxl session mirror \
      --verbose
    ```
 
-Codex will receive the mirrored context through its native resume path. You can
-then ask Codex to continue the work, review the handoff, or compress the context.
+Codex App/Desktop sessions are delivered through `codex app-server` when paxl
+can identify them from local rollout metadata. Other Codex sessions, or
+app-server failures, fall back to the native CLI resume path.
 
 ### Create a Knowledge Capsule
 

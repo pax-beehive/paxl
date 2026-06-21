@@ -554,6 +554,75 @@ func (s *RegistrySuite) TestCodexAdapterPromptsThroughCLIResume() {
 	s.Equal("handoff text", string(rawPrompt))
 }
 
+func (s *RegistrySuite) TestCodexAdapterPromptsAppSessionThroughAppServer() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	codexHome := s.T().TempDir()
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.T().Setenv("CODEX_HOME", codexHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-test-app-session.jsonl"),
+		[]byte(
+			`{"type":"session_meta","payload":{"id":"app-session","timestamp":"2026-06-20T01:00:00Z","cwd":"/tmp/project","originator":"Codex Desktop","source":"vscode","thread_source":"user"}}`+"\n",
+		),
+		0o600,
+	))
+	appCapturePath := filepath.Join(s.T().TempDir(), "app-server.jsonl")
+	cliCapturePath := filepath.Join(s.T().TempDir(), "cli-prompt.txt")
+	s.installCodexAppServerFakeCommand(appCapturePath, cliCapturePath, false)
+
+	resp, err := adaptor.NewCodexAdapter().Prompt(
+		context.Background(),
+		&adaptor.PromptRequest{NativeID: "app-session", Text: "handoff text"},
+	)
+
+	s.Require().NoError(err)
+	s.Require().NotNil(resp)
+	s.Equal("app_server_turn", resp.DeliveryMethod)
+	rawApp, err := os.ReadFile(appCapturePath)
+	s.Require().NoError(err)
+	s.Contains(string(rawApp), `"method":"thread/resume"`)
+	s.Contains(string(rawApp), `"threadId":"app-session"`)
+	s.Contains(string(rawApp), `"method":"turn/start"`)
+	s.Contains(string(rawApp), `"text":"handoff text"`)
+	_, err = os.Stat(cliCapturePath)
+	s.ErrorIs(err, os.ErrNotExist)
+}
+
+func (s *RegistrySuite) TestCodexAdapterFallsBackToCLIResumeWhenAppServerFails() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	codexHome := s.T().TempDir()
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.T().Setenv("CODEX_HOME", codexHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-test-app-session.jsonl"),
+		[]byte(
+			`{"type":"session_meta","payload":{"id":"app-session","timestamp":"2026-06-20T01:00:00Z","cwd":"/tmp/project","originator":"Codex Desktop","source":"vscode","thread_source":"user"}}`+"\n",
+		),
+		0o600,
+	))
+	appCapturePath := filepath.Join(s.T().TempDir(), "app-server.jsonl")
+	cliCapturePath := filepath.Join(s.T().TempDir(), "cli-prompt.txt")
+	s.installCodexAppServerFakeCommand(appCapturePath, cliCapturePath, true)
+
+	resp, err := adaptor.NewCodexAdapter().Prompt(
+		context.Background(),
+		&adaptor.PromptRequest{NativeID: "app-session", Text: "handoff text"},
+	)
+
+	s.Require().NoError(err)
+	s.Require().NotNil(resp)
+	s.Equal("cli_resume", resp.DeliveryMethod)
+	rawPrompt, err := os.ReadFile(cliCapturePath)
+	s.Require().NoError(err)
+	s.Equal("handoff text", string(rawPrompt))
+}
+
 func (s *RegistrySuite) TestClaudeAdapterPromptsThroughCLIResume() {
 	if runtime.GOOS == "windows" {
 		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
@@ -856,6 +925,43 @@ func (s *RegistrySuite) installVerboseFakeCommand(name string, capturePath strin
 				"cat > "+capturePath+"\n"+
 				"printf 'fake stdout.\\n'\n"+
 				"printf 'fake stderr.\\n' >&2\n",
+		),
+		0o700,
+	))
+	s.T().Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func (s *RegistrySuite) installCodexAppServerFakeCommand(
+	appCapturePath string,
+	cliCapturePath string,
+	failAppServer bool,
+) {
+	binDir := s.T().TempDir()
+	fakePath := filepath.Join(binDir, "codex")
+	failValue := "0"
+	if failAppServer {
+		failValue = "1"
+	}
+	s.Require().NoError(os.WriteFile(
+		fakePath,
+		[]byte(
+			"#!/bin/sh\n"+
+				"if [ \"$1\" = \"app-server\" ]; then\n"+
+				"  if [ \""+failValue+"\" = \"1\" ]; then\n"+
+				"    printf 'app server unavailable\\n' >&2\n"+
+				"    exit 42\n"+
+				"  fi\n"+
+				"  while IFS= read -r line; do\n"+
+				"    printf '%s\\n' \"$line\" >> "+appCapturePath+"\n"+
+				"    case \"$line\" in\n"+
+				"      *'\"id\":1'*) printf '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\\n' ;;\n"+
+				"      *'\"id\":2'*) printf '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"thread\":{\"id\":\"app-session\"}}}\\n' ;;\n"+
+				"      *'\"id\":3'*) printf '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-test\"}}}\\n'; printf '{\"jsonrpc\":\"2.0\",\"method\":\"turn/completed\",\"params\":{\"turn\":{\"id\":\"turn-test\"}}}\\n' ;;\n"+
+				"    esac\n"+
+				"  done\n"+
+				"  exit 0\n"+
+				"fi\n"+
+				"cat > "+cliCapturePath+"\n",
 		),
 		0o700,
 	))
