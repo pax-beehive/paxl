@@ -8,7 +8,7 @@ PAXL_VERSION="${PAXL_VERSION:-}"
 PAXL_BUCKET="${PAXL_BUCKET:-pax-tech-bucket}"
 PAXL_PREFIX="${PAXL_PREFIX:-paxl/releases}"
 PAXL_MANIFEST_URL="${PAXL_MANIFEST_URL:-}"
-PAXL_USE_RESOLVER="${PAXL_USE_RESOLVER:-0}"
+PAXL_USE_RESOLVER="${PAXL_USE_RESOLVER:-1}"
 PAXL_BINARY_NAME="${PAXL_BINARY_NAME:-paxl}"
 PAXL_INSTALL_DIR="${PAXL_INSTALL_DIR:-}"
 paxl_installer_tmpdir=""
@@ -205,12 +205,23 @@ resolve_from_manifest() {
 
 resolve_from_api() {
   local platform="$1"
-  local encoded_platform api response
+  local encoded_platform encoded_version encoded_tag api response
 
   encoded_platform="$(urlencode "$platform")"
-  api="${PAXL_DOWNLOAD_URL%/}${PAXL_RESOLVER_PATH}?product=paxl&platform=${encoded_platform}&tags=${PAXL_TAG}"
+  api="${PAXL_DOWNLOAD_URL%/}${PAXL_RESOLVER_PATH}?product=paxl&platform=${encoded_platform}"
+  if [[ -n "$PAXL_VERSION" ]]; then
+    encoded_version="$(urlencode "$PAXL_VERSION")"
+    api="${api}&version=${encoded_version}"
+  else
+    encoded_tag="$(urlencode "$PAXL_TAG")"
+    api="${api}&tags=${encoded_tag}"
+  fi
 
-  log "Resolving latest ${bold}${PAXL_TAG}${reset} paxl artifact"
+  if [[ -n "$PAXL_VERSION" ]]; then
+    log "Resolving paxl ${bold}${PAXL_VERSION}${reset} artifact"
+  else
+    log "Resolving latest ${bold}${PAXL_TAG}${reset} paxl artifact"
+  fi
   response="$(curl -fsSL "$api")" || fail "failed to resolve paxl artifact from $api"
   if [[ "$response" != \{* ]]; then
     fail "expected JSON from $api; got a non-JSON response"
@@ -234,9 +245,11 @@ main() {
 
   manifest_url="$PAXL_MANIFEST_URL"
   if [[ -z "$manifest_url" ]]; then
-    if [[ -n "$PAXL_VERSION" ]]; then
+    if [[ "$PAXL_USE_RESOLVER" == "1" ]]; then
+      manifest_url=""
+    elif [[ -n "$PAXL_VERSION" ]]; then
       manifest_url="https://storage.googleapis.com/${PAXL_BUCKET}/${PAXL_PREFIX}/${PAXL_VERSION}/manifest.json"
-    elif [[ "$PAXL_USE_RESOLVER" != "1" ]]; then
+    else
       manifest_url="https://storage.googleapis.com/${PAXL_BUCKET}/${PAXL_PREFIX}/latest/${PAXL_TAG}/manifest.json"
     fi
   fi
