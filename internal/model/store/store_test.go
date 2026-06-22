@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,6 +15,7 @@ import (
 type StoreSuite struct {
 	suite.Suite
 	ctx   context.Context
+	path  string
 	store *store.Store
 }
 
@@ -24,6 +26,7 @@ func TestStoreSuite(t *testing.T) {
 func (s *StoreSuite) SetupTest() {
 	s.ctx = context.Background()
 	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	s.path = dbPath
 	opened, err := store.Open(s.ctx, &store.OpenRequest{Path: dbPath})
 	s.Require().NoError(err)
 	s.store = opened.Store
@@ -88,6 +91,60 @@ func (s *StoreSuite) TestAuthCredentialLifecycle() {
 	got, err = s.store.GetAuthCredential(s.ctx)
 	s.Require().NoError(err)
 	s.Nil(got.Credential)
+}
+
+func (s *StoreSuite) TestGetAuthCredentialScansNullableOptionalFields() {
+	db, err := sql.Open("sqlite", s.path)
+	s.Require().NoError(err)
+	defer func() {
+		s.Require().NoError(db.Close())
+	}()
+	_, err = db.ExecContext(s.ctx, `
+		INSERT INTO auth_credentials (
+			id, manager_url, api_key, user_id, email, created_at, updated_at
+		)
+		VALUES ('default', 'https://manager.example', 'paxu_test', 'usr_1',
+			'cli@example.com', '2026-06-22T00:00:00Z', '2026-06-22T00:00:00Z')
+	`)
+	s.Require().NoError(err)
+
+	got, err := s.store.GetAuthCredential(s.ctx)
+
+	s.Require().NoError(err)
+	s.Require().NotNil(got.Credential)
+	s.Empty(got.Credential.UserAPIKeyID)
+	s.Empty(got.Credential.DisplayName)
+	s.Empty(got.Credential.Role)
+}
+
+func (s *StoreSuite) TestSaveAuthCredentialPreservesExistingCreatedAtWhenUpdating() {
+	createdAt := "2026-06-22T00:00:00Z"
+	_, err := s.store.SaveAuthCredential(s.ctx, &store.SaveAuthCredentialRequest{
+		Credential: &model.AuthCredential{
+			ManagerURL: "https://manager.example",
+			APIKey:     "paxu_first",
+			UserID:     "usr_1",
+			Email:      "cli@example.com",
+			CreatedAt:  createdAt,
+		},
+	})
+	s.Require().NoError(err)
+
+	updated, err := s.store.SaveAuthCredential(s.ctx, &store.SaveAuthCredentialRequest{
+		Credential: &model.AuthCredential{
+			ManagerURL: "https://manager.example",
+			APIKey:     "paxu_second",
+			UserID:     "usr_1",
+			Email:      "cli@example.com",
+		},
+	})
+
+	s.Require().NoError(err)
+	s.Equal(createdAt, updated.Credential.CreatedAt)
+	got, err := s.store.GetAuthCredential(s.ctx)
+	s.Require().NoError(err)
+	s.Equal(createdAt, got.Credential.CreatedAt)
+	s.Equal("paxu_second", got.Credential.APIKey)
 }
 
 func (s *StoreSuite) TestUpsertAndListSessions() {

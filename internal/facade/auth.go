@@ -15,7 +15,10 @@ import (
 	"github.com/pax-oss/paxl/internal/model/store"
 )
 
-const DefaultManagerURL = "https://api.paxtech.net"
+const (
+	DefaultManagerURL                 = "https://api.paxtech.net"
+	defaultDeviceLoginPollIntervalSec = int64(2)
+)
 
 type AuthHTTPClient interface {
 	Do(req *http.Request) (*http.Response, error)
@@ -115,6 +118,10 @@ func (f *AuthFacade) Login(
 	if err != nil {
 		return nil, err
 	}
+	pollInterval := time.Duration(start.Interval) * time.Second
+	if start.Interval <= 0 {
+		pollInterval = time.Duration(defaultDeviceLoginPollIntervalSec) * time.Second
+	}
 	pollCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	for {
@@ -150,14 +157,12 @@ func (f *AuthFacade) Login(
 				Credential:              credential,
 			}, nil
 		case "pending":
-			if start.Interval > 0 {
-				timer := time.NewTimer(time.Duration(start.Interval) * time.Second)
-				select {
-				case <-pollCtx.Done():
-					timer.Stop()
-					return nil, fmt.Errorf("login: timed out waiting for approval")
-				case <-timer.C:
-				}
+			timer := time.NewTimer(pollInterval)
+			select {
+			case <-pollCtx.Done():
+				timer.Stop()
+				return nil, fmt.Errorf("login: timed out waiting for approval")
+			case <-timer.C:
 			}
 		default:
 			return nil, fmt.Errorf("login: device login status %q", poll.Status)
@@ -193,7 +198,10 @@ func (f *AuthFacade) Whoami(
 	credential.Email = user.Email
 	credential.DisplayName = user.DisplayName
 	credential.Role = user.Role
-	if _, err := f.store.SaveAuthCredential(ctx, &store.SaveAuthCredentialRequest{Credential: credential}); err != nil {
+	if _, err := f.store.SaveAuthCredential(
+		ctx,
+		&store.SaveAuthCredentialRequest{Credential: credential},
+	); err != nil {
 		return nil, fmt.Errorf("save auth credential: %w", err)
 	}
 	return &WhoamiResponse{
@@ -214,7 +222,7 @@ func (f *AuthFacade) Logout(
 	}
 	if credential.UserAPIKeyID != "" {
 		var envelope managerEnvelope[map[string]bool]
-		_ = f.managerJSON(
+		if err := f.managerJSON(
 			ctx,
 			http.MethodDelete,
 			credential.ManagerURL,
@@ -222,7 +230,9 @@ func (f *AuthFacade) Logout(
 			credential.APIKey,
 			nil,
 			&envelope,
-		)
+		); err != nil {
+			return nil, fmt.Errorf("logout: revoke api key: %w", err)
+		}
 	}
 	if _, err := f.store.DeleteAuthCredential(ctx); err != nil {
 		return nil, err

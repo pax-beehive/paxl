@@ -325,18 +325,32 @@ func (s *CommandSuite) TestAuthRenderersSupportJSONAndRejectUnknownFormats() {
 		ManagerURL:              "https://manager.example",
 		UserCode:                "ABC123",
 		VerificationURIComplete: "https://manager.example/paxl-login.html?code=ABC123",
-		Credential:              &model.AuthCredential{Email: "cli@example.com"},
+		Credential: &model.AuthCredential{
+			ManagerURL: "https://manager.example",
+			APIKey:     "paxu_secret",
+			Email:      "cli@example.com",
+		},
 	}
 	s.Require().NoError(renderLogin(&s.stdout, login, "json"))
 	s.Contains(s.stdout.String(), `"user_code":"ABC123"`)
+	s.Contains(s.stdout.String(), `"manager_url":"https://manager.example"`)
+	s.NotContains(s.stdout.String(), "paxu_secret")
+	s.NotContains(s.stdout.String(), "APIKey")
 	s.stdout.Reset()
 
 	whoami := &facade.WhoamiResponse{
 		ManagerURL: "https://manager.example",
-		User:       &facade.AuthUser{UserID: "usr_1", Email: "cli@example.com"},
+		Credential: &model.AuthCredential{
+			ManagerURL: "https://manager.example",
+			APIKey:     "paxu_secret",
+			Email:      "cli@example.com",
+		},
+		User: &facade.AuthUser{UserID: "usr_1", Email: "cli@example.com"},
 	}
 	s.Require().NoError(renderWhoami(&s.stdout, whoami, "json"))
 	s.Contains(s.stdout.String(), `"email":"cli@example.com"`)
+	s.NotContains(s.stdout.String(), "paxu_secret")
+	s.NotContains(s.stdout.String(), "APIKey")
 	s.stdout.Reset()
 
 	s.Require().NoError(renderLogout(&s.stdout, &facade.LogoutResponse{}, "text"))

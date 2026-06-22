@@ -1,13 +1,13 @@
 package model
 
 type AuthCredential struct {
-	ManagerURL   string
-	APIKey       string
-	UserAPIKeyID string
-	UserID       string
-	Email        string
-	DisplayName  string
-	Role         string
-	CreatedAt    string
-	UpdatedAt    string
+	ManagerURL   string `json:"manager_url"`
+	APIKey       string `json:"-"`
+	UserAPIKeyID string `json:"user_api_key_id,omitempty"`
+	UserID       string `json:"user_id,omitempty"`
+	Email        string `json:"email,omitempty"`
+	DisplayName  string `json:"display_name,omitempty"`
+	Role         string `json:"role,omitempty"`
+	CreatedAt    string `json:"created_at,omitempty"`
+	UpdatedAt    string `json:"updated_at,omitempty"`
 }

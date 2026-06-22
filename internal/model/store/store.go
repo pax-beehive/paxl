@@ -176,7 +176,14 @@ func (s *Store) SaveAuthCredential(
 	credential := req.Credential
 	now := time.Now().UTC().Format(time.RFC3339)
 	if credential.CreatedAt == "" {
-		credential.CreatedAt = now
+		createdAt, err := s.authCredentialCreatedAt(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if createdAt == "" {
+			createdAt = now
+		}
+		credential.CreatedAt = createdAt
 	}
 	credential.UpdatedAt = now
 	_, err := s.db.ExecContext(ctx, `
@@ -211,14 +218,15 @@ func (s *Store) GetAuthCredential(ctx context.Context) (*GetAuthCredentialRespon
 		WHERE id = 'default'
 	`)
 	credential := &model.AuthCredential{}
+	var userAPIKeyID, displayName, role sql.NullString
 	err := row.Scan(
 		&credential.ManagerURL,
 		&credential.APIKey,
-		&credential.UserAPIKeyID,
+		&userAPIKeyID,
 		&credential.UserID,
 		&credential.Email,
-		&credential.DisplayName,
-		&credential.Role,
+		&displayName,
+		&role,
 		&credential.CreatedAt,
 		&credential.UpdatedAt,
 	)
@@ -228,7 +236,25 @@ func (s *Store) GetAuthCredential(ctx context.Context) (*GetAuthCredentialRespon
 	if err != nil {
 		return nil, fmt.Errorf("get auth credential: %w", err)
 	}
+	credential.UserAPIKeyID = userAPIKeyID.String
+	credential.DisplayName = displayName.String
+	credential.Role = role.String
 	return &GetAuthCredentialResponse{Credential: credential}, nil
+}
+
+func (s *Store) authCredentialCreatedAt(ctx context.Context) (string, error) {
+	var createdAt string
+	err := s.db.QueryRowContext(
+		ctx,
+		`SELECT created_at FROM auth_credentials WHERE id = 'default'`,
+	).Scan(&createdAt)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read auth credential created_at: %w", err)
+	}
+	return createdAt, nil
 }
 
 func (s *Store) DeleteAuthCredential(ctx context.Context) (*DeleteAuthCredentialResponse, error) {
