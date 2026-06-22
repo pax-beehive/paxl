@@ -119,6 +119,20 @@ type ListKnowledgeInjectionsResponse struct {
 	Injections []*model.KnowledgeInjection
 }
 
+type SaveAuthCredentialRequest struct {
+	Credential *model.AuthCredential
+}
+
+type SaveAuthCredentialResponse struct {
+	Credential *model.AuthCredential
+}
+
+type GetAuthCredentialResponse struct {
+	Credential *model.AuthCredential
+}
+
+type DeleteAuthCredentialResponse struct{}
+
 func Open(ctx context.Context, req *OpenRequest) (*OpenResponse, error) {
 	if req == nil {
 		return nil, fmt.Errorf("open store: request is required")
@@ -150,6 +164,81 @@ func (s *Store) Close() error {
 		return fmt.Errorf("close store: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) SaveAuthCredential(
+	ctx context.Context,
+	req *SaveAuthCredentialRequest,
+) (*SaveAuthCredentialResponse, error) {
+	if req == nil || req.Credential == nil {
+		return nil, fmt.Errorf("save auth credential: credential is required")
+	}
+	credential := req.Credential
+	now := time.Now().UTC().Format(time.RFC3339)
+	if credential.CreatedAt == "" {
+		credential.CreatedAt = now
+	}
+	credential.UpdatedAt = now
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO auth_credentials (
+			id, manager_url, api_key, user_api_key_id, user_id, email, display_name,
+			role, created_at, updated_at
+		)
+		VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			manager_url = excluded.manager_url,
+			api_key = excluded.api_key,
+			user_api_key_id = excluded.user_api_key_id,
+			user_id = excluded.user_id,
+			email = excluded.email,
+			display_name = excluded.display_name,
+			role = excluded.role,
+			updated_at = excluded.updated_at
+	`, credential.ManagerURL, credential.APIKey, credential.UserAPIKeyID, credential.UserID,
+		credential.Email, credential.DisplayName, credential.Role, credential.CreatedAt,
+		credential.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("save auth credential: %w", err)
+	}
+	return &SaveAuthCredentialResponse{Credential: credential}, nil
+}
+
+func (s *Store) GetAuthCredential(ctx context.Context) (*GetAuthCredentialResponse, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT manager_url, api_key, user_api_key_id, user_id, email, display_name,
+			role, created_at, updated_at
+		FROM auth_credentials
+		WHERE id = 'default'
+	`)
+	credential := &model.AuthCredential{}
+	err := row.Scan(
+		&credential.ManagerURL,
+		&credential.APIKey,
+		&credential.UserAPIKeyID,
+		&credential.UserID,
+		&credential.Email,
+		&credential.DisplayName,
+		&credential.Role,
+		&credential.CreatedAt,
+		&credential.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return &GetAuthCredentialResponse{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get auth credential: %w", err)
+	}
+	return &GetAuthCredentialResponse{Credential: credential}, nil
+}
+
+func (s *Store) DeleteAuthCredential(ctx context.Context) (*DeleteAuthCredentialResponse, error) {
+	if _, err := s.db.ExecContext(
+		ctx,
+		`DELETE FROM auth_credentials WHERE id = 'default'`,
+	); err != nil {
+		return nil, fmt.Errorf("delete auth credential: %w", err)
+	}
+	return &DeleteAuthCredentialResponse{}, nil
 }
 
 func (s *Store) UpsertSessions(
@@ -514,6 +603,19 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		delivery_message_type TEXT NOT NULL,
 		status TEXT NOT NULL,
 		created_at TEXT NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS auth_credentials (
+		id TEXT PRIMARY KEY,
+		manager_url TEXT NOT NULL,
+		api_key TEXT NOT NULL,
+		user_api_key_id TEXT,
+		user_id TEXT NOT NULL,
+		email TEXT NOT NULL,
+		display_name TEXT,
+		role TEXT,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
 	);
 	`)
 	if err != nil {

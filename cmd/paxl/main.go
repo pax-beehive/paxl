@@ -25,6 +25,7 @@ import (
 var version = "0.1.0"
 var buildCommit = ""
 var updateHTTPClient facade.UpdateHTTPClient = http.DefaultClient
+var authHTTPClient facade.AuthHTTPClient = http.DefaultClient
 
 func main() {
 	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -72,9 +73,66 @@ func newCommandWithDiagnostics(
 		Commands: []*cli.Command{
 			newVersionCommand(stdout),
 			newUpdateCommand(stdout),
+			newLoginCommand(stdout),
+			newWhoamiCommand(stdout),
+			newLogoutCommand(stdout),
 			newAgentCommand(agentFacade, stdout, stderr, diagnostics),
 			newSessionCommand(stdout, stderr, diagnostics),
 			newCapsuleCommand(stdout, stderr, diagnostics),
+		},
+	}
+}
+
+func newLoginCommand(stdout io.Writer) *cli.Command {
+	return &cli.Command{
+		Name:  "login",
+		Usage: "Authenticate paxl with pax-manager",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:  "manager-url",
+				Value: facade.DefaultManagerURL,
+				Usage: "pax-manager base URL",
+			},
+			&cli.StringFlag{
+				Name:  "client-name",
+				Value: "paxl",
+				Usage: "Device name shown to the browser session",
+			},
+			&cli.StringFlag{
+				Name:  "timeout",
+				Value: "2m",
+				Usage: "Maximum time to wait for browser approval",
+			},
+			&cli.StringFlag{Name: "format", Value: "text", Usage: "Output format: text or json"},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			return loginCommand(ctx, cmd, stdout)
+		},
+	}
+}
+
+func newWhoamiCommand(stdout io.Writer) *cli.Command {
+	return &cli.Command{
+		Name:  "whoami",
+		Usage: "Show the logged-in pax-manager user",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "format", Value: "text", Usage: "Output format: text or json"},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			return whoamiCommand(ctx, cmd, stdout)
+		},
+	}
+}
+
+func newLogoutCommand(stdout io.Writer) *cli.Command {
+	return &cli.Command{
+		Name:  "logout",
+		Usage: "Clear the local pax-manager credential",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "format", Value: "text", Usage: "Output format: text or json"},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			return logoutCommand(ctx, cmd, stdout)
 		},
 	}
 }
@@ -495,6 +553,56 @@ func updateCheck(ctx context.Context, cmd *cli.Command, stdout io.Writer) error 
 		return fmt.Errorf("render update check: %w", err)
 	}
 	return nil
+}
+
+func loginCommand(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	timeout, err := parseDuration(cmd.String("timeout"))
+	if err != nil {
+		return err
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open session store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	authFacade := facade.NewAuthFacade(authHTTPClient, opened.Store)
+	resp, err := authFacade.Login(ctx, &facade.LoginRequest{
+		ManagerURL: cmd.String("manager-url"),
+		ClientName: cmd.String("client-name"),
+		Timeout:    timeout,
+	})
+	if err != nil {
+		return err
+	}
+	return renderLogin(stdout, resp, cmd.String("format"))
+}
+
+func whoamiCommand(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open session store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	authFacade := facade.NewAuthFacade(authHTTPClient, opened.Store)
+	resp, err := authFacade.Whoami(ctx)
+	if err != nil {
+		return err
+	}
+	return renderWhoami(stdout, resp, cmd.String("format"))
+}
+
+func logoutCommand(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open session store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	authFacade := facade.NewAuthFacade(authHTTPClient, opened.Store)
+	resp, err := authFacade.Logout(ctx)
+	if err != nil {
+		return err
+	}
+	return renderLogout(stdout, resp, cmd.String("format"))
 }
 
 func sessionList(
@@ -1541,6 +1649,87 @@ func renderUpdateCheck(stdout io.Writer, resp *facade.CheckUpdateResponse, forma
 	case "json", "jsonl":
 		if err := json.NewEncoder(stdout).Encode(resp); err != nil {
 			return fmt.Errorf("encode update check: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func renderLogin(stdout io.Writer, resp *facade.LoginResponse, format string) error {
+	switch format {
+	case "text":
+		if _, err := fmt.Fprintf(stdout, "manager %s\n", resp.ManagerURL); err != nil {
+			return fmt.Errorf("write login manager: %w", err)
+		}
+		if _, err := fmt.Fprintf(
+			stdout,
+			"verification %s\n",
+			resp.VerificationURIComplete,
+		); err != nil {
+			return fmt.Errorf("write login verification: %w", err)
+		}
+		if _, err := fmt.Fprintf(stdout, "code %s\n", resp.UserCode); err != nil {
+			return fmt.Errorf("write login code: %w", err)
+		}
+		if resp.Credential != nil {
+			if _, err := fmt.Fprintf(stdout, "logged in %s\n", resp.Credential.Email); err != nil {
+				return fmt.Errorf("write login user: %w", err)
+			}
+		}
+		return nil
+	case "json":
+		if err := json.NewEncoder(stdout).Encode(resp); err != nil {
+			return fmt.Errorf("encode login: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func renderWhoami(stdout io.Writer, resp *facade.WhoamiResponse, format string) error {
+	switch format {
+	case "text":
+		if resp.User == nil {
+			return fmt.Errorf("whoami response missing user")
+		}
+		if _, err := fmt.Fprintf(stdout, "manager %s\n", resp.ManagerURL); err != nil {
+			return fmt.Errorf("write whoami manager: %w", err)
+		}
+		if _, err := fmt.Fprintf(stdout, "user %s\n", resp.User.Email); err != nil {
+			return fmt.Errorf("write whoami user: %w", err)
+		}
+		if _, err := fmt.Fprintf(stdout, "user_id %s\n", resp.User.UserID); err != nil {
+			return fmt.Errorf("write whoami user id: %w", err)
+		}
+		return nil
+	case "json":
+		if err := json.NewEncoder(stdout).Encode(resp); err != nil {
+			return fmt.Errorf("encode whoami: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func renderLogout(stdout io.Writer, resp *facade.LogoutResponse, format string) error {
+	switch format {
+	case "text":
+		if resp.Email != "" {
+			if _, err := fmt.Fprintf(stdout, "logged out %s\n", resp.Email); err != nil {
+				return fmt.Errorf("write logout: %w", err)
+			}
+			return nil
+		}
+		if _, err := fmt.Fprintln(stdout, "logged out"); err != nil {
+			return fmt.Errorf("write logout: %w", err)
+		}
+		return nil
+	case "json":
+		if err := json.NewEncoder(stdout).Encode(resp); err != nil {
+			return fmt.Errorf("encode logout: %w", err)
 		}
 		return nil
 	default:

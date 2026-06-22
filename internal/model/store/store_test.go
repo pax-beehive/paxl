@@ -59,6 +59,37 @@ func (s *StoreSuite) TestNilStoreCloseIsNoop() {
 	s.NoError(nilStore.Close())
 }
 
+func (s *StoreSuite) TestAuthCredentialLifecycle() {
+	initial, err := s.store.GetAuthCredential(s.ctx)
+	s.Require().NoError(err)
+	s.Nil(initial.Credential)
+
+	_, err = s.store.SaveAuthCredential(s.ctx, &store.SaveAuthCredentialRequest{
+		Credential: &model.AuthCredential{
+			ManagerURL:   "https://manager.example",
+			APIKey:       "paxu_test",
+			UserAPIKeyID: "key-1",
+			UserID:       "usr_1",
+			Email:        "cli@example.com",
+			DisplayName:  "CLI",
+			Role:         "user",
+		},
+	})
+	s.Require().NoError(err)
+
+	got, err := s.store.GetAuthCredential(s.ctx)
+	s.Require().NoError(err)
+	s.Require().NotNil(got.Credential)
+	s.Equal("https://manager.example", got.Credential.ManagerURL)
+	s.Equal("paxu_test", got.Credential.APIKey)
+
+	_, err = s.store.DeleteAuthCredential(s.ctx)
+	s.Require().NoError(err)
+	got, err = s.store.GetAuthCredential(s.ctx)
+	s.Require().NoError(err)
+	s.Nil(got.Credential)
+}
+
 func (s *StoreSuite) TestUpsertAndListSessions() {
 	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
 		Agent: model.AgentNameCodex,
