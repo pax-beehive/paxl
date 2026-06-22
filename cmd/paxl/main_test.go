@@ -276,6 +276,39 @@ func (s *CommandSuite) TestUpdateCheckReportsAvailableUpdateAsJSON() {
 	s.Empty(s.stderr.String())
 }
 
+func (s *CommandSuite) TestUpdateCheckUsesResolverByDefault() {
+	oldClient := updateHTTPClient
+	updateHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		s.Equal("/api/v1/public/artifacts/download", req.URL.Path)
+		s.Equal("paxl", req.URL.Query().Get("product"))
+		s.NotEmpty(req.URL.Query().Get("platform"))
+		s.Equal("stable", req.URL.Query().Get("tags"))
+		return commandJSONResponse(`{
+			"data": {
+				"url": "https://example.test/paxl",
+				"sha256": "abc123",
+				"size_bytes": 42,
+				"version": "0.1.1",
+				"product": "paxl",
+				"platform": "test/os"
+			}
+		}`), nil
+	})
+	s.T().Cleanup(func() {
+		updateHTTPClient = oldClient
+	})
+
+	err := run(
+		context.Background(),
+		[]string{"update", "check", "--format", "json"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"update_available":true`)
+}
+
 func (s *CommandSuite) TestUpdateCheckRejectsUnknownFormat() {
 	err := run(
 		context.Background(),

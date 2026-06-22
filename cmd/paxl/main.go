@@ -113,8 +113,17 @@ func newUpdateCommand(stdout io.Writer) *cli.Command {
 					},
 					&cli.StringFlag{
 						Name:  "manifest-url",
-						Value: facade.DefaultUpdateManifestURL,
-						Usage: "Release manifest URL",
+						Usage: "Release manifest URL override",
+					},
+					&cli.StringFlag{
+						Name:  "resolver-url",
+						Value: facade.DefaultUpdateResolverURL,
+						Usage: "Artifact resolver URL",
+					},
+					&cli.StringFlag{
+						Name:  "tag",
+						Value: facade.DefaultUpdateTag,
+						Usage: "Release tag to check",
 					},
 					&cli.StringFlag{
 						Name:  "platform",
@@ -1020,7 +1029,9 @@ func parseCheckUpdateRequest(cmd *cli.Command) (*facade.CheckUpdateRequest, erro
 		CurrentVersion: meta.Version,
 		CurrentCommit:  meta.Commit,
 		ManifestURL:    cmd.String("manifest-url"),
+		ResolverURL:    cmd.String("resolver-url"),
 		Platform:       cmd.String("platform"),
+		Tag:            cmd.String("tag"),
 	}, nil
 }
 
