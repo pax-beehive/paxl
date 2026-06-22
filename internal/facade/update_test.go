@@ -59,6 +59,46 @@ func (s *UpdateFacadeSuite) TestCheckReportsAvailableUpdateForCurrentPlatform() 
 	)
 }
 
+func (s *UpdateFacadeSuite) TestCheckUsesResolverWhenManifestURLIsMissing() {
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		s.Equal("https", req.URL.Scheme)
+		s.Equal("example.test", req.URL.Host)
+		s.Equal("/api/v1/public/artifacts/download", req.URL.Path)
+		s.Equal("paxl", req.URL.Query().Get("product"))
+		s.Equal("linux/amd64", req.URL.Query().Get("platform"))
+		s.Equal("stable", req.URL.Query().Get("tags"))
+		return jsonResponse(`{
+			"data": {
+				"url": "https://example.test/paxl",
+				"sha256": "abc123",
+				"size_bytes": 42,
+				"version": "0.1.1",
+				"product": "paxl",
+				"platform": "linux/amd64",
+				"tags": ["stable"]
+			},
+			"code": 200,
+			"message": "ok"
+		}`), nil
+	})
+	updateFacade := NewUpdateFacade(client)
+
+	resp, err := updateFacade.Check(context.Background(), &CheckUpdateRequest{
+		CurrentVersion: "0.1.0",
+		ResolverURL:    "https://example.test/api/v1/public/artifacts/download",
+		Platform:       "linux/amd64",
+		Tag:            "stable",
+	})
+
+	s.Require().NoError(err)
+	s.True(resp.UpdateAvailable)
+	s.Equal(UpdateStatusAvailable, resp.Status)
+	s.Equal("0.1.1", resp.LatestVersion)
+	s.Equal("https://example.test/paxl", resp.DownloadURL)
+	s.Equal("abc123", resp.SHA256)
+	s.Equal(int64(42), resp.SizeBytes)
+}
+
 func (s *UpdateFacadeSuite) TestCheckReportsUpToDateWhenVersionsMatch() {
 	updateFacade := NewUpdateFacade(roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return jsonResponse(`{
