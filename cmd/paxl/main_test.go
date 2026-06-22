@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -220,6 +222,67 @@ func (s *CommandSuite) TestVersionSupportsJSONFormat() {
 
 func (s *CommandSuite) TestVersionRejectsUnknownFormat() {
 	err := run(context.Background(), []string{"version", "--format", "yaml"}, &s.stdout, &s.stderr)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestUpdateCommandExposesCheck() {
+	command := findCommand(newCommand(&s.stdout, &s.stderr), "update")
+	s.Require().NotNil(command)
+
+	s.True(hasCommand(command, "check"))
+}
+
+func (s *CommandSuite) TestUpdateCheckReportsAvailableUpdateAsJSON() {
+	oldClient := updateHTTPClient
+	updateHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		s.Equal("https://example.test/manifest.json", req.URL.String())
+		return commandJSONResponse(`{
+			"product": "paxl",
+			"version": "0.1.1",
+			"artifacts": [
+				{
+					"platform": "test/os",
+					"sha256": "abc123",
+					"size": 42,
+					"storage_url": "https://example.test/paxl"
+				}
+			]
+		}`), nil
+	})
+	s.T().Cleanup(func() {
+		updateHTTPClient = oldClient
+	})
+
+	err := run(
+		context.Background(),
+		[]string{
+			"update",
+			"check",
+			"--format",
+			"json",
+			"--manifest-url",
+			"https://example.test/manifest.json",
+			"--platform",
+			"test/os",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"latest_version":"0.1.1"`)
+	s.Contains(s.stdout.String(), `"update_available":true`)
+	s.Empty(s.stderr.String())
+}
+
+func (s *CommandSuite) TestUpdateCheckRejectsUnknownFormat() {
+	err := run(
+		context.Background(),
+		[]string{"update", "check", "--format", "yaml"},
+		&s.stdout,
+		&s.stderr,
+	)
 
 	s.Error(err)
 }
@@ -1433,6 +1496,20 @@ func firstLine(raw []byte) []byte {
 		}
 	}
 	return raw
+}
+
+type commandRoundTripFunc func(req *http.Request) (*http.Response, error)
+
+func (f commandRoundTripFunc) Do(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func commandJSONResponse(body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}
 }
 
 func hasCommand(command *cli.Command, name string) bool {

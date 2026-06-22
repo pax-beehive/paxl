@@ -32,6 +32,12 @@ curl -fsSL https://api.paxtech.net/api/v1/public/paxl/install.sh | PAXL_VERSION=
 paxl version
 ```
 
+检查是否有新的 stable 托管版本：
+
+```sh
+paxl update check
+```
+
 也可以从源码构建：
 
 ```sh

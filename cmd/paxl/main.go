@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -23,6 +24,7 @@ import (
 
 var version = "0.1.0"
 var buildCommit = ""
+var updateHTTPClient facade.UpdateHTTPClient = http.DefaultClient
 
 func main() {
 	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -69,6 +71,7 @@ func newCommandWithDiagnostics(
 		},
 		Commands: []*cli.Command{
 			newVersionCommand(stdout),
+			newUpdateCommand(stdout),
 			newAgentCommand(agentFacade, stdout, stderr, diagnostics),
 			newSessionCommand(stdout, stderr, diagnostics),
 			newCapsuleCommand(stdout, stderr, diagnostics),
@@ -90,6 +93,43 @@ func newVersionCommand(stdout io.Writer) *cli.Command {
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			_ = ctx
 			return versionCommand(cmd, stdout)
+		},
+	}
+}
+
+func newUpdateCommand(stdout io.Writer) *cli.Command {
+	return &cli.Command{
+		Name:  "update",
+		Usage: "Check for paxl binary updates",
+		Commands: []*cli.Command{
+			{
+				Name:  "check",
+				Usage: "Check the latest hosted paxl release",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "text",
+						Usage: "Output format: text, json, or jsonl",
+					},
+					&cli.StringFlag{
+						Name:  "manifest-url",
+						Value: facade.DefaultUpdateManifestURL,
+						Usage: "Release manifest URL",
+					},
+					&cli.StringFlag{
+						Name:  "platform",
+						Usage: "Release platform override like darwin/arm64",
+					},
+					&cli.StringFlag{
+						Name:  "timeout",
+						Value: "3s",
+						Usage: "Update check timeout",
+					},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return updateCheck(ctx, cmd, stdout)
+				},
+			},
 		},
 	}
 }
@@ -435,6 +475,26 @@ func currentVersionMetadata() *versionMetadata {
 		}
 	}
 	return meta
+}
+
+func updateCheck(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	req, err := parseCheckUpdateRequest(cmd)
+	if err != nil {
+		return fmt.Errorf("parse update check request: %w", err)
+	}
+	runCtx, cancel, err := contextWithTimeout(ctx, cmd.String("timeout"))
+	if err != nil {
+		return fmt.Errorf("parse update check timeout: %w", err)
+	}
+	defer cancel()
+	resp, err := facade.NewUpdateFacade(updateHTTPClient).Check(runCtx, req)
+	if err != nil {
+		return fmt.Errorf("check update: %w", err)
+	}
+	if err := renderUpdateCheck(stdout, resp, cmd.String("format")); err != nil {
+		return fmt.Errorf("render update check: %w", err)
+	}
+	return nil
 }
 
 func sessionList(
@@ -949,6 +1009,21 @@ func parseListAgentsRequest(cmd *cli.Command) (*facade.ListAgentsRequest, error)
 	}
 }
 
+func parseCheckUpdateRequest(cmd *cli.Command) (*facade.CheckUpdateRequest, error) {
+	switch cmd.String("format") {
+	case "text", "json", "jsonl":
+	default:
+		return nil, fmt.Errorf("unsupported format %q", cmd.String("format"))
+	}
+	meta := currentVersionMetadata()
+	return &facade.CheckUpdateRequest{
+		CurrentVersion: meta.Version,
+		CurrentCommit:  meta.Commit,
+		ManifestURL:    cmd.String("manifest-url"),
+		Platform:       cmd.String("platform"),
+	}, nil
+}
+
 func parseAgentSelection(raw string) ([]model.AgentName, error) {
 	values := parseCSV(raw)
 	if len(values) == 0 {
@@ -1438,6 +1513,55 @@ func renderAgentList(stdout io.Writer, resp *facade.ListAgentsResponse, format s
 		return nil
 	default:
 		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func renderUpdateCheck(stdout io.Writer, resp *facade.CheckUpdateResponse, format string) error {
+	switch format {
+	case "text":
+		if _, err := fmt.Fprintf(stdout, "Current: %s\n", resp.CurrentVersion); err != nil {
+			return fmt.Errorf("write current version: %w", err)
+		}
+		if _, err := fmt.Fprintf(stdout, "Latest:  %s\n", resp.LatestVersion); err != nil {
+			return fmt.Errorf("write latest version: %w", err)
+		}
+		if _, err := fmt.Fprintf(
+			stdout,
+			"Status:  %s\n",
+			updateStatusText(resp.Status),
+		); err != nil {
+			return fmt.Errorf("write update status: %w", err)
+		}
+		if resp.UpdateAvailable {
+			if _, err := fmt.Fprintln(stdout, "\nRun the installer again to upgrade."); err != nil {
+				return fmt.Errorf("write update instruction: %w", err)
+			}
+		}
+		return nil
+	case "json", "jsonl":
+		if err := json.NewEncoder(stdout).Encode(resp); err != nil {
+			return fmt.Errorf("encode update check: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func updateStatusText(status facade.UpdateStatus) string {
+	switch status {
+	case facade.UpdateStatusUnknown:
+		return "Unknown"
+	case facade.UpdateStatusAvailable:
+		return "Update available"
+	case facade.UpdateStatusUpToDate:
+		return "Up to date"
+	case facade.UpdateStatusAhead:
+		return "Current build is newer than latest stable"
+	case facade.UpdateStatusDevelopment:
+		return "Development build; latest stable shown"
+	default:
+		return "Unknown"
 	}
 }
 
