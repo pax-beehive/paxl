@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"runtime/pprof"
 	"strings"
@@ -89,21 +93,23 @@ func newLoginCommand(stdout io.Writer) *cli.Command {
 		Usage: "Authenticate paxl with pax-manager",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
-				Name:  "manager-url",
-				Value: facade.DefaultManagerURL,
-				Usage: "pax-manager base URL",
+				Name:   "manager-url",
+				Value:  facade.DefaultManagerURL,
+				Usage:  "pax-manager base URL",
+				Hidden: true,
 			},
 			&cli.StringFlag{
-				Name:  "client-name",
-				Value: "paxl",
-				Usage: "Device name shown to the browser session",
+				Name:   "timeout",
+				Value:  "2m",
+				Usage:  "Maximum time to wait for browser approval",
+				Hidden: true,
 			},
 			&cli.StringFlag{
-				Name:  "timeout",
-				Value: "2m",
-				Usage: "Maximum time to wait for browser approval",
+				Name:   "format",
+				Value:  "text",
+				Usage:  "Output format: text or json",
+				Hidden: true,
 			},
-			&cli.StringFlag{Name: "format", Value: "text", Usage: "Output format: text or json"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			return loginCommand(ctx, cmd, stdout)
@@ -566,15 +572,25 @@ func loginCommand(ctx context.Context, cmd *cli.Command, stdout io.Writer) error
 	}
 	defer closeStore(opened.Store)
 	authFacade := facade.NewAuthFacade(authHTTPClient, opened.Store)
+	format := cmd.String("format")
 	resp, err := authFacade.Login(ctx, &facade.LoginRequest{
 		ManagerURL: cmd.String("manager-url"),
-		ClientName: cmd.String("client-name"),
+		ClientName: defaultLoginClientName(),
 		Timeout:    timeout,
+		OnStart: func(start *facade.LoginStart) error {
+			if format != "text" {
+				return nil
+			}
+			return renderLoginStart(stdout, start)
+		},
 	})
 	if err != nil {
 		return err
 	}
-	return renderLogin(stdout, resp, cmd.String("format"))
+	if format == "text" {
+		return renderLoginComplete(stdout, resp)
+	}
+	return renderLogin(stdout, resp, format)
 }
 
 func whoamiCommand(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
@@ -1659,25 +1675,7 @@ func renderUpdateCheck(stdout io.Writer, resp *facade.CheckUpdateResponse, forma
 func renderLogin(stdout io.Writer, resp *facade.LoginResponse, format string) error {
 	switch format {
 	case "text":
-		if _, err := fmt.Fprintf(stdout, "manager %s\n", resp.ManagerURL); err != nil {
-			return fmt.Errorf("write login manager: %w", err)
-		}
-		if _, err := fmt.Fprintf(
-			stdout,
-			"verification %s\n",
-			resp.VerificationURIComplete,
-		); err != nil {
-			return fmt.Errorf("write login verification: %w", err)
-		}
-		if _, err := fmt.Fprintf(stdout, "code %s\n", resp.UserCode); err != nil {
-			return fmt.Errorf("write login code: %w", err)
-		}
-		if resp.Credential != nil {
-			if _, err := fmt.Fprintf(stdout, "logged in %s\n", resp.Credential.Email); err != nil {
-				return fmt.Errorf("write login user: %w", err)
-			}
-		}
-		return nil
+		return renderLoginStartAndComplete(stdout, resp)
 	case "json":
 		if err := json.NewEncoder(stdout).Encode(resp); err != nil {
 			return fmt.Errorf("encode login: %w", err)
@@ -1686,6 +1684,48 @@ func renderLogin(stdout io.Writer, resp *facade.LoginResponse, format string) er
 	default:
 		return fmt.Errorf("unsupported format %q", format)
 	}
+}
+
+func renderLoginStartAndComplete(stdout io.Writer, resp *facade.LoginResponse) error {
+	if err := renderLoginStart(stdout, &facade.LoginStart{
+		ManagerURL:              resp.ManagerURL,
+		UserCode:                resp.UserCode,
+		VerificationURI:         resp.VerificationURI,
+		VerificationURIComplete: resp.VerificationURIComplete,
+	}); err != nil {
+		return err
+	}
+	return renderLoginComplete(stdout, resp)
+}
+
+func renderLoginStart(stdout io.Writer, start *facade.LoginStart) error {
+	if _, err := fmt.Fprintf(stdout, "manager %s\n", start.ManagerURL); err != nil {
+		return fmt.Errorf("write login manager: %w", err)
+	}
+	if _, err := fmt.Fprintf(
+		stdout,
+		"verification %s\n",
+		start.VerificationURIComplete,
+	); err != nil {
+		return fmt.Errorf("write login verification: %w", err)
+	}
+	if _, err := fmt.Fprintf(stdout, "code %s\n", start.UserCode); err != nil {
+		return fmt.Errorf("write login code: %w", err)
+	}
+	if _, err := fmt.Fprintln(stdout, "waiting for browser approval"); err != nil {
+		return fmt.Errorf("write login wait status: %w", err)
+	}
+	return nil
+}
+
+func renderLoginComplete(stdout io.Writer, resp *facade.LoginResponse) error {
+	if resp.Credential == nil {
+		return nil
+	}
+	if _, err := fmt.Fprintf(stdout, "logged in %s\n", resp.Credential.Email); err != nil {
+		return fmt.Errorf("write login user: %w", err)
+	}
+	return nil
 }
 
 func renderWhoami(stdout io.Writer, resp *facade.WhoamiResponse, format string) error {
@@ -1902,6 +1942,31 @@ func closeFile(file *os.File) {
 func defaultHTMLPath(session *model.Session) string {
 	name := strings.NewReplacer(":", "_", "/", "_", "\\", "_").Replace(session.ID)
 	return filepath.Join(os.TempDir(), "paxl-"+name+".html")
+}
+
+func defaultLoginClientName() string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return loginClientName("")
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 ||
+			iface.Flags&net.FlagLoopback != 0 ||
+			len(iface.HardwareAddr) == 0 {
+			continue
+		}
+		return loginClientName(iface.HardwareAddr.String())
+	}
+	return loginClientName("")
+}
+
+func loginClientName(macAddress string) string {
+	prefix := fmt.Sprintf("paxl-%s-%s", runtime.GOOS, runtime.GOARCH)
+	if macAddress == "" {
+		return prefix
+	}
+	sum := sha256.Sum256([]byte(strings.ToLower(macAddress)))
+	return prefix + "-" + hex.EncodeToString(sum[:])[:8]
 }
 
 func firstNonEmpty(values ...string) string {

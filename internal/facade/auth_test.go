@@ -109,6 +109,7 @@ func (s *AuthFacadeSuite) TestLoginWhoamiAndLogoutUseStoredBearerCredential() {
 }
 
 func (s *AuthFacadeSuite) TestLoginRejectsTerminalStatus() {
+	var started bool
 	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch req.URL.Path {
 		case "/api/v1/paxl/device-login/start":
@@ -118,6 +119,7 @@ func (s *AuthFacadeSuite) TestLoginRejectsTerminalStatus() {
 				"message":"ok"
 			}`), nil
 		case "/api/v1/paxl/device-login/poll":
+			s.True(started)
 			return jsonResponse(`{"data":{"status":"expired"},"code":200,"message":"ok"}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected manager request: %s", req.URL.Path)
@@ -125,7 +127,14 @@ func (s *AuthFacadeSuite) TestLoginRejectsTerminalStatus() {
 	})
 	authFacade := NewAuthFacade(client, s.store)
 
-	_, err := authFacade.Login(s.ctx, &LoginRequest{ManagerURL: "https://manager.example"})
+	_, err := authFacade.Login(s.ctx, &LoginRequest{
+		ManagerURL: "https://manager.example",
+		OnStart: func(start *LoginStart) error {
+			started = true
+			s.Equal("ABC123", start.UserCode)
+			return nil
+		},
+	})
 
 	s.Require().Error(err)
 	s.Contains(err.Error(), `status "expired"`)
