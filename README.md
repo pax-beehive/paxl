@@ -34,6 +34,12 @@ Check the installed binary:
 paxl version
 ```
 
+Check whether a newer hosted stable build is available:
+
+```sh
+paxl update check
+```
+
 Build from source instead:
 
 ```sh

@@ -16,6 +16,16 @@ Before transferring context, make sure `paxl` is installed:
 paxl version
 ```
 
+When network access is available, optionally check whether the local binary is
+behind the hosted stable build:
+
+```sh
+paxl update check
+```
+
+If an update is available, tell the user before continuing. Do not install or
+replace the binary without explicit user approval.
+
 If it is missing, install the latest stable hosted build:
 
 ```sh
