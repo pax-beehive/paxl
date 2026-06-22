@@ -193,7 +193,9 @@ func (f *AuthFacade) Whoami(
 	credential.Email = user.Email
 	credential.DisplayName = user.DisplayName
 	credential.Role = user.Role
-	_, _ = f.store.SaveAuthCredential(ctx, &store.SaveAuthCredentialRequest{Credential: credential})
+	if _, err := f.store.SaveAuthCredential(ctx, &store.SaveAuthCredentialRequest{Credential: credential}); err != nil {
+		return nil, fmt.Errorf("save auth credential: %w", err)
+	}
 	return &WhoamiResponse{
 		ManagerURL: credential.ManagerURL,
 		Credential: credential,
