@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -231,6 +232,132 @@ func (s *CommandSuite) TestUpdateCommandExposesCheck() {
 	s.Require().NotNil(command)
 
 	s.True(hasCommand(command, "check"))
+}
+
+func (s *CommandSuite) TestAuthCommandsLoginWhoamiAndLogout() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	var deleteCalled bool
+	oldClient := authHTTPClient
+	authHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/paxl/device-login/start":
+			s.Equal("https://manager.example", req.URL.Scheme+"://"+req.URL.Host)
+			return commandJSONResponse(`{
+				"data":{
+					"login_id":"login-1",
+					"user_code":"ABC123",
+					"poll_token":"poll-1",
+					"verification_uri":"https://manager.example/paxl-login.html",
+					"verification_uri_complete":"https://manager.example/paxl-login.html?code=ABC123",
+					"interval":0
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/paxl/device-login/poll":
+			return commandJSONResponse(`{
+				"data":{
+					"status":"approved",
+					"api_key":"paxu_test",
+					"api_key_meta":{"key_id":"key-1"},
+					"user":{"user_id":"usr_1","email":"cli@example.com","display_name":"CLI","role":"user"}
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/self/me":
+			s.Equal("Bearer paxu_test", req.Header.Get("Authorization"))
+			return commandJSONResponse(`{
+				"data":{
+					"user":{"user_id":"usr_1","email":"cli@example.com","display_name":"CLI","role":"user"}
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		case req.Method == http.MethodDelete && req.URL.Path == "/api/v1/user/self/api-keys/key-1":
+			s.Equal("Bearer paxu_test", req.Header.Get("Authorization"))
+			deleteCalled = true
+			return commandJSONResponse(`{"data":{"ok":true},"code":200,"message":"ok"}`), nil
+		default:
+			return nil, fmt.Errorf(
+				"unexpected manager request: %s %s",
+				req.Method,
+				req.URL.String(),
+			)
+		}
+	})
+	s.T().Cleanup(func() { authHTTPClient = oldClient })
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"login",
+			"--manager-url", "https://manager.example",
+			"--timeout", "1s",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "logged in cli@example.com")
+	s.Contains(s.stdout.String(), "ABC123")
+	s.stdout.Reset()
+
+	err = run(context.Background(), []string{"--db", dbPath, "whoami"}, &s.stdout, &s.stderr)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "user cli@example.com")
+	s.stdout.Reset()
+
+	err = run(context.Background(), []string{"--db", dbPath, "logout"}, &s.stdout, &s.stderr)
+	s.Require().NoError(err)
+	s.True(deleteCalled)
+	s.Contains(s.stdout.String(), "logged out cli@example.com")
+	s.stdout.Reset()
+
+	err = run(context.Background(), []string{"--db", dbPath, "whoami"}, &s.stdout, &s.stderr)
+	s.Error(err)
+	s.Contains(err.Error(), "not logged in")
+}
+
+func (s *CommandSuite) TestAuthRenderersSupportJSONAndRejectUnknownFormats() {
+	login := &facade.LoginResponse{
+		ManagerURL:              "https://manager.example",
+		UserCode:                "ABC123",
+		VerificationURIComplete: "https://manager.example/paxl-login.html?code=ABC123",
+		Credential: &model.AuthCredential{
+			ManagerURL: "https://manager.example",
+			APIKey:     "paxu_secret",
+			Email:      "cli@example.com",
+		},
+	}
+	s.Require().NoError(renderLogin(&s.stdout, login, "json"))
+	s.Contains(s.stdout.String(), `"user_code":"ABC123"`)
+	s.Contains(s.stdout.String(), `"manager_url":"https://manager.example"`)
+	s.NotContains(s.stdout.String(), "paxu_secret")
+	s.NotContains(s.stdout.String(), "APIKey")
+	s.stdout.Reset()
+
+	whoami := &facade.WhoamiResponse{
+		ManagerURL: "https://manager.example",
+		Credential: &model.AuthCredential{
+			ManagerURL: "https://manager.example",
+			APIKey:     "paxu_secret",
+			Email:      "cli@example.com",
+		},
+		User: &facade.AuthUser{UserID: "usr_1", Email: "cli@example.com"},
+	}
+	s.Require().NoError(renderWhoami(&s.stdout, whoami, "json"))
+	s.Contains(s.stdout.String(), `"email":"cli@example.com"`)
+	s.NotContains(s.stdout.String(), "paxu_secret")
+	s.NotContains(s.stdout.String(), "APIKey")
+	s.stdout.Reset()
+
+	s.Require().NoError(renderLogout(&s.stdout, &facade.LogoutResponse{}, "text"))
+	s.Contains(s.stdout.String(), "logged out")
+	s.Error(renderLogin(&s.stdout, login, "yaml"))
+	s.Error(renderWhoami(&s.stdout, whoami, "yaml"))
+	s.Error(renderLogout(&s.stdout, &facade.LogoutResponse{}, "yaml"))
 }
 
 func (s *CommandSuite) TestUpdateCheckReportsAvailableUpdateAsJSON() {
