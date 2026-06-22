@@ -33,6 +33,7 @@ type LoginRequest struct {
 	ManagerURL string
 	ClientName string
 	Timeout    time.Duration
+	OnStart    func(*LoginStart) error
 }
 
 type LoginResponse struct {
@@ -41,6 +42,13 @@ type LoginResponse struct {
 	VerificationURI         string                `json:"verification_uri"`
 	VerificationURIComplete string                `json:"verification_uri_complete"`
 	Credential              *model.AuthCredential `json:"credential"`
+}
+
+type LoginStart struct {
+	ManagerURL              string `json:"manager_url"`
+	UserCode                string `json:"user_code"`
+	VerificationURI         string `json:"verification_uri"`
+	VerificationURIComplete string `json:"verification_uri_complete"`
 }
 
 type WhoamiResponse struct {
@@ -117,6 +125,16 @@ func (f *AuthFacade) Login(
 	start, err := f.startDeviceLogin(ctx, managerURL, req.ClientName)
 	if err != nil {
 		return nil, err
+	}
+	if req.OnStart != nil {
+		if err := req.OnStart(&LoginStart{
+			ManagerURL:              managerURL,
+			UserCode:                start.UserCode,
+			VerificationURI:         start.VerificationURI,
+			VerificationURIComplete: start.VerificationURIComplete,
+		}); err != nil {
+			return nil, fmt.Errorf("login: start callback: %w", err)
+		}
 	}
 	pollInterval := time.Duration(start.Interval) * time.Second
 	if start.Interval <= 0 {

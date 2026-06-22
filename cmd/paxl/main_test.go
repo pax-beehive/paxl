@@ -242,6 +242,9 @@ func (s *CommandSuite) TestAuthCommandsLoginWhoamiAndLogout() {
 		switch {
 		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/paxl/device-login/start":
 			s.Equal("https://manager.example", req.URL.Scheme+"://"+req.URL.Host)
+			var body map[string]string
+			s.Require().NoError(json.NewDecoder(req.Body).Decode(&body))
+			s.Contains(body["client_name"], "paxl-")
 			return commandJSONResponse(`{
 				"data":{
 					"login_id":"login-1",
@@ -318,6 +321,79 @@ func (s *CommandSuite) TestAuthCommandsLoginWhoamiAndLogout() {
 	err = run(context.Background(), []string{"--db", dbPath, "whoami"}, &s.stdout, &s.stderr)
 	s.Error(err)
 	s.Contains(err.Error(), "not logged in")
+}
+
+func (s *CommandSuite) TestLoginPrintsVerificationBeforeWaitingForApproval() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	oldClient := authHTTPClient
+	authHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/paxl/device-login/start":
+			return commandJSONResponse(`{
+				"data":{
+					"login_id":"login-1",
+					"user_code":"ABC123",
+					"poll_token":"poll-1",
+					"verification_uri":"https://manager.example/paxl-login.html",
+					"verification_uri_complete":"https://manager.example/paxl-login.html?code=ABC123",
+					"interval":0
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/paxl/device-login/poll":
+			return commandJSONResponse(
+				`{"data":{"status":"pending"},"code":200,"message":"ok"}`,
+			), nil
+		default:
+			return nil, fmt.Errorf(
+				"unexpected manager request: %s %s",
+				req.Method,
+				req.URL.String(),
+			)
+		}
+	})
+	s.T().Cleanup(func() { authHTTPClient = oldClient })
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"login",
+			"--manager-url", "https://manager.example",
+			"--timeout", "25ms",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().Error(err)
+	s.Contains(err.Error(), "timed out")
+	s.Contains(
+		s.stdout.String(),
+		"verification https://manager.example/paxl-login.html?code=ABC123",
+	)
+	s.Contains(s.stdout.String(), "code ABC123")
+	s.Contains(s.stdout.String(), "waiting for browser approval")
+	s.NotContains(s.stdout.String(), "logged in")
+}
+
+func (s *CommandSuite) TestLoginHelpHidesAdvancedFlags() {
+	err := run(context.Background(), []string{"login", "--help"}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	s.NotContains(s.stdout.String(), "manager-url")
+	s.NotContains(s.stdout.String(), "client-name")
+	s.NotContains(s.stdout.String(), "timeout")
+	s.NotContains(s.stdout.String(), "format")
+}
+
+func (s *CommandSuite) TestLoginClientNameUsesHashedMACAddress() {
+	name := loginClientName("aa:bb:cc:dd:ee:ff")
+
+	s.Contains(name, "paxl-")
+	s.NotContains(name, "aa:bb:cc:dd:ee:ff")
+	s.Regexp(`^paxl-[a-z0-9]+-[a-z0-9]+-[a-f0-9]{8}$`, name)
 }
 
 func (s *CommandSuite) TestAuthRenderersSupportJSONAndRejectUnknownFormats() {
