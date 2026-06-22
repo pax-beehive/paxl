@@ -48,6 +48,15 @@ func (s *LocalSessionsSuite) TestListCodexSessionsReadsIndexAndRollouts() {
 	s.Equal("/tmp/project", resp.Sessions[0].ProjectID)
 }
 
+func (s *LocalSessionsSuite) TestListCodexSessionsReturnsEmptyWhenLocalRootIsMissing() {
+	s.T().Setenv("CODEX_HOME", filepath.Join(s.T().TempDir(), "missing"))
+
+	resp, err := listCodexSessions(context.Background(), &ListSessionsRequest{})
+
+	s.Require().NoError(err)
+	s.Empty(resp.Sessions)
+}
+
 func (s *LocalSessionsSuite) TestListCodexSessionsDerivesReadableTitleFromRollout() {
 	codexHome := s.T().TempDir()
 	s.T().Setenv("CODEX_HOME", codexHome)
@@ -141,6 +150,15 @@ func (s *LocalSessionsSuite) TestListClaudeSessionsReadsProjectLogs() {
 	s.Equal(model.AgentNameClaude, resp.Sessions[0].Agent)
 	s.Equal("Claude title", resp.Sessions[0].Title)
 	s.Equal("2026-06-20T02:01:00Z", resp.Sessions[0].UpdatedAt)
+}
+
+func (s *LocalSessionsSuite) TestListClaudeSessionsReturnsEmptyWhenLocalRootIsMissing() {
+	s.T().Setenv("CLAUDE_HOME", filepath.Join(s.T().TempDir(), "missing"))
+
+	resp, err := listClaudeSessions(context.Background(), &ListSessionsRequest{})
+
+	s.Require().NoError(err)
+	s.Empty(resp.Sessions)
 }
 
 func (s *LocalSessionsSuite) TestListClaudeSessionsDerivesProjectFromDirectory() {
@@ -256,6 +274,33 @@ func (s *LocalSessionsSuite) TestClaudeMalformedContentKeepsRawContentText() {
 	s.Require().NoError(err)
 	s.Require().Len(resp.Elements, 1)
 	s.Contains(resp.Elements[0].ContentText, `"unexpected":"shape"`)
+}
+
+func (s *LocalSessionsSuite) TestListPiSessionsReturnsEmptyWhenLocalRootIsMissing() {
+	s.T().Setenv("PI_CODING_AGENT_DIR", filepath.Join(s.T().TempDir(), "missing"))
+
+	resp, err := listPiSessions(context.Background(), &ListSessionsRequest{})
+
+	s.Require().NoError(err)
+	s.Empty(resp.Sessions)
+}
+
+func (s *LocalSessionsSuite) TestListKiroSessionsReturnsEmptyWhenLocalRootIsMissing() {
+	s.T().Setenv("KIRO_HOME", filepath.Join(s.T().TempDir(), "missing"))
+
+	resp, err := listKiroSessions(context.Background(), &ListSessionsRequest{})
+
+	s.Require().NoError(err)
+	s.Empty(resp.Sessions)
+}
+
+func (s *LocalSessionsSuite) TestListGeminiSessionsReturnsEmptyWhenLocalRootIsMissing() {
+	s.T().Setenv("GEMINI_HOME", filepath.Join(s.T().TempDir(), "missing"))
+
+	resp, err := listGeminiSessions(context.Background(), &ListSessionsRequest{})
+
+	s.Require().NoError(err)
+	s.Empty(resp.Sessions)
 }
 
 func (s *LocalSessionsSuite) TestTrimOneLineCompactsWhitespaceAndLimitsRunes() {

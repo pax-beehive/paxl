@@ -22,15 +22,21 @@ func NewPiAdapter() Adapter {
 			Command:    []string{"pi"},
 			Reason:     "Run Pi locally so ~/.pi/agent/sessions exists and install the pi CLI.",
 		},
-		probe: func() bool {
-			return commandExists("pi") ||
-				pathExists(filepath.Join(piRootNoError(), "sessions"))
-		},
+		cliProbe:     piCLIAvailable,
+		sessionProbe: piSessionsAvailable,
 		listSessions: listPiSessions,
 		getSession:   getPiSession,
 		prompt:       promptPiSession,
 		startSession: startPiSession,
 	}
+}
+
+func piCLIAvailable() bool {
+	return commandExists("pi")
+}
+
+func piSessionsAvailable() bool {
+	return pathExists(filepath.Join(piRootNoError(), "sessions"))
 }
 
 type piLogLine struct {
@@ -57,6 +63,9 @@ type piBlock struct {
 func listPiSessions(ctx context.Context, req *ListSessionsRequest) (*ListSessionsResponse, error) {
 	paths, err := piLogPaths(ctx)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return &ListSessionsResponse{}, nil
+		}
 		return nil, fmt.Errorf("list pi log paths: %w", err)
 	}
 	sessions := map[string]*model.Session{}

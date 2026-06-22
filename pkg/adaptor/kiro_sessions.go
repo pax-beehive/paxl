@@ -23,15 +23,21 @@ func NewKiroAdapter() Adapter {
 			Command:    []string{"kiro-cli"},
 			Reason:     "Run Kiro CLI locally so ~/.kiro/sessions/cli exists and install kiro-cli.",
 		},
-		probe: func() bool {
-			return commandExists("kiro-cli") ||
-				pathExists(filepath.Join(kiroRootNoError(), "sessions", "cli"))
-		},
+		cliProbe:     kiroCLIAvailable,
+		sessionProbe: kiroSessionsAvailable,
 		listSessions: listKiroSessions,
 		getSession:   getKiroSession,
 		prompt:       promptKiroSession,
 		startSession: startKiroSession,
 	}
+}
+
+func kiroCLIAvailable() bool {
+	return commandExists("kiro-cli")
+}
+
+func kiroSessionsAvailable() bool {
+	return pathExists(filepath.Join(kiroRootNoError(), "sessions", "cli"))
 }
 
 type kiroSessionMeta struct {
@@ -66,6 +72,9 @@ func listKiroSessions(
 ) (*ListSessionsResponse, error) {
 	paths, err := kiroMetaPaths(ctx)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return &ListSessionsResponse{}, nil
+		}
 		return nil, fmt.Errorf("list kiro metadata paths: %w", err)
 	}
 	sessions := map[string]*model.Session{}

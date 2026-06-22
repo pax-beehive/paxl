@@ -145,6 +145,8 @@ func (r *Registry) Lookup(
 type staticAdapter struct {
 	agent        *model.AgentInfo
 	probe        func() bool
+	cliProbe     func() bool
+	sessionProbe func() bool
 	listSessions func(ctx context.Context, req *ListSessionsRequest) (*ListSessionsResponse, error)
 	getSession   func(ctx context.Context, req *GetSessionRequest) (*GetSessionResponse, error)
 	prompt       func(ctx context.Context, req *PromptRequest, option *Option) (*PromptResponse, error)
@@ -160,7 +162,13 @@ func (a *staticAdapter) Info(
 	_ = req
 	_ = applyOptions(opts)
 	agent := *a.agent
-	agent.Available = a.probe()
+	agent.CLIAvailable = probeBool(a.cliProbe)
+	agent.SessionsAvailable = probeBool(a.sessionProbe)
+	if a.probe != nil {
+		agent.Available = a.probe()
+	} else {
+		agent.Available = agent.CLIAvailable || agent.SessionsAvailable
+	}
 	if !agent.Available && agent.Reason == "" {
 		agent.Reason = "Agent command or local session directory is unavailable."
 	}
@@ -308,6 +316,10 @@ func ensureTerminalPeriod(value string) string {
 	return value + "."
 }
 
+func probeBool(probe func() bool) bool {
+	return probe != nil && probe()
+}
+
 func commandExists(name string) bool {
 	_, err := exec.LookPath(name)
 	return err == nil
@@ -319,12 +331,4 @@ func pathExists(path string) bool {
 	}
 	_, err := os.Stat(path)
 	return err == nil
-}
-
-func homeDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return home
 }

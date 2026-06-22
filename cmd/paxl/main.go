@@ -7,7 +7,6 @@ import (
 	"html"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime/debug"
 	"runtime/pprof"
@@ -122,23 +121,6 @@ func newAgentCommand(
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					return agentList(ctx, cmd, agentFacade, stdout, stderr, diagnostics)
-				},
-			},
-			{
-				Name:  "setup",
-				Usage: "Install supported local agent CLIs",
-				Flags: []cli.Flag{
-					&cli.StringFlag{
-						Name:  "agent",
-						Usage: "Comma-separated agents to install: codex, claude, or gemini",
-					},
-					&cli.BoolFlag{
-						Name:  "dry-run",
-						Usage: "Print install commands without running them",
-					},
-				},
-				Action: func(ctx context.Context, cmd *cli.Command) error {
-					return agentSetup(ctx, cmd, stdout, stderr)
 				},
 			},
 		},
@@ -453,26 +435,6 @@ func currentVersionMetadata() *versionMetadata {
 		}
 	}
 	return meta
-}
-
-func agentSetup(ctx context.Context, cmd *cli.Command, stdout io.Writer, stderr io.Writer) error {
-	_ = stderr
-	agents, err := parseAgentSelection(cmd.String("agent"))
-	if err != nil {
-		return fmt.Errorf("parse setup agents: %w", err)
-	}
-	for _, agent := range agents {
-		if agentCommandAvailable(agent) && !cmd.Bool("dry-run") {
-			if _, err := fmt.Fprintf(stdout, "%s already available.\n", agent); err != nil {
-				return fmt.Errorf("write setup status: %w", err)
-			}
-			continue
-		}
-		if err := runAgentInstall(ctx, stdout, agent, cmd.Bool("dry-run")); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func sessionList(
@@ -1019,54 +981,6 @@ func parseCSV(raw string) []string {
 	return values
 }
 
-func agentCommandAvailable(agent model.AgentName) bool {
-	_, err := exec.LookPath(string(agent))
-	return err == nil
-}
-
-func runAgentInstall(
-	ctx context.Context,
-	stdout io.Writer,
-	agent model.AgentName,
-	dryRun bool,
-) error {
-	command, err := agentInstallCommand(agent)
-	if err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(stdout, "$ %s\n", strings.Join(command, " ")); err != nil {
-		return fmt.Errorf("write setup command: %w", err)
-	}
-	if dryRun {
-		return nil
-	}
-	// The command is selected from a fixed allowlist for supported local agents.
-	proc := exec.CommandContext(ctx, command[0], command[1:]...) // #nosec G204
-	proc.Stdout = stdout
-	proc.Stderr = stdout
-	if err := proc.Run(); err != nil {
-		return fmt.Errorf("install %s: %w", agent, err)
-	}
-	return nil
-}
-
-func agentInstallCommand(agent model.AgentName) ([]string, error) {
-	switch agent {
-	case model.AgentNameCodex:
-		return []string{"npm", "install", "-g", "@openai/codex"}, nil
-	case model.AgentNameClaude:
-		return []string{"npm", "install", "-g", "@anthropic-ai/claude-code"}, nil
-	case model.AgentNameGemini:
-		return []string{"npm", "install", "-g", "@google/gemini-cli"}, nil
-	case model.AgentNamePi, model.AgentNameKiro:
-		return nil, fmt.Errorf("%s install is not managed by paxl setup", agent)
-	case model.AgentNameUnknown:
-		return nil, fmt.Errorf("unknown agent cannot be installed")
-	default:
-		return nil, fmt.Errorf("unsupported agent %q", agent)
-	}
-}
-
 func parseUpdatedSince(raw string) (time.Time, bool, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -1497,15 +1411,16 @@ func renderAgentList(stdout io.Writer, resp *facade.ListAgentsResponse, format s
 	switch format {
 	case "table":
 		writer := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		if _, err := fmt.Fprintln(writer, "AGENT\tSTATUS\tCAPABILITY\tCOMMAND"); err != nil {
+		if _, err := fmt.Fprintln(writer, "AGENT\tCLI\tSESSIONS\tCAPABILITY\tCOMMAND"); err != nil {
 			return fmt.Errorf("write agent list header: %w", err)
 		}
 		for _, agent := range resp.Agents {
 			if _, err := fmt.Fprintf(
 				writer,
-				"%s\t%s\t%s\t%s\n",
+				"%s\t%s\t%s\t%s\t%s\n",
 				agent.Name,
-				availability(agent.Available),
+				availability(agent.CLIAvailable),
+				availability(agent.SessionsAvailable),
 				agent.Capability,
 				strings.Join(agent.Command, " "),
 			); err != nil {

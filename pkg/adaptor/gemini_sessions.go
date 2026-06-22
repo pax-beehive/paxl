@@ -24,15 +24,21 @@ func NewGeminiAdapter() Adapter {
 			Command:    []string{"gemini"},
 			Reason:     "Run Gemini CLI locally so ~/.gemini/tmp contains chat history and install the gemini CLI.",
 		},
-		probe: func() bool {
-			return commandExists("gemini") ||
-				pathExists(filepath.Join(geminiRootNoError(), "tmp"))
-		},
+		cliProbe:     geminiCLIAvailable,
+		sessionProbe: geminiSessionsAvailable,
 		listSessions: listGeminiSessions,
 		getSession:   getGeminiSession,
 		prompt:       promptGeminiSession,
 		startSession: startGeminiSession,
 	}
+}
+
+func geminiCLIAvailable() bool {
+	return commandExists("gemini")
+}
+
+func geminiSessionsAvailable() bool {
+	return pathExists(filepath.Join(geminiRootNoError(), "tmp"))
 }
 
 type geminiConversation struct {
@@ -93,6 +99,9 @@ func listGeminiSessions(
 ) (*ListSessionsResponse, error) {
 	paths, err := geminiSessionPaths(ctx)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return &ListSessionsResponse{}, nil
+		}
 		return nil, fmt.Errorf("list gemini session paths: %w", err)
 	}
 	sessions := map[string]*model.Session{}

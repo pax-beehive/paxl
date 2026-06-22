@@ -50,10 +50,12 @@ const (
 )
 
 type AgentInfo struct {
-	Name       AgentName
-	Kind       AgentKind
-	Available  bool
-	Capability AgentCapability
-	Command    []string
-	Reason     string
+	Name              AgentName
+	Kind              AgentKind
+	Available         bool
+	CLIAvailable      bool
+	SessionsAvailable bool
+	Capability        AgentCapability
+	Command           []string
+	Reason            string
 }

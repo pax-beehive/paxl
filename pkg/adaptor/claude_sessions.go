@@ -22,15 +22,25 @@ func NewClaudeAdapter() Adapter {
 			Command:    []string{"claude"},
 			Reason:     "Run Claude Code locally so ~/.claude/projects exists and install the claude CLI.",
 		},
-		probe: func() bool {
-			return commandExists("claude") ||
-				pathExists(filepath.Join(homeDir(), ".claude", "projects"))
-		},
+		cliProbe:     claudeCLIAvailable,
+		sessionProbe: claudeSessionsAvailable,
 		listSessions: listClaudeSessions,
 		getSession:   getClaudeSession,
 		prompt:       promptClaudeSession,
 		startSession: startClaudeSession,
 	}
+}
+
+func claudeCLIAvailable() bool {
+	return commandExists("claude")
+}
+
+func claudeSessionsAvailable() bool {
+	root, err := claudeRoot()
+	if err != nil {
+		return false
+	}
+	return pathExists(filepath.Join(root, "projects"))
 }
 
 type claudeLogLine struct {
@@ -75,6 +85,9 @@ func listClaudeSessions(
 ) (*ListSessionsResponse, error) {
 	paths, err := claudeLogPaths(ctx)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return &ListSessionsResponse{}, nil
+		}
 		return nil, fmt.Errorf("list claude log paths: %w", err)
 	}
 	sessions := map[string]*model.Session{}

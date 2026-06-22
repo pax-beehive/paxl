@@ -1,13 +1,14 @@
 # paxl
 
-`paxl` is a local-first CLI for inspecting, transferring, and reusing AI agent
-session context.
+`paxl` is a local-first context bridge for AI coding agents.
 
-It is useful when you work across multiple local coding agents and need a
-practical way to keep context moving without manually copying long transcripts.
-For example, if your Claude Code quota is exhausted, you can mirror the current
-Claude session into Codex, Pi, Kiro, or Gemini so another local agent can
-continue from the same context.
+It helps you move working context between Codex, Claude Code, Pi, Kiro, and
+Gemini without manually copying long transcripts or uploading your session
+history to a cloud service.
+
+The practical use case is simple: when one local agent is out of quota, stuck on
+a task, or better suited for a different step, `paxl` can hand the current
+session context to another agent and keep the work moving.
 
 Chinese documentation: [doc/README_cn.md](doc/README_cn.md)
 
@@ -41,6 +42,53 @@ mkdir -p ~/bin
 cp ./paxl ~/bin/paxl
 ```
 
+## First Win: Continue Elsewhere
+
+This is the workflow to try first. It proves the core idea without needing to
+learn every command.
+
+1. Check which local agents have a CLI and which have local session logs:
+
+   ```sh
+   paxl agent list
+   ```
+
+2. List recent Claude Code sessions:
+
+   ```sh
+   paxl session list --agent claude --limit 5
+   ```
+
+3. List recent Codex sessions:
+
+   ```sh
+   paxl session list --agent codex --limit 5
+   ```
+
+4. Mirror Claude into an existing Codex session:
+
+   ```sh
+   paxl session mirror \
+     claude:<source-session-id> \
+     --to-session codex:<target-session-id> \
+     --verbose
+   ```
+
+If an agent has no local logs yet, session listing returns an empty list for that
+agent instead of failing the whole command.
+
+## Why Use It
+
+- Continue work in another agent when quota, model behavior, or tool access
+  changes mid-task.
+- Preserve a session timeline as transcript, JSONL, or HTML before handing work
+  off.
+- Create reusable knowledge capsules for decisions, bugs, release plans, and
+  project-specific context.
+- Inject a prepared handoff into an existing session or start a new target agent
+  session from it.
+- Let a Codex skill call `paxl` for repeatable context-transfer workflows.
+
 ## Agent Skill
 
 This repository includes a Codex skill for repeatable local knowledge transfer
@@ -62,17 +110,21 @@ sessions on this machine.
 ```
 
 After installing the skill, ask Codex to use `knowledge-transfer` when moving
-context between Codex, Claude, Pi, Kiro, or Gemini sessions.
+context between Codex, Claude, Pi, Kiro, or Gemini sessions. The skill is useful
+when you want an agent to choose the right `paxl` command instead of asking you
+to remember flags.
 
-## What It Does
+## Mental Model
 
-- Lists supported local agents.
-- Lists local agent sessions from local logs.
-- Renders a session timeline as transcript, JSONL, or HTML.
-- Mirrors one session into another agent session.
-- Creates reusable knowledge capsules from source sessions.
-- Injects knowledge capsules into target sessions.
-- Stores local metadata in SQLite.
+`paxl` has three core concepts:
+
+- A **session** is a local agent conversation discovered from local logs.
+- A **mirror** is a live handoff from one session into another agent session.
+- A **capsule** is reusable context stored locally, then inspected, archived, or
+  injected later.
+
+Use `session mirror` when you want continuity now. Use `capsule create` and
+`capsule inject` when you want reusable knowledge for later.
 
 Current built-in agents:
 
@@ -81,6 +133,65 @@ Current built-in agents:
 - `pi`: local Pi logs plus Pi CLI delivery.
 - `kiro`: local Kiro CLI logs plus Kiro CLI delivery.
 - `gemini`: local Gemini CLI logs plus Gemini CLI delivery.
+
+## Advanced Workflows
+
+### Preserve a Timeline
+
+Render a session before switching agents:
+
+```sh
+paxl session get claude:<session-id>
+paxl session get codex:<session-id> --format jsonl
+paxl session get codex:<session-id> --format html --output session.html
+```
+
+Use transcript output for reading, JSONL for scripts, and HTML when you want a
+portable review artifact.
+
+### Start Fresh With Context
+
+You do not need an existing target session. Start a new target agent with the
+source context:
+
+```sh
+paxl session mirror claude:<source-session-id> --to codex
+```
+
+This is useful when the target agent should receive the handoff and decide how
+to continue from a clean session.
+
+### Create Reusable Knowledge
+
+Ask the source agent to summarize a specific topic into a capsule:
+
+```sh
+paxl capsule create claude:<session-id> --keyword "release plan"
+paxl capsule get <capsule-id>
+paxl capsule inject <capsule-id> codex:<target-session-id>
+```
+
+Capsules work well for architecture decisions, debugging history, release
+checklists, and project conventions that should survive beyond one conversation.
+
+### Transfer Prepared Context
+
+When you already know exactly what should be handed off, create a capsule from a
+file instead of asking the source agent to summarize:
+
+```sh
+paxl capsule create codex:<session-id> \
+  --keyword "production incident" \
+  --title "api timeout incident" \
+  --summary "Known facts, mitigations, and next checks." \
+  --content-file handoff.md
+```
+
+### Work Through an Agent
+
+Install the bundled Codex skill when you want to say "move this context to
+Claude" or "create a capsule for this bug" and let the agent run the concrete
+`paxl` commands.
 
 ## Data Model
 
@@ -94,6 +205,17 @@ paxl --db .local/paxl.sqlite session list
 ```
 
 If `--db` is omitted, `paxl` uses its default local database path.
+
+## Privacy
+
+`paxl` does not require cloud registration to inspect or transfer local sessions.
+It reads local agent transcript files, stores cached metadata and generated
+capsules in local SQLite, and writes command execution logs locally under
+`~/.pax/paxl/logs/`.
+
+Mirror and capsule injection intentionally send selected session context to the
+target local agent CLI. Review capsule content with `paxl capsule get <id>` when
+you need to inspect what will be delivered.
 
 ## Execution Logs
 
@@ -214,6 +336,9 @@ incrementing.
 ```sh
 paxl agent list
 ```
+
+The `CLI` column shows whether the native agent command is on `PATH`. The
+`SESSIONS` column shows whether `paxl` can see local session logs for that agent.
 
 ### List Local Sessions
 
