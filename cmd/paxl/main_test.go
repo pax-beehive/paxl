@@ -118,6 +118,17 @@ func (s *CommandSuite) TestAgentListUsesSingularCommandAndOnlyShowsSupportedAgen
 	s.Empty(s.stderr.String())
 }
 
+func (s *CommandSuite) TestAgentListShowsCLIAndSessionAvailabilitySeparately() {
+	s.T().Setenv("PATH", s.T().TempDir())
+
+	err := run(context.Background(), []string{"agent", "list"}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "CLI")
+	s.Contains(s.stdout.String(), "SESSIONS")
+	s.Contains(s.stdout.String(), "missing")
+}
+
 func (s *CommandSuite) TestAgentListSupportsJSONLFormat() {
 	err := run(
 		context.Background(),
@@ -157,89 +168,26 @@ func (s *CommandSuite) TestAgentListRejectsUnknownFormatBeforeFacadeCall() {
 	s.Error(err)
 }
 
-func (s *CommandSuite) TestAgentSetupDryRunUsesSingularCommand() {
+func (s *CommandSuite) TestAgentCommandDoesNotExposeSetup() {
+	err := run(context.Background(), []string{"agent", "--help"}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "list")
+	s.NotContains(s.stdout.String(), "setup")
+}
+
+func (s *CommandSuite) TestSessionListWithCleanHomeReturnsEmptyList() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+
 	err := run(
 		context.Background(),
-		[]string{"agent", "setup", "--agent", "codex,claude,gemini", "--dry-run"},
+		[]string{"--db", dbPath, "session", "list", "--limit", "5"},
 		&s.stdout,
 		&s.stderr,
 	)
 
 	s.Require().NoError(err)
-	s.Contains(s.stdout.String(), "npm install -g @openai/codex")
-	s.Contains(s.stdout.String(), "npm install -g @anthropic-ai/claude-code")
-	s.Contains(s.stdout.String(), "npm install -g @google/gemini-cli")
-}
-
-func (s *CommandSuite) TestAgentSetupSkipsInstallWhenCommandAlreadyExists() {
-	if runtime.GOOS == "windows" {
-		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
-	}
-	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
-	s.installFakeCodex(capturePath)
-
-	err := run(
-		context.Background(),
-		[]string{"agent", "setup", "--agent", "codex"},
-		&s.stdout,
-		&s.stderr,
-	)
-
-	s.Require().NoError(err)
-	s.Contains(s.stdout.String(), "codex already available.")
-	_, err = os.Stat(capturePath)
-	s.ErrorIs(err, os.ErrNotExist)
-}
-
-func (s *CommandSuite) TestAgentSetupRejectsAgentsWithoutManagedInstallCommand() {
-	for _, agent := range []string{"pi", "kiro"} {
-		s.Run(agent, func() {
-			s.T().Setenv("PATH", s.T().TempDir())
-
-			err := run(
-				context.Background(),
-				[]string{"agent", "setup", "--agent", agent},
-				&s.stdout,
-				&s.stderr,
-			)
-
-			s.Require().Error(err)
-			s.Contains(err.Error(), agent+" install is not managed")
-			s.stdout.Reset()
-			s.stderr.Reset()
-		})
-	}
-}
-
-func (s *CommandSuite) TestAgentSetupRejectsUnsupportedAgentBeforeInstall() {
-	err := run(
-		context.Background(),
-		[]string{"agent", "setup", "--agent", "qwen", "--dry-run"},
-		&s.stdout,
-		&s.stderr,
-	)
-
-	s.Error(err)
-}
-
-func (s *CommandSuite) TestAgentSetupDryRunDefaultsToSupportedAgents() {
-	err := run(
-		context.Background(),
-		[]string{"agent", "setup", "--dry-run"},
-		&s.stdout,
-		&s.stderr,
-	)
-
-	s.Require().NoError(err)
-	s.Contains(s.stdout.String(), "@openai/codex")
-	s.Contains(s.stdout.String(), "@anthropic-ai/claude-code")
-	s.Contains(s.stdout.String(), "@google/gemini-cli")
-}
-
-func (s *CommandSuite) TestAgentInstallCommandRejectsUnknownAgent() {
-	_, err := agentInstallCommand(model.AgentNameUnknown)
-
-	s.Error(err)
+	s.Contains(s.stdout.String(), "ID")
 }
 
 func (s *CommandSuite) TestParseDurationSupportsDaySuffix() {

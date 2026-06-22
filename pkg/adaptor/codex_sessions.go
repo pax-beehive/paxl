@@ -23,15 +23,26 @@ func NewCodexAdapter() Adapter {
 			Command:    []string{"codex"},
 			Reason:     "Run Codex locally so ~/.codex/sessions exists and install the codex CLI.",
 		},
-		probe: func() bool {
-			return commandExists("codex") ||
-				pathExists(filepath.Join(homeDir(), ".codex", "sessions"))
-		},
+		cliProbe:     codexCLIAvailable,
+		sessionProbe: codexSessionsAvailable,
 		listSessions: listCodexSessions,
 		getSession:   getCodexSession,
 		prompt:       promptCodexSession,
 		startSession: startCodexSession,
 	}
+}
+
+func codexCLIAvailable() bool {
+	return commandExists("codex")
+}
+
+func codexSessionsAvailable() bool {
+	root, err := codexRoot()
+	if err != nil {
+		return false
+	}
+	return pathExists(filepath.Join(root, "sessions")) ||
+		pathExists(filepath.Join(root, "session_index.jsonl"))
 }
 
 type codexIndexEntry struct {
