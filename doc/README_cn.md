@@ -174,12 +174,14 @@ Cloud inbox 投递必须经过 accepted friend。不能直接发到裸邮箱；`
 paxl friend request alice@example.com --alias alice
 # Alice 接受 friend request 后
 paxl capsule send <capsule-id> --to @alice --message "please review"
+paxl outbox list
 paxl inbox list
 paxl inbox accept <envelope-id>
 ```
 
-接受 inbox envelope 后，远端 payload 会保存成本地 capsule。需要让某个本地 agent 接手时，
-再把这个 capsule inject 到目标 session。
+发送方可以通过 outbox 跟踪已发送 envelope；接收方继续从 inbox 处理。接受 inbox envelope
+后，远端 payload 会保存成本地 capsule。需要让某个本地 agent 接手时，再把这个 capsule
+inject 到目标 session。
 
 ### 转移人工整理好的上下文
 
@@ -487,6 +489,14 @@ paxl inbox list
 paxl inbox get <envelope-id>
 paxl inbox accept <envelope-id>
 paxl inbox archive <envelope-id>
+```
+
+跟踪已发送 envelopes：
+
+```sh
+paxl outbox list
+paxl outbox list --status accepted
+paxl outbox get <envelope-id>
 ```
 
 管理 friends：

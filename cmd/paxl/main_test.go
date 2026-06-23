@@ -888,6 +888,18 @@ func (s *CommandSuite) TestInboxCommandExposesEnvelopeSubcommands() {
 	}
 }
 
+func (s *CommandSuite) TestOutboxCommandExposesEnvelopeSubcommands() {
+	cases := []string{"list", "get"}
+	command := findCommand(newCommand(&s.stdout, &s.stderr), "outbox")
+	s.Require().NotNil(command)
+
+	for _, name := range cases {
+		s.Run(name, func() {
+			s.True(hasCommand(command, name))
+		})
+	}
+}
+
 func (s *CommandSuite) TestFriendCommandExposesSubcommands() {
 	cases := []string{"request", "list", "accept", "remove", "block"}
 	command := findCommand(newCommand(&s.stdout, &s.stderr), "friend")
@@ -1177,6 +1189,82 @@ func (s *CommandSuite) TestInboxCommandsUseManagerEnvelopes() {
 	)
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), "Archived env_1")
+}
+
+func (s *CommandSuite) TestOutboxCommandsUseManagerEnvelopes() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	restoreHTTPClient := s.stubDefaultHTTPClient(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/usr_1/envelopes":
+			s.Equal("sent", req.URL.Query().Get("direction"))
+			s.Equal("accepted", req.URL.Query().Get("status"))
+			return commandJSONResponse(`{
+				"data":{
+					"envelopes":[{
+						"envelope_id":"env_1",
+						"sender_email":"me@example.com",
+						"recipient_email":"recipient@example.com",
+						"payload_type":"knowledge_capsule",
+						"payload_json":{},
+						"message":"please review",
+						"status":"accepted",
+						"created_at":"2026-06-22T00:00:00Z",
+						"accepted_at":"2026-06-22T00:01:00Z"
+					}]
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/usr_1/envelopes/env_1":
+			return commandJSONResponse(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"env_1",
+						"sender_email":"me@example.com",
+						"recipient_email":"recipient@example.com",
+						"payload_type":"knowledge_capsule",
+						"payload_json":{},
+						"message":"please review",
+						"status":"accepted",
+						"created_at":"2026-06-22T00:00:00Z",
+						"accepted_at":"2026-06-22T00:01:00Z"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		default:
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader("unexpected request")),
+				Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			}, nil
+		}
+	})
+	defer restoreHTTPClient()
+	s.seedManagerCredential(dbPath, "https://manager.example")
+
+	err := run(
+		context.Background(),
+		[]string{"--db", dbPath, "outbox", "list", "--status", "accepted"},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "env_1")
+	s.Contains(s.stdout.String(), "recipient@example.com")
+	s.Contains(s.stdout.String(), "accepted")
+
+	s.SetupTest()
+	err = run(
+		context.Background(),
+		[]string{"--db", dbPath, "outbox", "get", "env_1"},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "recipient@example.com")
+	s.Contains(s.stdout.String(), "accepted")
 }
 
 func (s *CommandSuite) TestFriendCommandsUseManagerFriends() {
@@ -1903,6 +1991,26 @@ func (s *CommandSuite) TestRenderEnvelopeListSupportsTableFormat() {
 	s.Contains(s.stdout.String(), "env_1")
 	s.Contains(s.stdout.String(), "sender@example.com")
 	s.Contains(s.stdout.String(), "please review")
+}
+
+func (s *CommandSuite) TestRenderOutboxEnvelopeListSupportsTableFormat() {
+	err := renderOutboxEnvelopeList(&s.stdout, &facade.ListOutboxResponse{
+		Envelopes: []*model.Envelope{
+			{
+				EnvelopeID:     "env_1",
+				RecipientEmail: "recipient@example.com",
+				Message:        "please review",
+				Status:         "accepted",
+				CreatedAt:      "2026-06-22T00:00:00Z",
+			},
+		},
+	}, "table")
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "TO")
+	s.Contains(s.stdout.String(), "env_1")
+	s.Contains(s.stdout.String(), "recipient@example.com")
+	s.Contains(s.stdout.String(), "accepted")
 }
 
 func (s *CommandSuite) TestRenderEnvelopeListSupportsJSONLFormat() {

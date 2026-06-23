@@ -189,12 +189,15 @@ raw email address; `--to` must be a friend alias such as `@alice`.
 paxl friend request alice@example.com --alias alice
 # after Alice accepts the friend request
 paxl capsule send <capsule-id> --to @alice --message "please review"
+paxl outbox list
 paxl inbox list
 paxl inbox accept <envelope-id>
 ```
 
-Accepting an inbox envelope stores the remote payload as a local capsule. Inject
-that capsule into a local agent session when you want work to continue there.
+The sender can track sent envelopes from outbox while the recipient works from
+inbox. Accepting an inbox envelope stores the remote payload as a local capsule.
+Inject that capsule into a local agent session when you want work to continue
+there.
 
 ### Transfer Prepared Context
 
@@ -522,6 +525,14 @@ paxl inbox list
 paxl inbox get <envelope-id>
 paxl inbox accept <envelope-id>
 paxl inbox archive <envelope-id>
+```
+
+Track sent envelopes:
+
+```sh
+paxl outbox list
+paxl outbox list --status accepted
+paxl outbox get <envelope-id>
 ```
 
 Manage friends:

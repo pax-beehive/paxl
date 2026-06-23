@@ -39,6 +39,15 @@ type ListInboxResponse struct {
 	Envelopes []*model.Envelope
 }
 
+type ListOutboxRequest struct {
+	Status string
+	Limit  int
+}
+
+type ListOutboxResponse struct {
+	Envelopes []*model.Envelope
+}
+
 type GetEnvelopeRequest struct {
 	EnvelopeID string
 }
@@ -148,17 +157,49 @@ func (f *EnvelopeFacade) ListInbox(
 	if req == nil {
 		req = &ListInboxRequest{Status: "pending"}
 	}
+	envelopes, err := f.listRemoteEnvelopes(ctx, req.Status, "", req.Limit)
+	if err != nil {
+		return nil, err
+	}
+	return &ListInboxResponse{Envelopes: envelopes}, nil
+}
+
+func (f *EnvelopeFacade) ListOutbox(
+	ctx context.Context,
+	req *ListOutboxRequest,
+	opts ...func(*Option),
+) (*ListOutboxResponse, error) {
+	_ = applyOptions(opts)
+	if req == nil {
+		req = &ListOutboxRequest{}
+	}
+	envelopes, err := f.listRemoteEnvelopes(ctx, req.Status, "sent", req.Limit)
+	if err != nil {
+		return nil, err
+	}
+	return &ListOutboxResponse{Envelopes: envelopes}, nil
+}
+
+func (f *EnvelopeFacade) listRemoteEnvelopes(
+	ctx context.Context,
+	status string,
+	direction string,
+	limit int,
+) ([]*model.Envelope, error) {
 	credential, err := f.auth.requireCredential(ctx)
 	if err != nil {
 		return nil, err
 	}
 	path := userEnvelopePath(credential.UserID, "")
 	params := url.Values{}
-	if req.Status != "" {
-		params.Set("status", req.Status)
+	if status != "" {
+		params.Set("status", status)
 	}
-	if req.Limit > 0 {
-		params.Set("limit", fmt.Sprintf("%d", req.Limit))
+	if direction != "" {
+		params.Set("direction", direction)
+	}
+	if limit > 0 {
+		params.Set("limit", fmt.Sprintf("%d", limit))
 	}
 	if encoded := params.Encode(); encoded != "" {
 		path += "?" + encoded
@@ -177,7 +218,7 @@ func (f *EnvelopeFacade) ListInbox(
 	); err != nil {
 		return nil, err
 	}
-	return &ListInboxResponse{Envelopes: envelope.Data.Envelopes}, nil
+	return envelope.Data.Envelopes, nil
 }
 
 func (f *EnvelopeFacade) Get(
