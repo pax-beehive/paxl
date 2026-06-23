@@ -73,6 +73,23 @@ func (s *HermesSuite) TestAdapterListsSessionsThroughACPBeforeHTTP() {
 	s.Contains(s.readFile(logPath), `"method":"session/list"`)
 }
 
+func (s *HermesSuite) TestAdapterListsACPSessionsWithSnakeCaseTimestamps() {
+	s.installHermesACPFake(hermesACPFakeOptions{
+		sessionsJSON: `[{"session_id":"acp-session","title":"ACP Hermes","cwd":"/tmp/acp","updated_at":"2026-06-22T04:05:06Z","last_active":"2026-06-22T04:05:00Z"}]`,
+	})
+	withFailingHermesHTTPClient(s.T())
+
+	resp, err := NewHermesAdapter().ListSessions(
+		context.Background(),
+		&ListSessionsRequest{},
+	)
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Sessions, 1)
+	s.Equal("2026-06-22T04:05:06Z", resp.Sessions[0].UpdatedAt)
+	s.Equal("2026-06-22T04:05:00Z", resp.Sessions[0].LastActive)
+}
+
 func (s *HermesSuite) TestAdapterListsHermesHomeSessionsWhenHTTPIsOffline() {
 	hermesHome := s.T().TempDir()
 	sessionDir := filepath.Join(hermesHome, "sessions")
@@ -364,34 +381,40 @@ func syscallEPERM() error {
 	return syscall.EPERM
 }
 
-type hermesACPFakeOptions struct{}
+type hermesACPFakeOptions struct {
+	sessionsJSON string
+}
 
-func (s *HermesSuite) installHermesACPFake(_ hermesACPFakeOptions) string {
+func (s *HermesSuite) installHermesACPFake(options hermesACPFakeOptions) string {
 	dir := s.T().TempDir()
 	logPath := filepath.Join(dir, "acp.jsonl")
 	scriptPath := filepath.Join(dir, "hermes")
+	sessionsJSON := options.sessionsJSON
+	if sessionsJSON == "" {
+		sessionsJSON = `[{"sessionId":"acp-session","title":"ACP Hermes","cwd":"/tmp/acp","updatedAt":"2026-06-22T04:05:06Z"}]`
+	}
 	s.Require().NoError(os.WriteFile(
 		scriptPath,
-		[]byte(`#!/bin/sh
+		[]byte(fmt.Sprintf(`#!/bin/sh
 if [ "$1" != "acp" ]; then
   echo "unexpected args: $*" >&2
   exit 2
 fi
 while IFS= read -r line; do
-  printf '%s\n' "$line" >> "$PAXL_TEST_HERMES_ACP_LOG"
+  printf '%%s\n' "$line" >> "$PAXL_TEST_HERMES_ACP_LOG"
   case "$line" in
     *'"method":"initialize"'*)
       printf '{"jsonrpc":"2.0","id":1,"result":{"authMethods":[]}}\n'
       ;;
     *'"method":"session/list"'*)
-      printf '{"jsonrpc":"2.0","id":2,"result":{"sessions":[{"sessionId":"acp-session","title":"ACP Hermes","cwd":"/tmp/acp","updatedAt":"2026-06-22T04:05:06Z"}]}}\n'
+      printf '{"jsonrpc":"2.0","id":2,"result":{"sessions":%s}}\n'
       ;;
     *'"method":"session/prompt"'*)
       printf '{"jsonrpc":"2.0","id":2,"result":{}}\n'
       ;;
   esac
 done
-`),
+`, sessionsJSON)),
 		0o700,
 	))
 	s.T().Setenv("PAXL_TEST_HERMES_ACP_LOG", logPath)

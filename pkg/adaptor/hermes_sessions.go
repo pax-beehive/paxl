@@ -232,19 +232,29 @@ func hermesACPClient(timeout time.Duration) *acpClient {
 func decodeHermesACPSession(raw json.RawMessage) hermesSessionInfo {
 	var typed struct {
 		SessionID      string   `json:"sessionId"`
+		SessionIDAlt   string   `json:"session_id"`
 		ID             string   `json:"id"`
 		AgentType      string   `json:"agentType"`
+		AgentTypeAlt   string   `json:"agent_type"`
 		NativeID       string   `json:"nativeId"`
+		NativeIDAlt    string   `json:"native_id"`
 		Name           string   `json:"name"`
 		Title          string   `json:"title"`
 		CWD            string   `json:"cwd"`
 		ProjectID      string   `json:"projectId"`
+		ProjectIDAlt   string   `json:"project_id"`
 		LastActive     string   `json:"lastActive"`
+		LastActiveAlt  string   `json:"last_active"`
 		Preview        string   `json:"preview"`
 		WorkspaceRoots []string `json:"workspaceRoots"`
 		Status         string   `json:"status"`
 		CurrentTask    string   `json:"currentTask"`
+		CurrentTaskAlt string   `json:"current_task"`
 		UpdatedAt      string   `json:"updatedAt"`
+		UpdatedAtAlt   string   `json:"updated_at"`
+		LastUpdated    string   `json:"lastUpdated"`
+		LastUpdatedAlt string   `json:"last_updated"`
+		Timestamp      string   `json:"timestamp"`
 	}
 	if err := json.Unmarshal(raw, &typed); err != nil {
 		return hermesSessionInfo{}
@@ -254,18 +264,38 @@ func decodeHermesACPSession(raw json.RawMessage) hermesSessionInfo {
 		workspaceRoots = []string{typed.CWD}
 	}
 	return hermesSessionInfo{
-		SessionID:      firstNonEmpty(typed.SessionID, typed.ID, typed.NativeID),
-		AgentType:      firstNonEmpty(typed.AgentType, "hermes"),
-		NativeID:       firstNonEmpty(typed.NativeID, typed.SessionID, typed.ID),
+		SessionID: firstNonEmpty(
+			typed.SessionID,
+			typed.SessionIDAlt,
+			typed.ID,
+			typed.NativeID,
+			typed.NativeIDAlt,
+		),
+		AgentType: firstNonEmpty(typed.AgentType, typed.AgentTypeAlt, "hermes"),
+		NativeID: firstNonEmpty(
+			typed.NativeID,
+			typed.NativeIDAlt,
+			typed.SessionID,
+			typed.SessionIDAlt,
+			typed.ID,
+		),
 		Name:           firstNonEmpty(typed.Name, typed.Title),
-		ProjectID:      firstNonEmpty(typed.ProjectID, typed.CWD),
-		LastActive:     typed.LastActive,
+		ProjectID:      firstNonEmpty(typed.ProjectID, typed.ProjectIDAlt, typed.CWD),
+		LastActive:     firstNonEmpty(typed.LastActive, typed.LastActiveAlt, typed.Timestamp),
 		Preview:        typed.Preview,
 		WorkspaceRoots: workspaceRoots,
 		Status:         typed.Status,
-		CurrentTask:    typed.CurrentTask,
-		UpdatedAt:      typed.UpdatedAt,
-		RawJSON:        string(raw),
+		CurrentTask:    firstNonEmpty(typed.CurrentTask, typed.CurrentTaskAlt),
+		UpdatedAt: firstNonEmpty(
+			typed.UpdatedAt,
+			typed.UpdatedAtAlt,
+			typed.LastUpdated,
+			typed.LastUpdatedAlt,
+			typed.LastActive,
+			typed.LastActiveAlt,
+			typed.Timestamp,
+		),
+		RawJSON: string(raw),
 	}
 }
 
