@@ -2,8 +2,8 @@
 
 `paxl` is a local-first context bridge for AI coding agents.
 
-It helps you move working context between Codex, Claude Code, Pi, Kiro, and
-Gemini without manually copying long transcripts or uploading your session
+It helps you move working context between Codex, Claude Code, Pi, Kiro, Gemini,
+and OpenClaw without manually copying long transcripts or uploading your session
 history to a cloud service.
 
 The practical use case is simple: when one local agent is out of quota, stuck on
@@ -116,9 +116,9 @@ sessions on this machine.
 ```
 
 After installing the skill, ask Codex to use `knowledge-transfer` when moving
-context between Codex, Claude, Pi, Kiro, or Gemini sessions. The skill is useful
-when you want an agent to choose the right `paxl` command instead of asking you
-to remember flags.
+context between Codex, Claude, Pi, Kiro, Gemini, or OpenClaw sessions. The skill
+is useful when you want an agent to choose the right `paxl` command instead of
+asking you to remember flags.
 
 ## Mental Model
 
@@ -139,6 +139,9 @@ Current built-in agents:
 - `pi`: local Pi logs plus Pi CLI delivery.
 - `kiro`: local Kiro CLI logs plus Kiro CLI delivery.
 - `gemini`: local Gemini CLI logs plus Gemini CLI delivery.
+- `openclaw`: OpenClaw ACP session listing and existing-session prompt delivery.
+  The default command is `openclaw acp`; set `PAXL_OPENCLAW_ACP_COMMAND` when
+  your local OpenClaw ACP entrypoint is different.
 
 ## Advanced Workflows
 
@@ -574,6 +577,12 @@ Gemini delivery:
 - Existing session: `gemini --resume <session-id> -p <message>`
 - New session: `gemini -p <message>`
 
+OpenClaw delivery:
+
+- Existing session: ACP `session/prompt` through `openclaw acp`
+- Session listing: ACP `session/list`
+- Override command: `PAXL_OPENCLAW_ACP_COMMAND='openclaw --acp'`
+
 `paxl` buffers child process output by default. Use `--verbose` when you want
 delivery details.
 
@@ -595,7 +604,7 @@ The CI coverage gate is 80%.
 ## Status
 
 `paxl` is an early open-source CLI. The architecture is designed for more agent
-adapters. Codex, Claude, Pi, Kiro, and Gemini are built in today.
+adapters. Codex, Claude, Pi, Kiro, Gemini, and OpenClaw are built in today.
 
 ## Platform Support
 
@@ -605,7 +614,8 @@ built-in adapters depend on local agent log locations and native CLIs.
 Current support boundary:
 
 - macOS: verified with local Codex, Claude Code, Pi, Kiro CLI, and Gemini CLI
-  log shapes.
+  log shapes. OpenClaw is covered through ACP contract tests and requires a
+  local OpenClaw ACP command.
 - Linux: expected to be close to macOS if `~/.codex/sessions`,
   `~/.claude/projects`, `~/.pi/agent/sessions`, `~/.kiro/sessions`,
   `~/.gemini/tmp`, and the matching CLIs are available, but it still needs

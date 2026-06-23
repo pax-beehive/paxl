@@ -8,13 +8,14 @@ import (
 type AgentName string
 
 const (
-	AgentNameUnknown AgentName = "unknown"
-	AgentNameCodex   AgentName = "codex"
-	AgentNameClaude  AgentName = "claude"
-	AgentNamePi      AgentName = "pi"
-	AgentNameKiro    AgentName = "kiro"
-	AgentNameGemini  AgentName = "gemini"
-	AgentNameHermes  AgentName = "hermes"
+	AgentNameUnknown  AgentName = "unknown"
+	AgentNameCodex    AgentName = "codex"
+	AgentNameClaude   AgentName = "claude"
+	AgentNamePi       AgentName = "pi"
+	AgentNameKiro     AgentName = "kiro"
+	AgentNameGemini   AgentName = "gemini"
+	AgentNameHermes   AgentName = "hermes"
+	AgentNameOpenClaw AgentName = "openclaw"
 )
 
 func ParseAgentName(raw string) (AgentName, error) {
@@ -33,6 +34,8 @@ func ParseAgentName(raw string) (AgentName, error) {
 		return AgentNameGemini, nil
 	case AgentNameHermes:
 		return AgentNameHermes, nil
+	case AgentNameOpenClaw:
+		return AgentNameOpenClaw, nil
 	default:
 		return AgentNameUnknown, fmt.Errorf("parse agent name %q: unsupported agent", raw)
 	}
