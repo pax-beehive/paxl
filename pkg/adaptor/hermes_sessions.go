@@ -25,6 +25,7 @@ const defaultHermesURL = "http://localhost:8642"
 
 var errHermesUnavailable = errors.New("hermes unavailable")
 var errHermesLocalNotFound = errors.New("hermes local session not found")
+var hermesACPCommand = []string{"hermes", "acp"}
 var hermesHTTPClient = &http.Client{Timeout: 5 * time.Minute}
 
 func NewHermesAdapter() Adapter {
@@ -47,16 +48,22 @@ func NewHermesAdapter() Adapter {
 }
 
 func hermesCLIAvailable() bool {
-	return commandExists("hermes")
+	if len(hermesACPCommand) == 0 {
+		return false
+	}
+	return commandExists(hermesACPCommand[0])
 }
 
 func hermesSessionsAvailable() bool {
-	return hermesLocalSessionsAvailable()
+	return hermesLocalSessionsAvailable() || hermesCLIAvailable()
 }
 
 func hermesOnlineAvailable() bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+	if hermesACPAvailable(ctx) {
+		return true
+	}
 	return hermesHealth(ctx) == nil
 }
 
@@ -97,6 +104,10 @@ func listHermesSessions(
 	}
 	if hermesLocalRootExists() {
 		return local, nil
+	}
+	acp, err := listHermesACPSessions(ctx, req)
+	if err == nil {
+		return acp, nil
 	}
 	var sessions []hermesSessionInfo
 	if err := hermesJSON(ctx, http.MethodGet, "/api/sessions", nil, &sessions, ""); err != nil {
@@ -147,6 +158,9 @@ func promptHermesSession(
 	if err := validateNativeSessionID(req.NativeID); err != nil {
 		return nil, err
 	}
+	if err := promptHermesACPSession(ctx, req.NativeID, req.Text); err == nil {
+		return &PromptResponse{DeliveryMethod: "acp_session_prompt"}, nil
+	}
 	return postHermesPrompt(ctx, req.Text, req.NativeID)
 }
 
@@ -167,6 +181,92 @@ func startHermesSession(
 
 func hermesHealth(ctx context.Context) error {
 	return hermesJSON(ctx, http.MethodGet, "/health", nil, nil, "")
+}
+
+func hermesACPAvailable(ctx context.Context) bool {
+	if !hermesCLIAvailable() {
+		return false
+	}
+	client := hermesACPClient(2 * time.Second)
+	return client.initialize(ctx) == nil
+}
+
+func listHermesACPSessions(
+	ctx context.Context,
+	req *ListSessionsRequest,
+) (*ListSessionsResponse, error) {
+	if !hermesCLIAvailable() {
+		return nil, errHermesUnavailable
+	}
+	client := hermesACPClient(10 * time.Second)
+	sessions, err := client.listSessions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list hermes acp sessions: %w", err)
+	}
+	byID := make(map[string]*model.Session, len(sessions))
+	for _, session := range sessions {
+		modelSession := hermesModelSession(&session)
+		if modelSession.ID != "" {
+			byID[modelSession.ID] = modelSession
+		}
+	}
+	return sortedSessions(byID, req), nil
+}
+
+func promptHermesACPSession(ctx context.Context, nativeID string, text string) error {
+	if !hermesCLIAvailable() {
+		return errHermesUnavailable
+	}
+	client := hermesACPClient(30 * time.Second)
+	return client.prompt(ctx, nativeID, text)
+}
+
+func hermesACPClient(timeout time.Duration) *acpClient {
+	command := append([]string{}, hermesACPCommand...)
+	return &acpClient{
+		command: command,
+		timeout: timeout,
+	}
+}
+
+func decodeHermesACPSession(raw json.RawMessage) hermesSessionInfo {
+	var typed struct {
+		SessionID      string   `json:"sessionId"`
+		ID             string   `json:"id"`
+		AgentType      string   `json:"agentType"`
+		NativeID       string   `json:"nativeId"`
+		Name           string   `json:"name"`
+		Title          string   `json:"title"`
+		CWD            string   `json:"cwd"`
+		ProjectID      string   `json:"projectId"`
+		LastActive     string   `json:"lastActive"`
+		Preview        string   `json:"preview"`
+		WorkspaceRoots []string `json:"workspaceRoots"`
+		Status         string   `json:"status"`
+		CurrentTask    string   `json:"currentTask"`
+		UpdatedAt      string   `json:"updatedAt"`
+	}
+	if err := json.Unmarshal(raw, &typed); err != nil {
+		return hermesSessionInfo{}
+	}
+	workspaceRoots := typed.WorkspaceRoots
+	if len(workspaceRoots) == 0 && typed.CWD != "" {
+		workspaceRoots = []string{typed.CWD}
+	}
+	return hermesSessionInfo{
+		SessionID:      firstNonEmpty(typed.SessionID, typed.ID, typed.NativeID),
+		AgentType:      firstNonEmpty(typed.AgentType, "hermes"),
+		NativeID:       firstNonEmpty(typed.NativeID, typed.SessionID, typed.ID),
+		Name:           firstNonEmpty(typed.Name, typed.Title),
+		ProjectID:      firstNonEmpty(typed.ProjectID, typed.CWD),
+		LastActive:     typed.LastActive,
+		Preview:        typed.Preview,
+		WorkspaceRoots: workspaceRoots,
+		Status:         typed.Status,
+		CurrentTask:    typed.CurrentTask,
+		UpdatedAt:      typed.UpdatedAt,
+		RawJSON:        string(raw),
+	}
 }
 
 type hermesLocalSession struct {
