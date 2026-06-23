@@ -35,7 +35,13 @@ paxl version
 检查是否有新的 stable 托管版本：
 
 ```sh
-paxl update check
+paxl version --check
+```
+
+原地升级当前 binary：
+
+```sh
+paxl update
 ```
 
 也可以从源码构建：

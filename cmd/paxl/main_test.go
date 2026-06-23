@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -29,6 +31,60 @@ type CommandSuite struct {
 
 func TestCommandSuite(t *testing.T) {
 	suite.Run(t, new(CommandSuite))
+}
+
+func TestRenderUpdateCheckTextSuggestsPaxlUpdate(t *testing.T) {
+	var stdout bytes.Buffer
+	err := renderUpdateCheck(&stdout, &facade.CheckUpdateResponse{
+		CurrentVersion:  "0.1.0",
+		LatestVersion:   "0.1.1",
+		Status:          facade.UpdateStatusAvailable,
+		UpdateAvailable: true,
+	}, "text")
+
+	if err != nil {
+		t.Fatalf("renderUpdateCheck() error = %v", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "Run `paxl update` to upgrade.") {
+		t.Fatalf("rendered update check = %q", got)
+	}
+}
+
+func TestRenderApplyUpdateJSON(t *testing.T) {
+	var stdout bytes.Buffer
+	err := renderApplyUpdate(&stdout, &applyUpdateResponse{
+		CurrentVersion:  "0.1.0",
+		LatestVersion:   "0.1.1",
+		Status:          facade.UpdateStatusAvailable,
+		UpdateAvailable: true,
+		Updated:         true,
+		Path:            "/tmp/paxl",
+		Platform:        "test/os",
+		SHA256:          "abc123",
+		SizeBytes:       42,
+	}, "json")
+
+	if err != nil {
+		t.Fatalf("renderApplyUpdate() error = %v", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, `"updated":true`) {
+		t.Fatalf("rendered update result = %q", got)
+	}
+}
+
+func TestDownloadUpdateBinaryRejectsSizeMismatch(t *testing.T) {
+	client := commandRoundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("short")),
+		}, nil
+	})
+
+	_, err := downloadUpdateBinary(context.Background(), client, "https://example.test/paxl", 10)
+
+	if err == nil || !strings.Contains(err.Error(), "download size") {
+		t.Fatalf("downloadUpdateBinary() error = %v, want size mismatch", err)
+	}
 }
 
 func (s *CommandSuite) SetupTest() {
@@ -524,6 +580,197 @@ func (s *CommandSuite) TestUpdateCheckUsesResolverByDefault() {
 
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), `"update_available":true`)
+}
+
+func (s *CommandSuite) TestVersionCheckUsesResolver() {
+	oldClient := updateHTTPClient
+	updateHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		s.Equal("/api/v1/public/artifacts/download", req.URL.Path)
+		s.Equal("paxl", req.URL.Query().Get("product"))
+		return commandJSONResponse(`{
+			"data": {
+				"url": "https://example.test/paxl",
+				"sha256": "abc123",
+				"size_bytes": 42,
+				"version": "0.1.1",
+				"product": "paxl",
+				"platform": "test/os"
+			}
+		}`), nil
+	})
+	s.T().Cleanup(func() {
+		updateHTTPClient = oldClient
+	})
+
+	err := run(
+		context.Background(),
+		[]string{"version", "--check", "--format", "json"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"latest_version":"0.1.1"`)
+	s.Contains(s.stdout.String(), `"update_available":true`)
+	s.NotContains(s.stdout.String(), `"commit"`)
+}
+
+func (s *CommandSuite) TestUpdateDownloadsAndReplacesCurrentBinary() {
+	oldClient := updateHTTPClient
+	oldExecutablePath := executablePath
+	oldVersion := version
+	newBinary := []byte("#!/bin/sh\necho paxl 0.1.1\n")
+	sha := testSHA256(newBinary)
+	exe := filepath.Join(s.T().TempDir(), "paxl")
+	s.Require().NoError(os.WriteFile(exe, []byte("old paxl"), 0o755))
+	version = "0.1.0"
+	executablePath = func() (string, error) {
+		return exe, nil
+	}
+	updateHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.String() {
+		case "https://example.test/api?platform=test%2Fos&product=paxl&tags=stable":
+			return commandJSONResponse(fmt.Sprintf(`{
+				"data": {
+					"url": "https://example.test/download/paxl",
+					"sha256": %q,
+					"size_bytes": %d,
+					"version": "0.1.1",
+					"product": "paxl",
+					"platform": "test/os"
+				}
+			}`, sha, len(newBinary))), nil
+		case "https://example.test/download/paxl":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader(newBinary)),
+				Header:     http.Header{"Content-Type": []string{"application/octet-stream"}},
+			}, nil
+		default:
+			return nil, fmt.Errorf("unexpected update request %s", req.URL.String())
+		}
+	})
+	s.T().Cleanup(func() {
+		updateHTTPClient = oldClient
+		executablePath = oldExecutablePath
+		version = oldVersion
+	})
+
+	err := run(
+		context.Background(),
+		[]string{
+			"update",
+			"--resolver-url",
+			"https://example.test/api",
+			"--platform",
+			"test/os",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	raw, err := os.ReadFile(exe)
+	s.Require().NoError(err)
+	s.Equal(newBinary, raw)
+	s.Contains(s.stdout.String(), "Updated paxl 0.1.0 -> 0.1.1")
+	s.Contains(s.stdout.String(), "Path: "+exe)
+}
+
+func (s *CommandSuite) TestUpdateReportsUpToDateWithoutReplacingBinary() {
+	oldClient := updateHTTPClient
+	oldExecutablePath := executablePath
+	oldVersion := version
+	version = "0.1.0"
+	executablePath = func() (string, error) {
+		return "", fmt.Errorf("executable path should not be needed")
+	}
+	updateHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		s.Equal(
+			"https://example.test/api?platform=test%2Fos&product=paxl&tags=stable",
+			req.URL.String(),
+		)
+		return commandJSONResponse(`{
+			"data": {
+				"url": "https://example.test/download/paxl",
+				"sha256": "abc123",
+				"size_bytes": 42,
+				"version": "0.1.0",
+				"product": "paxl",
+				"platform": "test/os"
+			}
+		}`), nil
+	})
+	s.T().Cleanup(func() {
+		updateHTTPClient = oldClient
+		executablePath = oldExecutablePath
+		version = oldVersion
+	})
+
+	err := run(
+		context.Background(),
+		[]string{
+			"update",
+			"--resolver-url",
+			"https://example.test/api",
+			"--platform",
+			"test/os",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Current: 0.1.0")
+	s.Contains(s.stdout.String(), "Status:  Up to date")
+}
+
+func (s *CommandSuite) TestUpdateRejectsBadDownloadSHA() {
+	oldClient := updateHTTPClient
+	oldVersion := version
+	version = "0.1.0"
+	updateHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.String() {
+		case "https://example.test/api?platform=test%2Fos&product=paxl&tags=stable":
+			return commandJSONResponse(`{
+				"data": {
+					"url": "https://example.test/download/paxl",
+					"sha256": "abc123",
+					"size_bytes": 3,
+					"version": "0.1.1",
+					"product": "paxl",
+					"platform": "test/os"
+				}
+			}`), nil
+		case "https://example.test/download/paxl":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("new")),
+			}, nil
+		default:
+			return nil, fmt.Errorf("unexpected update request %s", req.URL.String())
+		}
+	})
+	s.T().Cleanup(func() {
+		updateHTTPClient = oldClient
+		version = oldVersion
+	})
+
+	err := run(
+		context.Background(),
+		[]string{
+			"update",
+			"--resolver-url",
+			"https://example.test/api",
+			"--platform",
+			"test/os",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().Error(err)
+	s.Contains(err.Error(), "verify update")
 }
 
 func (s *CommandSuite) TestUpdateCheckRejectsUnknownFormat() {
@@ -2457,6 +2704,11 @@ func commandJSONResponse(body string) *http.Response {
 		Body:       io.NopCloser(strings.NewReader(body)),
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 	}
+}
+
+func testSHA256(raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 
 func friendCommandResponse(status string) string {
