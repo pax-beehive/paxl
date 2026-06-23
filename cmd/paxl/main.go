@@ -1782,6 +1782,7 @@ func parseAgentSelection(raw string) ([]model.AgentName, error) {
 			model.AgentNameCodex,
 			model.AgentNameClaude,
 			model.AgentNameGemini,
+			model.AgentNameOpenClaw,
 		}, nil
 	}
 	agents := make([]model.AgentName, 0, len(values))

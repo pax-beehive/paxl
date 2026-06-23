@@ -112,6 +112,8 @@ Current adapters:
 - Pi: reads local Pi logs and delivers with Pi CLI.
 - Kiro: reads local Kiro CLI logs and delivers with Kiro CLI.
 - Gemini: reads local Gemini CLI logs and delivers with Gemini CLI.
+- OpenClaw: uses ACP `session/list` and `session/prompt` through the configured
+  OpenClaw ACP command.
 
 Current delivery commands:
 
@@ -134,6 +136,12 @@ Kiro new session:        kiro-cli chat --no-interactive <message>
 
 Gemini existing session: gemini --resume <session-id> -p <message>
 Gemini new session:      gemini -p <message>
+
+OpenClaw existing session:
+                        openclaw acp + ACP session/prompt
+OpenClaw session list:  openclaw acp + ACP session/list
+OpenClaw command override:
+                        PAXL_OPENCLAW_ACP_COMMAND
 ```
 
 Adapter stdout/stderr is buffered by default. `--verbose` can surface delivery
@@ -149,6 +157,7 @@ claude:<native-id>
 pi:<native-id>
 kiro:<native-id>
 gemini:<native-id>
+openclaw:<native-id>
 ```
 
 The facade parses these IDs before business logic uses them. Bare native IDs are
