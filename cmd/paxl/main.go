@@ -84,6 +84,7 @@ func newCommandWithDiagnostics(
 			newSessionCommand(stdout, stderr, diagnostics),
 			newCapsuleCommand(stdout, stderr, diagnostics),
 			newInboxCommand(stdout),
+			newFriendCommand(stdout),
 		},
 	}
 }
@@ -553,6 +554,98 @@ func newInboxCommand(stdout io.Writer) *cli.Command {
 	}
 }
 
+func newFriendCommand(stdout io.Writer) *cli.Command {
+	return &cli.Command{
+		Name:  "friend",
+		Usage: "Manage friends for envelope sharing",
+		Commands: []*cli.Command{
+			{
+				Name:      "request",
+				Usage:     "Request a friend connection",
+				ArgsUsage: "<email>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "alias", Usage: "Local alias for this friend"},
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "table",
+						Usage: "Output format: table or jsonl",
+					},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return friendRequest(ctx, cmd, stdout)
+				},
+			},
+			{
+				Name:  "list",
+				Usage: "List friends and friend requests",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "status",
+						Value: "accepted",
+						Usage: "Friend status filter",
+					},
+					&cli.StringFlag{Name: "direction", Usage: "Direction filter: sent or received"},
+					&cli.IntFlag{Name: "limit", Usage: "Maximum friends to show"},
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "table",
+						Usage: "Output format: table or jsonl",
+					},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return friendList(ctx, cmd, stdout)
+				},
+			},
+			{
+				Name:      "accept",
+				Usage:     "Accept a friend request",
+				ArgsUsage: "<friend-id>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "alias", Usage: "Local alias for this friend"},
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "table",
+						Usage: "Output format: table or jsonl",
+					},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return friendAccept(ctx, cmd, stdout)
+				},
+			},
+			{
+				Name:      "remove",
+				Usage:     "Remove a friend",
+				ArgsUsage: "<friend-id>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "table",
+						Usage: "Output format: table or jsonl",
+					},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return friendRemove(ctx, cmd, stdout)
+				},
+			},
+			{
+				Name:      "block",
+				Usage:     "Block a friend",
+				ArgsUsage: "<friend-id>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "table",
+						Usage: "Output format: table or jsonl",
+					},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return friendBlock(ctx, cmd, stdout)
+				},
+			},
+		},
+	}
+}
+
 func agentList(
 	ctx context.Context,
 	cmd *cli.Command,
@@ -939,6 +1032,16 @@ func capsuleSend(ctx context.Context, cmd *cli.Command, stdout io.Writer) error 
 		return fmt.Errorf("open envelope store: %w", err)
 	}
 	defer closeStore(opened.Store)
+	if strings.HasPrefix(strings.TrimSpace(req.RecipientEmail), "@") {
+		friendFacade := facade.NewFriendFacade(nil, opened.Store)
+		resolved, err := friendFacade.ResolveAlias(ctx, &facade.ResolveFriendAliasRequest{
+			Alias: req.RecipientEmail,
+		})
+		if err != nil {
+			return fmt.Errorf("resolve friend alias: %w", err)
+		}
+		req.RecipientEmail = resolved.Email
+	}
 	envelopeFacade := facade.NewEnvelopeFacade(nil, opened.Store)
 	resp, err := envelopeFacade.Send(ctx, req)
 	if err != nil {
@@ -1091,6 +1194,112 @@ func inboxArchive(ctx context.Context, cmd *cli.Command, stdout io.Writer) error
 		return fmt.Errorf("write archive result: %w", err)
 	}
 	return nil
+}
+
+func friendRequest(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	req, err := parseRequestFriendRequest(cmd)
+	if err != nil {
+		return fmt.Errorf("parse friend request: %w", err)
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open friend store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	friendFacade := facade.NewFriendFacade(nil, opened.Store)
+	resp, err := friendFacade.Request(ctx, req)
+	if err != nil {
+		return fmt.Errorf("request friend: %w", err)
+	}
+	return renderFriendList(
+		stdout,
+		&facade.ListFriendsResponse{Friends: []*model.Friend{resp.Friend}},
+		cmd.String("format"),
+	)
+}
+
+func friendList(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	req, err := parseListFriendsRequest(cmd)
+	if err != nil {
+		return fmt.Errorf("parse friend list: %w", err)
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open friend store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	friendFacade := facade.NewFriendFacade(nil, opened.Store)
+	resp, err := friendFacade.List(ctx, req)
+	if err != nil {
+		return fmt.Errorf("list friends: %w", err)
+	}
+	return renderFriendList(stdout, resp, cmd.String("format"))
+}
+
+func friendAccept(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	req, err := parseAcceptFriendRequest(cmd)
+	if err != nil {
+		return fmt.Errorf("parse friend accept: %w", err)
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open friend store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	friendFacade := facade.NewFriendFacade(nil, opened.Store)
+	resp, err := friendFacade.Accept(ctx, req)
+	if err != nil {
+		return fmt.Errorf("accept friend: %w", err)
+	}
+	return renderFriendList(
+		stdout,
+		&facade.ListFriendsResponse{Friends: []*model.Friend{resp.Friend}, UserID: resp.UserID},
+		cmd.String("format"),
+	)
+}
+
+func friendRemove(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	req, err := parseRemoveFriendRequest(cmd)
+	if err != nil {
+		return fmt.Errorf("parse friend remove: %w", err)
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open friend store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	friendFacade := facade.NewFriendFacade(nil, opened.Store)
+	resp, err := friendFacade.Remove(ctx, req)
+	if err != nil {
+		return fmt.Errorf("remove friend: %w", err)
+	}
+	return renderFriendList(
+		stdout,
+		&facade.ListFriendsResponse{Friends: []*model.Friend{resp.Friend}, UserID: resp.UserID},
+		cmd.String("format"),
+	)
+}
+
+func friendBlock(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	req, err := parseBlockFriendRequest(cmd)
+	if err != nil {
+		return fmt.Errorf("parse friend block: %w", err)
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open friend store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	friendFacade := facade.NewFriendFacade(nil, opened.Store)
+	resp, err := friendFacade.Block(ctx, req)
+	if err != nil {
+		return fmt.Errorf("block friend: %w", err)
+	}
+	return renderFriendList(
+		stdout,
+		&facade.ListFriendsResponse{Friends: []*model.Friend{resp.Friend}, UserID: resp.UserID},
+		cmd.String("format"),
+	)
 }
 
 func capsuleInjectionList(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
@@ -1366,6 +1575,82 @@ func parseArchiveEnvelopeRequest(cmd *cli.Command) (*facade.ArchiveEnvelopeReque
 		return nil, fmt.Errorf("envelope id is required")
 	}
 	return &facade.ArchiveEnvelopeRequest{EnvelopeID: envelopeID}, nil
+}
+
+func parseRequestFriendRequest(cmd *cli.Command) (*facade.RequestFriendRequest, error) {
+	email := strings.TrimSpace(cmd.Args().First())
+	if email == "" {
+		return nil, fmt.Errorf("email is required")
+	}
+	if err := validateFormat(cmd.String("format"), "table", "jsonl"); err != nil {
+		return nil, err
+	}
+	return &facade.RequestFriendRequest{
+		Email: email,
+		Alias: strings.TrimSpace(cmd.String("alias")),
+	}, nil
+}
+
+func parseListFriendsRequest(cmd *cli.Command) (*facade.ListFriendsRequest, error) {
+	if err := validateFormat(cmd.String("format"), "table", "jsonl"); err != nil {
+		return nil, err
+	}
+	direction := strings.TrimSpace(cmd.String("direction"))
+	switch direction {
+	case "", "sent", "received":
+	default:
+		return nil, fmt.Errorf("unsupported direction %q", direction)
+	}
+	return &facade.ListFriendsRequest{
+		Status:    strings.TrimSpace(cmd.String("status")),
+		Direction: direction,
+		Limit:     cmd.Int("limit"),
+	}, nil
+}
+
+func parseAcceptFriendRequest(cmd *cli.Command) (*facade.AcceptFriendRequest, error) {
+	friendID := cmd.Args().First()
+	if friendID == "" {
+		return nil, fmt.Errorf("friend id is required")
+	}
+	if err := validateFormat(cmd.String("format"), "table", "jsonl"); err != nil {
+		return nil, err
+	}
+	return &facade.AcceptFriendRequest{
+		FriendID: friendID,
+		Alias:    strings.TrimSpace(cmd.String("alias")),
+	}, nil
+}
+
+func parseRemoveFriendRequest(cmd *cli.Command) (*facade.RemoveFriendRequest, error) {
+	friendID := cmd.Args().First()
+	if friendID == "" {
+		return nil, fmt.Errorf("friend id is required")
+	}
+	if err := validateFormat(cmd.String("format"), "table", "jsonl"); err != nil {
+		return nil, err
+	}
+	return &facade.RemoveFriendRequest{FriendID: friendID}, nil
+}
+
+func parseBlockFriendRequest(cmd *cli.Command) (*facade.BlockFriendRequest, error) {
+	friendID := cmd.Args().First()
+	if friendID == "" {
+		return nil, fmt.Errorf("friend id is required")
+	}
+	if err := validateFormat(cmd.String("format"), "table", "jsonl"); err != nil {
+		return nil, err
+	}
+	return &facade.BlockFriendRequest{FriendID: friendID}, nil
+}
+
+func validateFormat(format string, values ...string) error {
+	for _, value := range values {
+		if format == value {
+			return nil
+		}
+	}
+	return fmt.Errorf("unsupported format %q", format)
 }
 
 func parseListInjectionsRequest(cmd *cli.Command) (*facade.ListInjectionsRequest, error) {
@@ -1799,6 +2084,85 @@ func encodeEnvelopeJSONL(stdout io.Writer, envelope *model.Envelope) error {
 		return fmt.Errorf("encode envelope: %w", err)
 	}
 	return nil
+}
+
+func renderFriendList(stdout io.Writer, resp *facade.ListFriendsResponse, format string) error {
+	switch format {
+	case "table":
+		writer := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		if _, err := fmt.Fprintln(
+			writer,
+			"ID\tSTATUS\tALIAS\tEMAIL\tDIRECTION\tCREATED",
+		); err != nil {
+			return fmt.Errorf("write friend list header: %w", err)
+		}
+		for _, friend := range resp.Friends {
+			alias, email, direction := friendView(resp.UserID, friend)
+			if _, err := fmt.Fprintf(
+				writer,
+				"%s\t%s\t%s\t%s\t%s\t%s\n",
+				friend.FriendID,
+				friend.Status,
+				firstNonEmpty(alias, "-"),
+				firstNonEmpty(email, "-"),
+				direction,
+				firstNonEmpty(friend.CreatedAt, "-"),
+			); err != nil {
+				return fmt.Errorf("write friend row: %w", err)
+			}
+		}
+		return writer.Flush()
+	case "jsonl":
+		for _, friend := range resp.Friends {
+			if err := encodeFriendJSONL(stdout, resp.UserID, friend); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func encodeFriendJSONL(stdout io.Writer, userID string, friend *model.Friend) error {
+	alias, email, direction := friendView(userID, friend)
+	if err := json.NewEncoder(stdout).Encode(map[string]any{
+		"schemaVersion":   "paxl.friend.v1",
+		"friendId":        friend.FriendID,
+		"alias":           alias,
+		"email":           email,
+		"direction":       direction,
+		"requesterUserId": friend.RequesterUserID,
+		"requesterEmail":  friend.RequesterEmail,
+		"requesterAlias":  friend.RequesterAlias,
+		"recipientUserId": friend.RecipientUserID,
+		"recipientEmail":  friend.RecipientEmail,
+		"recipientAlias":  friend.RecipientAlias,
+		"status":          friend.Status,
+		"createdAt":       friend.CreatedAt,
+		"acceptedAt":      friend.AcceptedAt,
+		"removedAt":       friend.RemovedAt,
+		"blockedAt":       friend.BlockedAt,
+	}); err != nil {
+		return fmt.Errorf("encode friend: %w", err)
+	}
+	return nil
+}
+
+func friendView(userID string, friend *model.Friend) (string, string, string) {
+	if friend == nil {
+		return "", "", ""
+	}
+	if userID != "" && friend.RequesterUserID == userID {
+		return friend.RequesterAlias, friend.RecipientEmail, "sent"
+	}
+	if userID != "" &&
+		(friend.RecipientUserID == userID || friend.RecipientUserID == "") {
+		return friend.RecipientAlias, friend.RequesterEmail, "received"
+	}
+	return firstNonEmpty(friend.RequesterAlias, friend.RecipientAlias),
+		firstNonEmpty(friend.RecipientEmail, friend.RequesterEmail),
+		"-"
 }
 
 func renderSessionTimelineOutput(

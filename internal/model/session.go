@@ -80,3 +80,18 @@ type Envelope struct {
 	AcceptedAt      string          `json:"accepted_at"`
 	ArchivedAt      string          `json:"archived_at"`
 }
+
+type Friend struct {
+	FriendID        string `json:"friend_id"`
+	RequesterUserID string `json:"requester_user_id"`
+	RequesterEmail  string `json:"requester_email"`
+	RequesterAlias  string `json:"requester_alias"`
+	RecipientUserID string `json:"recipient_user_id"`
+	RecipientEmail  string `json:"recipient_email"`
+	RecipientAlias  string `json:"recipient_alias"`
+	Status          string `json:"status"`
+	CreatedAt       string `json:"created_at"`
+	AcceptedAt      string `json:"accepted_at"`
+	RemovedAt       string `json:"removed_at"`
+	BlockedAt       string `json:"blocked_at"`
+}
