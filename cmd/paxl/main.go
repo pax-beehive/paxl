@@ -251,7 +251,7 @@ func newSessionCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 				Flags: []cli.Flag{
 					&cli.StringFlag{
 						Name:  "agent",
-						Usage: "Agent to scan: codex, claude, pi, kiro, or gemini",
+						Usage: "Agent to scan: codex, claude, pi, kiro, gemini, or hermes",
 					},
 					&cli.StringFlag{
 						Name:  "updated-since",
@@ -1621,14 +1621,18 @@ func renderAgentList(stdout io.Writer, resp *facade.ListAgentsResponse, format s
 	switch format {
 	case "table":
 		writer := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		if _, err := fmt.Fprintln(writer, "AGENT\tCLI\tSESSIONS\tCAPABILITY\tCOMMAND"); err != nil {
+		if _, err := fmt.Fprintln(
+			writer,
+			"AGENT\tSTATUS\tCLI\tSESSIONS\tCAPABILITY\tCOMMAND",
+		); err != nil {
 			return fmt.Errorf("write agent list header: %w", err)
 		}
 		for _, agent := range resp.Agents {
 			if _, err := fmt.Fprintf(
 				writer,
-				"%s\t%s\t%s\t%s\t%s\n",
+				"%s\t%s\t%s\t%s\t%s\t%s\n",
 				agent.Name,
+				agentStatus(agent.Available),
 				availability(agent.CLIAvailable),
 				availability(agent.SessionsAvailable),
 				agent.Capability,
@@ -1810,6 +1814,13 @@ func availability(available bool) string {
 		return "available"
 	}
 	return "missing"
+}
+
+func agentStatus(available bool) string {
+	if available {
+		return "online"
+	}
+	return "offline"
 }
 
 type executionLogger struct {

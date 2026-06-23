@@ -132,6 +132,20 @@ func (s *CommandSuite) TestAgentListShowsCLIAndSessionAvailabilitySeparately() {
 	s.Contains(s.stdout.String(), "missing")
 }
 
+func (s *CommandSuite) TestAgentListShowsHermesOfflineWithLocalSessions() {
+	s.T().Setenv("PATH", s.T().TempDir())
+	hermesHome := s.T().TempDir()
+	s.Require().NoError(os.MkdirAll(filepath.Join(hermesHome, "sessions"), 0o700))
+	s.T().Setenv("HERMES_HOME", hermesHome)
+
+	err := run(context.Background(), []string{"agent", "list"}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "STATUS")
+	s.Contains(s.stdout.String(), "hermes")
+	s.Contains(s.stdout.String(), "offline")
+}
+
 func (s *CommandSuite) TestAgentListSupportsJSONLFormat() {
 	err := run(
 		context.Background(),

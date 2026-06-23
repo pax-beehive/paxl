@@ -94,6 +94,7 @@ func NewDefaultRegistry() *Registry {
 			NewPiAdapter(),
 			NewKiroAdapter(),
 			NewGeminiAdapter(),
+			NewHermesAdapter(),
 		},
 	}
 }
