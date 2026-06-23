@@ -83,6 +83,7 @@ func newCommandWithDiagnostics(
 			newAgentCommand(agentFacade, stdout, stderr, diagnostics),
 			newSessionCommand(stdout, stderr, diagnostics),
 			newCapsuleCommand(stdout, stderr, diagnostics),
+			newInboxCommand(stdout),
 		},
 	}
 }
@@ -424,6 +425,23 @@ func newCapsuleCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 				},
 			},
 			{
+				Name:      "send",
+				Usage:     "Send a local knowledge capsule to another user's inbox",
+				ArgsUsage: "<capsule-id>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "to", Usage: "Recipient email address"},
+					&cli.StringFlag{Name: "message", Usage: "Optional note for the recipient"},
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "table",
+						Usage: "Output format: table or jsonl",
+					},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return capsuleSend(ctx, cmd, stdout)
+				},
+			},
+			{
 				Name:      "inject",
 				Usage:     "Inject a knowledge capsule into a target session",
 				ArgsUsage: "<capsule-id> [target-session-id]",
@@ -462,6 +480,73 @@ func newCapsuleCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					return capsuleInjectionList(ctx, cmd, stdout)
+				},
+			},
+		},
+	}
+}
+
+func newInboxCommand(stdout io.Writer) *cli.Command {
+	return &cli.Command{
+		Name:  "inbox",
+		Usage: "Read and accept received envelopes",
+		Commands: []*cli.Command{
+			{
+				Name:  "list",
+				Usage: "List received envelopes",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "status",
+						Value: "pending",
+						Usage: "Envelope status filter",
+					},
+					&cli.IntFlag{Name: "limit", Usage: "Maximum envelopes to show"},
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "table",
+						Usage: "Output format: table or jsonl",
+					},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return inboxList(ctx, cmd, stdout)
+				},
+			},
+			{
+				Name:      "get",
+				Usage:     "Render a received envelope",
+				ArgsUsage: "<envelope-id>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "text",
+						Usage: "Output format: text or jsonl",
+					},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return inboxGet(ctx, cmd, stdout)
+				},
+			},
+			{
+				Name:      "accept",
+				Usage:     "Accept an envelope and store its capsule locally",
+				ArgsUsage: "<envelope-id>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "table",
+						Usage: "Output format: table or jsonl",
+					},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return inboxAccept(ctx, cmd, stdout)
+				},
+			},
+			{
+				Name:      "archive",
+				Usage:     "Archive an envelope",
+				ArgsUsage: "<envelope-id>",
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return inboxArchive(ctx, cmd, stdout)
 				},
 			},
 		},
@@ -844,6 +929,31 @@ func capsuleArchive(ctx context.Context, cmd *cli.Command, stdout io.Writer) err
 	return nil
 }
 
+func capsuleSend(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	req, err := parseSendEnvelopeRequest(cmd)
+	if err != nil {
+		return fmt.Errorf("parse capsule send request: %w", err)
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open envelope store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	envelopeFacade := facade.NewEnvelopeFacade(nil, opened.Store)
+	resp, err := envelopeFacade.Send(ctx, req)
+	if err != nil {
+		return fmt.Errorf("send envelope: %w", err)
+	}
+	if err := renderEnvelopeList(
+		stdout,
+		&facade.ListInboxResponse{Envelopes: []*model.Envelope{resp.Envelope}},
+		cmd.String("format"),
+	); err != nil {
+		return fmt.Errorf("render sent envelope: %w", err)
+	}
+	return nil
+}
+
 func capsuleInject(
 	ctx context.Context,
 	cmd *cli.Command,
@@ -896,6 +1006,89 @@ func capsuleInject(
 		resp.Injection.TargetSessionID,
 	); err != nil {
 		return fmt.Errorf("write injection result: %w", err)
+	}
+	return nil
+}
+
+func inboxList(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open envelope store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	envelopeFacade := facade.NewEnvelopeFacade(nil, opened.Store)
+	resp, err := envelopeFacade.ListInbox(ctx, &facade.ListInboxRequest{
+		Status: cmd.String("status"),
+		Limit:  cmd.Int("limit"),
+	})
+	if err != nil {
+		return fmt.Errorf("list inbox: %w", err)
+	}
+	if err := renderEnvelopeList(stdout, resp, cmd.String("format")); err != nil {
+		return fmt.Errorf("render inbox: %w", err)
+	}
+	return nil
+}
+
+func inboxGet(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	req, err := parseGetEnvelopeRequest(cmd)
+	if err != nil {
+		return fmt.Errorf("parse inbox get request: %w", err)
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open envelope store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	envelopeFacade := facade.NewEnvelopeFacade(nil, opened.Store)
+	resp, err := envelopeFacade.Get(ctx, req)
+	if err != nil {
+		return fmt.Errorf("get envelope: %w", err)
+	}
+	if err := renderEnvelope(stdout, resp.Envelope, cmd.String("format")); err != nil {
+		return fmt.Errorf("render envelope: %w", err)
+	}
+	return nil
+}
+
+func inboxAccept(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	req, err := parseAcceptEnvelopeRequest(cmd)
+	if err != nil {
+		return fmt.Errorf("parse inbox accept request: %w", err)
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open envelope store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	envelopeFacade := facade.NewEnvelopeFacade(nil, opened.Store)
+	resp, err := envelopeFacade.Accept(ctx, req)
+	if err != nil {
+		return fmt.Errorf("accept envelope: %w", err)
+	}
+	if err := renderAcceptEnvelope(stdout, resp, cmd.String("format")); err != nil {
+		return fmt.Errorf("render accepted envelope: %w", err)
+	}
+	return nil
+}
+
+func inboxArchive(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	req, err := parseArchiveEnvelopeRequest(cmd)
+	if err != nil {
+		return fmt.Errorf("parse inbox archive request: %w", err)
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open envelope store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	envelopeFacade := facade.NewEnvelopeFacade(nil, opened.Store)
+	resp, err := envelopeFacade.Archive(ctx, req)
+	if err != nil {
+		return fmt.Errorf("archive envelope: %w", err)
+	}
+	if _, err := fmt.Fprintf(stdout, "Archived %s\n", resp.Envelope.EnvelopeID); err != nil {
+		return fmt.Errorf("write archive result: %w", err)
 	}
 	return nil
 }
@@ -1092,6 +1285,27 @@ func parseArchiveCapsuleRequest(cmd *cli.Command) (*facade.ArchiveCapsuleRequest
 	return &facade.ArchiveCapsuleRequest{CapsuleID: capsuleID}, nil
 }
 
+func parseSendEnvelopeRequest(cmd *cli.Command) (*facade.SendEnvelopeRequest, error) {
+	capsuleID := cmd.Args().First()
+	if capsuleID == "" {
+		return nil, fmt.Errorf("capsule id is required")
+	}
+	recipient := strings.TrimSpace(cmd.String("to"))
+	if recipient == "" {
+		return nil, fmt.Errorf("recipient email is required")
+	}
+	switch cmd.String("format") {
+	case "table", "jsonl":
+	default:
+		return nil, fmt.Errorf("unsupported format %q", cmd.String("format"))
+	}
+	return &facade.SendEnvelopeRequest{
+		CapsuleID:      capsuleID,
+		RecipientEmail: recipient,
+		Message:        cmd.String("message"),
+	}, nil
+}
+
 func parseInjectCapsuleRequest(cmd *cli.Command) (*facade.InjectCapsuleRequest, error) {
 	if cmd.Args().Len() < 1 {
 		return nil, fmt.Errorf("capsule id is required")
@@ -1118,6 +1332,40 @@ func parseInjectCapsuleRequest(cmd *cli.Command) (*facade.InjectCapsuleRequest, 
 		return nil, fmt.Errorf("target session id is required unless --new is set")
 	}
 	return req, nil
+}
+
+func parseGetEnvelopeRequest(cmd *cli.Command) (*facade.GetEnvelopeRequest, error) {
+	envelopeID := cmd.Args().First()
+	if envelopeID == "" {
+		return nil, fmt.Errorf("envelope id is required")
+	}
+	switch cmd.String("format") {
+	case "text", "jsonl":
+		return &facade.GetEnvelopeRequest{EnvelopeID: envelopeID}, nil
+	default:
+		return nil, fmt.Errorf("unsupported format %q", cmd.String("format"))
+	}
+}
+
+func parseAcceptEnvelopeRequest(cmd *cli.Command) (*facade.AcceptEnvelopeRequest, error) {
+	envelopeID := cmd.Args().First()
+	if envelopeID == "" {
+		return nil, fmt.Errorf("envelope id is required")
+	}
+	switch cmd.String("format") {
+	case "table", "jsonl":
+		return &facade.AcceptEnvelopeRequest{EnvelopeID: envelopeID}, nil
+	default:
+		return nil, fmt.Errorf("unsupported format %q", cmd.String("format"))
+	}
+}
+
+func parseArchiveEnvelopeRequest(cmd *cli.Command) (*facade.ArchiveEnvelopeRequest, error) {
+	envelopeID := cmd.Args().First()
+	if envelopeID == "" {
+		return nil, fmt.Errorf("envelope id is required")
+	}
+	return &facade.ArchiveEnvelopeRequest{EnvelopeID: envelopeID}, nil
 }
 
 func parseListInjectionsRequest(cmd *cli.Command) (*facade.ListInjectionsRequest, error) {
@@ -1441,6 +1689,114 @@ func encodeCapsuleJSONL(stdout io.Writer, capsule *model.KnowledgeCapsule) error
 		"archivedAt":             capsule.ArchivedAt,
 	}); err != nil {
 		return fmt.Errorf("encode capsule: %w", err)
+	}
+	return nil
+}
+
+func renderEnvelopeList(stdout io.Writer, resp *facade.ListInboxResponse, format string) error {
+	switch format {
+	case "table":
+		writer := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		if _, err := fmt.Fprintln(writer, "ID\tSTATUS\tFROM\tCREATED\tMESSAGE"); err != nil {
+			return fmt.Errorf("write envelope list header: %w", err)
+		}
+		for _, envelope := range resp.Envelopes {
+			if _, err := fmt.Fprintf(
+				writer,
+				"%s\t%s\t%s\t%s\t%s\n",
+				envelope.EnvelopeID,
+				envelope.Status,
+				firstNonEmpty(envelope.SenderEmail, envelope.SenderUserID, "-"),
+				firstNonEmpty(envelope.CreatedAt, "-"),
+				firstNonEmpty(envelope.Message, "-"),
+			); err != nil {
+				return fmt.Errorf("write envelope row: %w", err)
+			}
+		}
+		return writer.Flush()
+	case "jsonl":
+		for _, envelope := range resp.Envelopes {
+			if err := encodeEnvelopeJSONL(stdout, envelope); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func renderEnvelope(stdout io.Writer, envelope *model.Envelope, format string) error {
+	switch format {
+	case "text":
+		if _, err := fmt.Fprintln(stdout, renderEnvelopeText(envelope)); err != nil {
+			return fmt.Errorf("write envelope text: %w", err)
+		}
+		return nil
+	case "jsonl":
+		return encodeEnvelopeJSONL(stdout, envelope)
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func renderEnvelopeText(envelope *model.Envelope) string {
+	return fmt.Sprintf(
+		"Envelope: %s\nStatus: %s\nFrom: %s\nTo: %s\nCreated: %s\nPayload: %s\n\nMessage:\n%s\n\nPayload JSON:\n%s",
+		envelope.EnvelopeID,
+		envelope.Status,
+		firstNonEmpty(envelope.SenderEmail, envelope.SenderUserID, "-"),
+		firstNonEmpty(envelope.RecipientEmail, envelope.RecipientUserID, "-"),
+		envelope.CreatedAt,
+		envelope.PayloadType,
+		firstNonEmpty(envelope.Message, "-"),
+		string(envelope.PayloadJSON),
+	)
+}
+
+func renderAcceptEnvelope(
+	stdout io.Writer,
+	resp *facade.AcceptEnvelopeResponse,
+	format string,
+) error {
+	switch format {
+	case "table":
+		if _, err := fmt.Fprintf(
+			stdout,
+			"Accepted %s as local capsule %s\n",
+			resp.Envelope.EnvelopeID,
+			resp.Capsule.CapsuleID,
+		); err != nil {
+			return fmt.Errorf("write accept result: %w", err)
+		}
+		return nil
+	case "jsonl":
+		if err := encodeEnvelopeJSONL(stdout, resp.Envelope); err != nil {
+			return err
+		}
+		return encodeCapsuleJSONL(stdout, resp.Capsule)
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func encodeEnvelopeJSONL(stdout io.Writer, envelope *model.Envelope) error {
+	if err := json.NewEncoder(stdout).Encode(map[string]any{
+		"schemaVersion":   "paxl.envelope.v1",
+		"envelopeId":      envelope.EnvelopeID,
+		"senderUserId":    envelope.SenderUserID,
+		"senderEmail":     envelope.SenderEmail,
+		"recipientUserId": envelope.RecipientUserID,
+		"recipientEmail":  envelope.RecipientEmail,
+		"payloadType":     envelope.PayloadType,
+		"payloadJson":     envelope.PayloadJSON,
+		"message":         envelope.Message,
+		"status":          envelope.Status,
+		"createdAt":       envelope.CreatedAt,
+		"acceptedAt":      envelope.AcceptedAt,
+		"archivedAt":      envelope.ArchivedAt,
+	}); err != nil {
+		return fmt.Errorf("encode envelope: %w", err)
 	}
 	return nil
 }

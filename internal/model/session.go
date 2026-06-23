@@ -1,5 +1,7 @@
 package model
 
+import "encoding/json"
+
 type Session struct {
 	ID                 string
 	Agent              AgentName
@@ -62,4 +64,19 @@ type KnowledgeInjection struct {
 	DeliveryMessageType string
 	Status              string
 	CreatedAt           string
+}
+
+type Envelope struct {
+	EnvelopeID      string          `json:"envelope_id"`
+	SenderUserID    string          `json:"sender_user_id"`
+	SenderEmail     string          `json:"sender_email"`
+	RecipientUserID string          `json:"recipient_user_id"`
+	RecipientEmail  string          `json:"recipient_email"`
+	PayloadType     string          `json:"payload_type"`
+	PayloadJSON     json.RawMessage `json:"payload_json"`
+	Message         string          `json:"message"`
+	Status          string          `json:"status"`
+	CreatedAt       string          `json:"created_at"`
+	AcceptedAt      string          `json:"accepted_at"`
+	ArchivedAt      string          `json:"archived_at"`
 }
