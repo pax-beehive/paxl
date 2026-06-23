@@ -180,6 +180,22 @@ paxl capsule inject <capsule-id> codex:<target-session-id>
 Capsules work well for architecture decisions, debugging history, release
 checklists, and project conventions that should survive beyond one conversation.
 
+### Send Knowledge to a Friend
+
+Cloud inbox delivery is gated by accepted friends. You cannot send a capsule to a
+raw email address; `--to` must be a friend alias such as `@alice`.
+
+```sh
+paxl friend request alice@example.com --alias alice
+# after Alice accepts the friend request
+paxl capsule send <capsule-id> --to @alice --message "please review"
+paxl inbox list
+paxl inbox accept <envelope-id>
+```
+
+Accepting an inbox envelope stores the remote payload as a local capsule. Inject
+that capsule into a local agent session when you want work to continue there.
+
 ### Transfer Prepared Context
 
 When you already know exactly what should be handed off, create a capsule from a
@@ -486,6 +502,35 @@ Archive a capsule:
 
 ```sh
 paxl capsule archive <capsule-id>
+```
+
+Send a capsule to an accepted friend:
+
+```sh
+paxl friend request alice@example.com --alias alice
+# after Alice accepts the friend request
+paxl capsule send <capsule-id> --to @alice
+```
+
+`capsule send` requires an accepted friend alias. The manager also enforces this
+boundary, so direct email delivery is rejected even if a client bypasses the CLI.
+
+Read received envelopes:
+
+```sh
+paxl inbox list
+paxl inbox get <envelope-id>
+paxl inbox accept <envelope-id>
+paxl inbox archive <envelope-id>
+```
+
+Manage friends:
+
+```sh
+paxl friend list
+paxl friend accept <friend-id> --alias alice
+paxl friend remove <friend-id>
+paxl friend block <friend-id>
 ```
 
 ## Agent Delivery Semantics

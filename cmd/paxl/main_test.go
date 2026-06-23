@@ -888,6 +888,18 @@ func (s *CommandSuite) TestInboxCommandExposesEnvelopeSubcommands() {
 	}
 }
 
+func (s *CommandSuite) TestFriendCommandExposesSubcommands() {
+	cases := []string{"request", "list", "accept", "remove", "block"}
+	command := findCommand(newCommand(&s.stdout, &s.stderr), "friend")
+	s.Require().NotNil(command)
+
+	for _, name := range cases {
+		s.Run(name, func() {
+			s.True(hasCommand(command, name))
+		})
+	}
+}
+
 func (s *CommandSuite) TestCapsuleLocalLifecycleUsesSingularCommands() {
 	dbPath := s.seedCodexSessionWithKeyword("bridge")
 
@@ -944,34 +956,78 @@ func (s *CommandSuite) TestCapsuleLocalLifecycleUsesSingularCommands() {
 	s.Contains(s.stdout.String(), "Archived "+capsuleID)
 }
 
-func (s *CommandSuite) TestCapsuleSendPostsEnvelopeToManager() {
+func (s *CommandSuite) TestCapsuleSendRejectsDirectEmailRecipient() {
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+	capsuleID := s.createLocalCapsule(dbPath, "bridge")
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"capsule", "send", capsuleID,
+			"--to", "other@example.com",
+			"--message", "please review",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().Error(err)
+	s.Contains(err.Error(), "recipient must be an accepted friend alias like @alice")
+}
+
+func (s *CommandSuite) TestCapsuleSendResolvesFriendAlias() {
 	dbPath := s.seedCodexSessionWithKeyword("bridge")
 	capsuleID := s.createLocalCapsule(dbPath, "bridge")
 	restoreHTTPClient := s.stubDefaultHTTPClient(func(req *http.Request) (*http.Response, error) {
-		s.Equal(http.MethodPost, req.Method)
-		s.Equal("/api/v1/user/usr_1/envelopes", req.URL.Path)
-		s.Equal("Bearer paxu_test", req.Header.Get("Authorization"))
-		body, err := io.ReadAll(req.Body)
-		s.Require().NoError(err)
-		s.Contains(string(body), `"recipient_email":"other@example.com"`)
-		s.Contains(string(body), `"payload_type":"knowledge_capsule"`)
-		s.Contains(string(body), `"capsule_id":"`+capsuleID+`"`)
-		return commandJSONResponse(`{
-			"data":{
-				"envelope":{
-					"envelope_id":"env_1",
-					"sender_email":"me@example.com",
-					"recipient_email":"other@example.com",
-					"payload_type":"knowledge_capsule",
-					"payload_json":{},
-					"message":"please review",
-					"status":"pending",
-					"created_at":"2026-06-22T00:00:00Z"
-				}
-			},
-			"code":200,
-			"message":"ok"
-		}`), nil
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/usr_1/friends":
+			s.Equal("accepted", req.URL.Query().Get("status"))
+			s.Equal("bob", req.URL.Query().Get("alias"))
+			return commandJSONResponse(`{
+				"data":{
+					"friends":[{
+						"friend_id":"fr_1",
+						"requester_user_id":"usr_1",
+						"requester_email":"me@example.com",
+						"requester_alias":"bob",
+						"recipient_user_id":"usr_bob",
+						"recipient_email":"bob@example.com",
+						"status":"accepted",
+						"created_at":"2026-06-22T00:00:00Z"
+					}]
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/user/usr_1/envelopes":
+			body, err := io.ReadAll(req.Body)
+			s.Require().NoError(err)
+			s.Contains(string(body), `"recipient_email":"bob@example.com"`)
+			s.Contains(string(body), `"message":"please review"`)
+			return commandJSONResponse(`{
+					"data":{
+						"envelope":{
+							"envelope_id":"env_1",
+							"sender_email":"me@example.com",
+							"recipient_email":"bob@example.com",
+							"payload_type":"knowledge_capsule",
+							"payload_json":{},
+							"message":"please review",
+							"status":"pending",
+							"created_at":"2026-06-22T00:00:00Z"
+						}
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		default:
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader("unexpected request")),
+				Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			}, nil
+		}
 	})
 	defer restoreHTTPClient()
 	s.seedManagerCredential(dbPath, "https://manager.example")
@@ -981,7 +1037,7 @@ func (s *CommandSuite) TestCapsuleSendPostsEnvelopeToManager() {
 		[]string{
 			"--db", dbPath,
 			"capsule", "send", capsuleID,
-			"--to", "other@example.com",
+			"--to", "@bob",
 			"--message", "please review",
 		},
 		&s.stdout,
@@ -1121,6 +1177,118 @@ func (s *CommandSuite) TestInboxCommandsUseManagerEnvelopes() {
 	)
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), "Archived env_1")
+}
+
+func (s *CommandSuite) TestFriendCommandsUseManagerFriends() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	restoreHTTPClient := s.stubDefaultHTTPClient(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/user/usr_1/friends":
+			body, err := io.ReadAll(req.Body)
+			s.Require().NoError(err)
+			s.Contains(string(body), `"email":"bob@example.com"`)
+			s.Contains(string(body), `"alias":"bob"`)
+			return commandJSONResponse(`{
+				"data":{
+					"friend":{
+						"friend_id":"fr_1",
+						"requester_user_id":"usr_1",
+						"requester_email":"me@example.com",
+						"requester_alias":"bob",
+						"recipient_email":"bob@example.com",
+						"status":"pending",
+						"created_at":"2026-06-22T00:00:00Z"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/usr_1/friends":
+			s.Equal("accepted", req.URL.Query().Get("status"))
+			return commandJSONResponse(`{
+				"data":{
+					"friends":[{
+						"friend_id":"fr_1",
+						"requester_user_id":"usr_1",
+						"requester_email":"me@example.com",
+						"requester_alias":"bob",
+						"recipient_user_id":"usr_bob",
+						"recipient_email":"bob@example.com",
+						"status":"accepted",
+						"created_at":"2026-06-22T00:00:00Z"
+					}]
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/user/usr_1/friends/fr_1/accept":
+			body, err := io.ReadAll(req.Body)
+			s.Require().NoError(err)
+			s.Contains(string(body), `"alias":"bob"`)
+			return commandJSONResponse(friendCommandResponse("accepted")), nil
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/user/usr_1/friends/fr_1/remove":
+			return commandJSONResponse(friendCommandResponse("removed")), nil
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/user/usr_1/friends/fr_1/block":
+			return commandJSONResponse(friendCommandResponse("blocked")), nil
+		default:
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader("unexpected request")),
+				Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			}, nil
+		}
+	})
+	defer restoreHTTPClient()
+	s.seedManagerCredential(dbPath, "https://manager.example")
+
+	err := run(
+		context.Background(),
+		[]string{"--db", dbPath, "friend", "request", "bob@example.com", "--alias", "bob"},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "fr_1")
+
+	s.SetupTest()
+	err = run(
+		context.Background(),
+		[]string{"--db", dbPath, "friend", "list"},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "bob@example.com")
+
+	s.SetupTest()
+	err = run(
+		context.Background(),
+		[]string{"--db", dbPath, "friend", "accept", "fr_1", "--alias", "bob"},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "accepted")
+
+	s.SetupTest()
+	err = run(
+		context.Background(),
+		[]string{"--db", dbPath, "friend", "remove", "fr_1"},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "removed")
+
+	s.SetupTest()
+	err = run(
+		context.Background(),
+		[]string{"--db", dbPath, "friend", "block", "fr_1"},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "blocked")
 }
 
 func (s *CommandSuite) TestCapsuleCreateSupportsContentFile() {
@@ -1643,6 +1811,34 @@ func (s *CommandSuite) TestEnvelopeCommandsRejectInvalidRequestsBeforeIO() {
 	}
 }
 
+func (s *CommandSuite) TestFriendCommandsRejectInvalidRequestsBeforeIO() {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{name: "request missing email", args: []string{"friend", "request"}},
+		{
+			name: "request unknown format",
+			args: []string{"friend", "request", "bob@example.com", "--format", "xml"},
+		},
+		{name: "list unknown direction", args: []string{"friend", "list", "--direction", "both"}},
+		{name: "accept missing friend", args: []string{"friend", "accept"}},
+		{
+			name: "accept unknown format",
+			args: []string{"friend", "accept", "fr_1", "--format", "xml"},
+		},
+		{name: "remove missing friend", args: []string{"friend", "remove"}},
+		{name: "block missing friend", args: []string{"friend", "block"}},
+	}
+
+	for _, tc := range cases {
+		s.Run(tc.name, func() {
+			err := run(context.Background(), tc.args, &s.stdout, &s.stderr)
+			s.Error(err)
+		})
+	}
+}
+
 func (s *CommandSuite) TestRenderCapsuleListSupportsTableFormat() {
 	err := renderCapsuleList(&s.stdout, &facade.ListCapsulesResponse{
 		Capsules: []*model.KnowledgeCapsule{
@@ -1786,6 +1982,40 @@ func (s *CommandSuite) TestRenderAcceptEnvelopeRejectsUnknownFormat() {
 		Envelope: &model.Envelope{EnvelopeID: "env_1"},
 		Capsule:  &model.KnowledgeCapsule{CapsuleID: "kcap_1"},
 	}, "xml")
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestRenderFriendListSupportsFormats() {
+	resp := &facade.ListFriendsResponse{
+		UserID: "usr_1",
+		Friends: []*model.Friend{
+			{
+				FriendID:        "fr_1",
+				RequesterUserID: "usr_1",
+				RequesterEmail:  "me@example.com",
+				RequesterAlias:  "bob",
+				RecipientEmail:  "bob@example.com",
+				Status:          "accepted",
+				CreatedAt:       "2026-06-22T00:00:00Z",
+			},
+		},
+	}
+
+	err := renderFriendList(&s.stdout, resp, "table")
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "fr_1")
+	s.Contains(s.stdout.String(), "bob@example.com")
+
+	s.SetupTest()
+	err = renderFriendList(&s.stdout, resp, "jsonl")
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"schemaVersion":"paxl.friend.v1"`)
+	s.Contains(s.stdout.String(), `"alias":"bob"`)
+}
+
+func (s *CommandSuite) TestRenderFriendListRejectsUnknownFormat() {
+	err := renderFriendList(&s.stdout, &facade.ListFriendsResponse{}, "xml")
 
 	s.Error(err)
 }
@@ -2119,6 +2349,26 @@ func commandJSONResponse(body string) *http.Response {
 		Body:       io.NopCloser(strings.NewReader(body)),
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 	}
+}
+
+func friendCommandResponse(status string) string {
+	return fmt.Sprintf(`{
+		"data":{
+			"friend":{
+				"friend_id":"fr_1",
+				"requester_user_id":"usr_sender",
+				"requester_email":"alice@example.com",
+				"requester_alias":"alice",
+				"recipient_user_id":"usr_1",
+				"recipient_email":"me@example.com",
+				"recipient_alias":"bob",
+				"status":%q,
+				"created_at":"2026-06-22T00:00:00Z"
+			}
+		},
+		"code":200,
+		"message":"ok"
+	}`, status)
 }
 
 func hasCommand(command *cli.Command, name string) bool {

@@ -165,6 +165,22 @@ paxl capsule inject <capsule-id> codex:<target-session-id>
 Capsule 适合保存架构决策、debug 历史、release checklist、项目约定这类不应该只留在一个
 conversation 里的上下文。
 
+### 发给 friend
+
+Cloud inbox 投递必须经过 accepted friend。不能直接发到裸邮箱；`--to` 必须是 `@alice`
+这样的 friend alias。
+
+```sh
+paxl friend request alice@example.com --alias alice
+# Alice 接受 friend request 后
+paxl capsule send <capsule-id> --to @alice --message "please review"
+paxl inbox list
+paxl inbox accept <envelope-id>
+```
+
+接受 inbox envelope 后，远端 payload 会保存成本地 capsule。需要让某个本地 agent 接手时，
+再把这个 capsule inject 到目标 session。
+
 ### 转移人工整理好的上下文
 
 如果你已经知道应该交接什么，可以直接从文件创建 capsule，不需要让源 agent 总结：
@@ -451,6 +467,35 @@ paxl capsule inject <capsule-id> --new --agent codex
 
 ```sh
 paxl capsule archive <capsule-id>
+```
+
+把 capsule 发给 accepted friend：
+
+```sh
+paxl friend request alice@example.com --alias alice
+# Alice 接受 friend request 后
+paxl capsule send <capsule-id> --to @alice
+```
+
+`capsule send` 必须使用 accepted friend alias。manager 也会强制检查这个边界，所以即使
+绕开 CLI 直接调用 API，裸邮箱投递也会被拒绝。
+
+读取收到的 envelopes：
+
+```sh
+paxl inbox list
+paxl inbox get <envelope-id>
+paxl inbox accept <envelope-id>
+paxl inbox archive <envelope-id>
+```
+
+管理 friends：
+
+```sh
+paxl friend list
+paxl friend accept <friend-id> --alias alice
+paxl friend remove <friend-id>
+paxl friend block <friend-id>
 ```
 
 ## Agent 投递语义
