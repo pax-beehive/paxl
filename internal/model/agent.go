@@ -14,6 +14,7 @@ const (
 	AgentNamePi      AgentName = "pi"
 	AgentNameKiro    AgentName = "kiro"
 	AgentNameGemini  AgentName = "gemini"
+	AgentNameHermes  AgentName = "hermes"
 )
 
 func ParseAgentName(raw string) (AgentName, error) {
@@ -30,6 +31,8 @@ func ParseAgentName(raw string) (AgentName, error) {
 		return AgentNameKiro, nil
 	case AgentNameGemini:
 		return AgentNameGemini, nil
+	case AgentNameHermes:
+		return AgentNameHermes, nil
 	default:
 		return AgentNameUnknown, fmt.Errorf("parse agent name %q: unsupported agent", raw)
 	}
@@ -47,6 +50,7 @@ type AgentCapability string
 const (
 	AgentCapabilityUnknown  AgentCapability = "unknown"
 	AgentCapabilityLocalCLI AgentCapability = "local_cli"
+	AgentCapabilityGateway  AgentCapability = "gateway"
 )
 
 type AgentInfo struct {
