@@ -84,6 +84,7 @@ func newCommandWithDiagnostics(
 			newSessionCommand(stdout, stderr, diagnostics),
 			newCapsuleCommand(stdout, stderr, diagnostics),
 			newInboxCommand(stdout),
+			newOutboxCommand(stdout),
 			newFriendCommand(stdout),
 		},
 	}
@@ -548,6 +549,46 @@ func newInboxCommand(stdout io.Writer) *cli.Command {
 				ArgsUsage: "<envelope-id>",
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					return inboxArchive(ctx, cmd, stdout)
+				},
+			},
+		},
+	}
+}
+
+func newOutboxCommand(stdout io.Writer) *cli.Command {
+	return &cli.Command{
+		Name:  "outbox",
+		Usage: "Inspect sent envelopes",
+		Commands: []*cli.Command{
+			{
+				Name:  "list",
+				Usage: "List sent envelopes",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "status", Usage: "Envelope status filter"},
+					&cli.IntFlag{Name: "limit", Usage: "Maximum envelopes to show"},
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "table",
+						Usage: "Output format: table or jsonl",
+					},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return outboxList(ctx, cmd, stdout)
+				},
+			},
+			{
+				Name:      "get",
+				Usage:     "Render a sent envelope",
+				ArgsUsage: "<envelope-id>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "text",
+						Usage: "Output format: text or jsonl",
+					},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return outboxGet(ctx, cmd, stdout)
 				},
 			},
 		},
@@ -1107,6 +1148,47 @@ func capsuleInject(
 		resp.Injection.TargetSessionID,
 	); err != nil {
 		return fmt.Errorf("write injection result: %w", err)
+	}
+	return nil
+}
+
+func outboxList(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open envelope store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	envelopeFacade := facade.NewEnvelopeFacade(nil, opened.Store)
+	resp, err := envelopeFacade.ListOutbox(ctx, &facade.ListOutboxRequest{
+		Status: cmd.String("status"),
+		Limit:  cmd.Int("limit"),
+	})
+	if err != nil {
+		return fmt.Errorf("list outbox: %w", err)
+	}
+	if err := renderOutboxEnvelopeList(stdout, resp, cmd.String("format")); err != nil {
+		return fmt.Errorf("render outbox: %w", err)
+	}
+	return nil
+}
+
+func outboxGet(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	req, err := parseGetEnvelopeRequest(cmd)
+	if err != nil {
+		return fmt.Errorf("parse outbox get request: %w", err)
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open envelope store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	envelopeFacade := facade.NewEnvelopeFacade(nil, opened.Store)
+	resp, err := envelopeFacade.Get(ctx, req)
+	if err != nil {
+		return fmt.Errorf("get envelope: %w", err)
+	}
+	if err := renderEnvelope(stdout, resp.Envelope, cmd.String("format")); err != nil {
+		return fmt.Errorf("render envelope: %w", err)
 	}
 	return nil
 }
@@ -1980,19 +2062,54 @@ func encodeCapsuleJSONL(stdout io.Writer, capsule *model.KnowledgeCapsule) error
 }
 
 func renderEnvelopeList(stdout io.Writer, resp *facade.ListInboxResponse, format string) error {
+	return renderEnvelopeListWithPeer(
+		stdout,
+		resp.Envelopes,
+		format,
+		"FROM",
+		func(envelope *model.Envelope) string {
+			return firstNonEmpty(envelope.SenderEmail, envelope.SenderUserID, "-")
+		},
+	)
+}
+
+func renderOutboxEnvelopeList(
+	stdout io.Writer,
+	resp *facade.ListOutboxResponse,
+	format string,
+) error {
+	return renderEnvelopeListWithPeer(
+		stdout,
+		resp.Envelopes,
+		format,
+		"TO",
+		func(envelope *model.Envelope) string {
+			return firstNonEmpty(envelope.RecipientEmail, envelope.RecipientUserID, "-")
+		},
+	)
+}
+
+func renderEnvelopeListWithPeer(
+	stdout io.Writer,
+	envelopes []*model.Envelope,
+	format string,
+	peerHeader string,
+	peer func(*model.Envelope) string,
+) error {
 	switch format {
 	case "table":
 		writer := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		if _, err := fmt.Fprintln(writer, "ID\tSTATUS\tFROM\tCREATED\tMESSAGE"); err != nil {
+		header := "ID\tSTATUS\t%s\tCREATED\tMESSAGE\n"
+		if _, err := fmt.Fprintf(writer, header, peerHeader); err != nil {
 			return fmt.Errorf("write envelope list header: %w", err)
 		}
-		for _, envelope := range resp.Envelopes {
+		for _, envelope := range envelopes {
 			if _, err := fmt.Fprintf(
 				writer,
 				"%s\t%s\t%s\t%s\t%s\n",
 				envelope.EnvelopeID,
 				envelope.Status,
-				firstNonEmpty(envelope.SenderEmail, envelope.SenderUserID, "-"),
+				peer(envelope),
 				firstNonEmpty(envelope.CreatedAt, "-"),
 				firstNonEmpty(envelope.Message, "-"),
 			); err != nil {
@@ -2001,7 +2118,7 @@ func renderEnvelopeList(stdout io.Writer, resp *facade.ListInboxResponse, format
 		}
 		return writer.Flush()
 	case "jsonl":
-		for _, envelope := range resp.Envelopes {
+		for _, envelope := range envelopes {
 			if err := encodeEnvelopeJSONL(stdout, envelope); err != nil {
 				return err
 			}

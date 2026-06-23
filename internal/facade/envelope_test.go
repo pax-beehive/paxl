@@ -181,6 +181,40 @@ func (s *EnvelopeFacadeSuite) TestListInboxBuildsStatusAndLimitQuery() {
 	s.Equal("env_1", resp.Envelopes[0].EnvelopeID)
 }
 
+func (s *EnvelopeFacadeSuite) TestListOutboxBuildsSentDirectionQuery() {
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		s.Equal(http.MethodGet, req.Method)
+		s.Equal("/api/v1/user/usr_1/envelopes", req.URL.Path)
+		s.Equal("sent", req.URL.Query().Get("direction"))
+		s.Equal("accepted", req.URL.Query().Get("status"))
+		s.Equal("10", req.URL.Query().Get("limit"))
+		return jsonResponse(`{
+			"data":{
+				"envelopes":[{
+					"envelope_id":"env_1",
+					"recipient_email":"recipient@example.com",
+					"payload_type":"knowledge_capsule",
+					"payload_json":{},
+					"status":"accepted",
+					"created_at":"2026-06-22T00:00:00Z"
+				}]
+			},
+			"code":200,
+			"message":"ok"
+		}`), nil
+	})
+	envelopeFacade := NewEnvelopeFacade(client, s.store)
+
+	resp, err := envelopeFacade.ListOutbox(
+		s.ctx,
+		&ListOutboxRequest{Status: "accepted", Limit: 10},
+	)
+
+	s.Require().NoError(err)
+	s.Len(resp.Envelopes, 1)
+	s.Equal("env_1", resp.Envelopes[0].EnvelopeID)
+}
+
 func (s *EnvelopeFacadeSuite) TestGetFetchesEnvelopeByID() {
 	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		s.Equal(http.MethodGet, req.Method)
