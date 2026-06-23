@@ -865,8 +865,20 @@ func (s *CommandSuite) TestSessionGetRendersClaudeJSONL() {
 }
 
 func (s *CommandSuite) TestSingularCapsuleCommandExposesMigratedSubcommands() {
-	cases := []string{"create", "list", "get", "archive", "inject", "injection"}
+	cases := []string{"create", "list", "get", "archive", "send", "inject", "injection"}
 	command := findCommand(newCommand(&s.stdout, &s.stderr), "capsule")
+	s.Require().NotNil(command)
+
+	for _, name := range cases {
+		s.Run(name, func() {
+			s.True(hasCommand(command, name))
+		})
+	}
+}
+
+func (s *CommandSuite) TestInboxCommandExposesEnvelopeSubcommands() {
+	cases := []string{"list", "get", "accept", "archive"}
+	command := findCommand(newCommand(&s.stdout, &s.stderr), "inbox")
 	s.Require().NotNil(command)
 
 	for _, name := range cases {
@@ -930,6 +942,185 @@ func (s *CommandSuite) TestCapsuleLocalLifecycleUsesSingularCommands() {
 	)
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), "Archived "+capsuleID)
+}
+
+func (s *CommandSuite) TestCapsuleSendPostsEnvelopeToManager() {
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+	capsuleID := s.createLocalCapsule(dbPath, "bridge")
+	restoreHTTPClient := s.stubDefaultHTTPClient(func(req *http.Request) (*http.Response, error) {
+		s.Equal(http.MethodPost, req.Method)
+		s.Equal("/api/v1/user/usr_1/envelopes", req.URL.Path)
+		s.Equal("Bearer paxu_test", req.Header.Get("Authorization"))
+		body, err := io.ReadAll(req.Body)
+		s.Require().NoError(err)
+		s.Contains(string(body), `"recipient_email":"other@example.com"`)
+		s.Contains(string(body), `"payload_type":"knowledge_capsule"`)
+		s.Contains(string(body), `"capsule_id":"`+capsuleID+`"`)
+		return commandJSONResponse(`{
+			"data":{
+				"envelope":{
+					"envelope_id":"env_1",
+					"sender_email":"me@example.com",
+					"recipient_email":"other@example.com",
+					"payload_type":"knowledge_capsule",
+					"payload_json":{},
+					"message":"please review",
+					"status":"pending",
+					"created_at":"2026-06-22T00:00:00Z"
+				}
+			},
+			"code":200,
+			"message":"ok"
+		}`), nil
+	})
+	defer restoreHTTPClient()
+	s.seedManagerCredential(dbPath, "https://manager.example")
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"capsule", "send", capsuleID,
+			"--to", "other@example.com",
+			"--message", "please review",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "env_1")
+	s.Contains(s.stdout.String(), "please review")
+}
+
+func (s *CommandSuite) TestInboxCommandsUseManagerEnvelopes() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	payload := strings.ReplaceAll(`{
+		"schema_version":"paxl.envelope_payload.knowledge_capsule.v1",
+		"capsule":{
+			"capsule_id":"kcap_remote",
+			"source_session_id":"codex:source",
+			"source_agent":"codex",
+			"keyword":"handoff",
+			"title":"Remote handoff",
+			"summary":"summary",
+			"content":"content",
+			"status":"active",
+			"created_at":"2026-06-22T00:00:00Z"
+		}
+	}`, "\n", "")
+	restoreHTTPClient := s.stubDefaultHTTPClient(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/usr_1/envelopes":
+			s.Equal("pending", req.URL.Query().Get("status"))
+			return commandJSONResponse(`{
+				"data":{
+					"envelopes":[{
+						"envelope_id":"env_1",
+						"sender_email":"sender@example.com",
+						"payload_type":"knowledge_capsule",
+						"payload_json":{},
+						"message":"please review",
+						"status":"pending",
+						"created_at":"2026-06-22T00:00:00Z"
+					}]
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/usr_1/envelopes/env_1":
+			return commandJSONResponse(fmt.Sprintf(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"env_1",
+						"sender_email":"sender@example.com",
+						"payload_type":"knowledge_capsule",
+						"payload_json":%s,
+						"message":"please review",
+						"status":"pending",
+						"created_at":"2026-06-22T00:00:00Z"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`, payload)), nil
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/user/usr_1/envelopes/env_1/accept":
+			return commandJSONResponse(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"env_1",
+						"payload_type":"knowledge_capsule",
+						"payload_json":{},
+						"status":"accepted",
+						"accepted_at":"2026-06-22T00:01:00Z"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/user/usr_1/envelopes/env_1/archive":
+			return commandJSONResponse(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"env_1",
+						"payload_type":"knowledge_capsule",
+						"payload_json":{},
+						"status":"archived",
+						"archived_at":"2026-06-22T00:02:00Z"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		default:
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader("unexpected request")),
+				Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			}, nil
+		}
+	})
+	defer restoreHTTPClient()
+	s.seedManagerCredential(dbPath, "https://manager.example")
+
+	err := run(
+		context.Background(),
+		[]string{"--db", dbPath, "inbox", "list"},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "env_1")
+
+	s.SetupTest()
+	err = run(
+		context.Background(),
+		[]string{"--db", dbPath, "inbox", "get", "env_1"},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Remote handoff")
+
+	s.SetupTest()
+	err = run(
+		context.Background(),
+		[]string{"--db", dbPath, "inbox", "accept", "env_1"},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Accepted env_1 as local capsule")
+
+	s.SetupTest()
+	err = run(
+		context.Background(),
+		[]string{"--db", dbPath, "inbox", "archive", "env_1"},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Archived env_1")
 }
 
 func (s *CommandSuite) TestCapsuleCreateSupportsContentFile() {
@@ -1415,6 +1606,43 @@ func (s *CommandSuite) TestCapsuleInjectRejectsUnknownAgent() {
 	s.Error(err)
 }
 
+func (s *CommandSuite) TestEnvelopeCommandsRejectInvalidRequestsBeforeIO() {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{name: "send missing capsule", args: []string{"capsule", "send"}},
+		{name: "send missing recipient", args: []string{"capsule", "send", "kcap_1"}},
+		{
+			name: "send unknown format",
+			args: []string{
+				"capsule",
+				"send",
+				"kcap_1",
+				"--to",
+				"you@example.com",
+				"--format",
+				"xml",
+			},
+		},
+		{name: "get missing envelope", args: []string{"inbox", "get"}},
+		{name: "get unknown format", args: []string{"inbox", "get", "env_1", "--format", "xml"}},
+		{name: "accept missing envelope", args: []string{"inbox", "accept"}},
+		{
+			name: "accept unknown format",
+			args: []string{"inbox", "accept", "env_1", "--format", "xml"},
+		},
+		{name: "archive missing envelope", args: []string{"inbox", "archive"}},
+	}
+
+	for _, tc := range cases {
+		s.Run(tc.name, func() {
+			err := run(context.Background(), tc.args, &s.stdout, &s.stderr)
+			s.Error(err)
+		})
+	}
+}
+
 func (s *CommandSuite) TestRenderCapsuleListSupportsTableFormat() {
 	err := renderCapsuleList(&s.stdout, &facade.ListCapsulesResponse{
 		Capsules: []*model.KnowledgeCapsule{
@@ -1457,6 +1685,106 @@ func (s *CommandSuite) TestRenderCapsuleSupportsJSONLFormat() {
 func (s *CommandSuite) TestRenderCapsuleRejectsUnknownFormat() {
 	err := renderCapsule(&s.stdout, &facade.GetCapsuleResponse{
 		Capsule: &model.KnowledgeCapsule{CapsuleID: "kcap_1"},
+	}, "xml")
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestRenderEnvelopeListSupportsTableFormat() {
+	err := renderEnvelopeList(&s.stdout, &facade.ListInboxResponse{
+		Envelopes: []*model.Envelope{
+			{
+				EnvelopeID:  "env_1",
+				SenderEmail: "sender@example.com",
+				Message:     "please review",
+				Status:      "pending",
+				CreatedAt:   "2026-06-22T00:00:00Z",
+			},
+		},
+	}, "table")
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "env_1")
+	s.Contains(s.stdout.String(), "sender@example.com")
+	s.Contains(s.stdout.String(), "please review")
+}
+
+func (s *CommandSuite) TestRenderEnvelopeListSupportsJSONLFormat() {
+	err := renderEnvelopeList(&s.stdout, &facade.ListInboxResponse{
+		Envelopes: []*model.Envelope{
+			{
+				EnvelopeID:  "env_1",
+				PayloadType: "knowledge_capsule",
+				PayloadJSON: json.RawMessage(`{"capsule":{}}`),
+				Status:      "pending",
+			},
+		},
+	}, "jsonl")
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"schemaVersion":"paxl.envelope.v1"`)
+	s.Contains(s.stdout.String(), `"envelopeId":"env_1"`)
+}
+
+func (s *CommandSuite) TestRenderEnvelopeListRejectsUnknownFormat() {
+	err := renderEnvelopeList(&s.stdout, &facade.ListInboxResponse{}, "xml")
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestRenderEnvelopeSupportsTextAndJSONLFormats() {
+	envelope := &model.Envelope{
+		EnvelopeID:     "env_1",
+		SenderUserID:   "usr_sender",
+		RecipientEmail: "me@example.com",
+		PayloadType:    "knowledge_capsule",
+		PayloadJSON:    json.RawMessage(`{"capsule":{"title":"Bridge"}}`),
+		Message:        "please review",
+		Status:         "pending",
+		CreatedAt:      "2026-06-22T00:00:00Z",
+		AcceptedAt:     "2026-06-22T00:01:00Z",
+		ArchivedAt:     "2026-06-22T00:02:00Z",
+	}
+
+	err := renderEnvelope(&s.stdout, envelope, "text")
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Envelope: env_1")
+	s.Contains(s.stdout.String(), "Payload JSON:")
+
+	s.SetupTest()
+	err = renderEnvelope(&s.stdout, envelope, "jsonl")
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"envelopeId":"env_1"`)
+	s.Contains(s.stdout.String(), `"acceptedAt":"2026-06-22T00:01:00Z"`)
+}
+
+func (s *CommandSuite) TestRenderEnvelopeRejectsUnknownFormat() {
+	err := renderEnvelope(&s.stdout, &model.Envelope{EnvelopeID: "env_1"}, "xml")
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestRenderAcceptEnvelopeSupportsFormats() {
+	resp := &facade.AcceptEnvelopeResponse{
+		Envelope: &model.Envelope{EnvelopeID: "env_1", Status: "accepted"},
+		Capsule:  &model.KnowledgeCapsule{CapsuleID: "kcap_1", Title: "Bridge"},
+	}
+
+	err := renderAcceptEnvelope(&s.stdout, resp, "table")
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Accepted env_1 as local capsule kcap_1")
+
+	s.SetupTest()
+	err = renderAcceptEnvelope(&s.stdout, resp, "jsonl")
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"envelopeId":"env_1"`)
+	s.Contains(s.stdout.String(), `"capsuleId":"kcap_1"`)
+}
+
+func (s *CommandSuite) TestRenderAcceptEnvelopeRejectsUnknownFormat() {
+	err := renderAcceptEnvelope(&s.stdout, &facade.AcceptEnvelopeResponse{
+		Envelope: &model.Envelope{EnvelopeID: "env_1"},
+		Capsule:  &model.KnowledgeCapsule{CapsuleID: "kcap_1"},
 	}, "xml")
 
 	s.Error(err)
@@ -1555,6 +1883,33 @@ func (s *CommandSuite) createLocalCapsule(dbPath string, keyword string) string 
 	s.Require().True(ok)
 	s.SetupTest()
 	return capsuleID
+}
+
+func (s *CommandSuite) seedManagerCredential(dbPath string, managerURL string) {
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	defer closeStore(opened.Store)
+	_, err = opened.Store.SaveAuthCredential(context.Background(), &store.SaveAuthCredentialRequest{
+		Credential: &model.AuthCredential{
+			ManagerURL:  managerURL,
+			APIKey:      "paxu_test",
+			UserID:      "usr_1",
+			Email:       "me@example.com",
+			DisplayName: "Me",
+			Role:        "user",
+		},
+	})
+	s.Require().NoError(err)
+}
+
+func (s *CommandSuite) stubDefaultHTTPClient(
+	handler func(*http.Request) (*http.Response, error),
+) func() {
+	previous := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: commandRoundTripFunc(handler)}
+	return func() {
+		http.DefaultClient = previous
+	}
 }
 
 func (s *CommandSuite) seedCodexTargetSession(dbPath string) {
@@ -1751,6 +2106,10 @@ func firstLine(raw []byte) []byte {
 type commandRoundTripFunc func(req *http.Request) (*http.Response, error)
 
 func (f commandRoundTripFunc) Do(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func (f commandRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
