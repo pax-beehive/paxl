@@ -956,37 +956,9 @@ func (s *CommandSuite) TestCapsuleLocalLifecycleUsesSingularCommands() {
 	s.Contains(s.stdout.String(), "Archived "+capsuleID)
 }
 
-func (s *CommandSuite) TestCapsuleSendPostsEnvelopeToManager() {
+func (s *CommandSuite) TestCapsuleSendRejectsDirectEmailRecipient() {
 	dbPath := s.seedCodexSessionWithKeyword("bridge")
 	capsuleID := s.createLocalCapsule(dbPath, "bridge")
-	restoreHTTPClient := s.stubDefaultHTTPClient(func(req *http.Request) (*http.Response, error) {
-		s.Equal(http.MethodPost, req.Method)
-		s.Equal("/api/v1/user/usr_1/envelopes", req.URL.Path)
-		s.Equal("Bearer paxu_test", req.Header.Get("Authorization"))
-		body, err := io.ReadAll(req.Body)
-		s.Require().NoError(err)
-		s.Contains(string(body), `"recipient_email":"other@example.com"`)
-		s.Contains(string(body), `"payload_type":"knowledge_capsule"`)
-		s.Contains(string(body), `"capsule_id":"`+capsuleID+`"`)
-		return commandJSONResponse(`{
-			"data":{
-				"envelope":{
-					"envelope_id":"env_1",
-					"sender_email":"me@example.com",
-					"recipient_email":"other@example.com",
-					"payload_type":"knowledge_capsule",
-					"payload_json":{},
-					"message":"please review",
-					"status":"pending",
-					"created_at":"2026-06-22T00:00:00Z"
-				}
-			},
-			"code":200,
-			"message":"ok"
-		}`), nil
-	})
-	defer restoreHTTPClient()
-	s.seedManagerCredential(dbPath, "https://manager.example")
 
 	err := run(
 		context.Background(),
@@ -1000,9 +972,8 @@ func (s *CommandSuite) TestCapsuleSendPostsEnvelopeToManager() {
 		&s.stderr,
 	)
 
-	s.Require().NoError(err)
-	s.Contains(s.stdout.String(), "env_1")
-	s.Contains(s.stdout.String(), "please review")
+	s.Require().Error(err)
+	s.Contains(err.Error(), "recipient must be an accepted friend alias like @alice")
 }
 
 func (s *CommandSuite) TestCapsuleSendResolvesFriendAlias() {
@@ -1033,17 +1004,19 @@ func (s *CommandSuite) TestCapsuleSendResolvesFriendAlias() {
 			body, err := io.ReadAll(req.Body)
 			s.Require().NoError(err)
 			s.Contains(string(body), `"recipient_email":"bob@example.com"`)
+			s.Contains(string(body), `"message":"please review"`)
 			return commandJSONResponse(`{
-				"data":{
-					"envelope":{
-						"envelope_id":"env_1",
-						"sender_email":"me@example.com",
-						"recipient_email":"bob@example.com",
-						"payload_type":"knowledge_capsule",
-						"payload_json":{},
-						"status":"pending",
-						"created_at":"2026-06-22T00:00:00Z"
-					}
+					"data":{
+						"envelope":{
+							"envelope_id":"env_1",
+							"sender_email":"me@example.com",
+							"recipient_email":"bob@example.com",
+							"payload_type":"knowledge_capsule",
+							"payload_json":{},
+							"message":"please review",
+							"status":"pending",
+							"created_at":"2026-06-22T00:00:00Z"
+						}
 				},
 				"code":200,
 				"message":"ok"
@@ -1061,13 +1034,19 @@ func (s *CommandSuite) TestCapsuleSendResolvesFriendAlias() {
 
 	err := run(
 		context.Background(),
-		[]string{"--db", dbPath, "capsule", "send", capsuleID, "--to", "@bob"},
+		[]string{
+			"--db", dbPath,
+			"capsule", "send", capsuleID,
+			"--to", "@bob",
+			"--message", "please review",
+		},
 		&s.stdout,
 		&s.stderr,
 	)
 
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), "env_1")
+	s.Contains(s.stdout.String(), "please review")
 }
 
 func (s *CommandSuite) TestInboxCommandsUseManagerEnvelopes() {

@@ -430,7 +430,7 @@ func newCapsuleCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 				Usage:     "Send a local knowledge capsule to another user's inbox",
 				ArgsUsage: "<capsule-id>",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "to", Usage: "Recipient email address"},
+					&cli.StringFlag{Name: "to", Usage: "Accepted friend alias, for example @alice"},
 					&cli.StringFlag{Name: "message", Usage: "Optional note for the recipient"},
 					&cli.StringFlag{
 						Name:  "format",
@@ -1032,16 +1032,14 @@ func capsuleSend(ctx context.Context, cmd *cli.Command, stdout io.Writer) error 
 		return fmt.Errorf("open envelope store: %w", err)
 	}
 	defer closeStore(opened.Store)
-	if strings.HasPrefix(strings.TrimSpace(req.RecipientEmail), "@") {
-		friendFacade := facade.NewFriendFacade(nil, opened.Store)
-		resolved, err := friendFacade.ResolveAlias(ctx, &facade.ResolveFriendAliasRequest{
-			Alias: req.RecipientEmail,
-		})
-		if err != nil {
-			return fmt.Errorf("resolve friend alias: %w", err)
-		}
-		req.RecipientEmail = resolved.Email
+	friendFacade := facade.NewFriendFacade(nil, opened.Store)
+	resolved, err := friendFacade.ResolveAlias(ctx, &facade.ResolveFriendAliasRequest{
+		Alias: req.RecipientEmail,
+	})
+	if err != nil {
+		return fmt.Errorf("resolve friend alias: %w", err)
 	}
+	req.RecipientEmail = resolved.Email
 	envelopeFacade := facade.NewEnvelopeFacade(nil, opened.Store)
 	resp, err := envelopeFacade.Send(ctx, req)
 	if err != nil {
@@ -1501,7 +1499,10 @@ func parseSendEnvelopeRequest(cmd *cli.Command) (*facade.SendEnvelopeRequest, er
 	}
 	recipient := strings.TrimSpace(cmd.String("to"))
 	if recipient == "" {
-		return nil, fmt.Errorf("recipient email is required")
+		return nil, fmt.Errorf("recipient friend alias is required")
+	}
+	if !strings.HasPrefix(recipient, "@") {
+		return nil, fmt.Errorf("recipient must be an accepted friend alias like @alice")
 	}
 	switch cmd.String("format") {
 	case "table", "jsonl":
