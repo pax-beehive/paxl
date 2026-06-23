@@ -37,7 +37,13 @@ paxl version
 Check whether a newer hosted stable build is available:
 
 ```sh
-paxl update check
+paxl version --check
+```
+
+Upgrade the installed binary in place:
+
+```sh
+paxl update
 ```
 
 Build from source instead:

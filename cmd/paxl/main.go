@@ -30,6 +30,7 @@ var version = "0.1.0"
 var buildCommit = ""
 var updateHTTPClient facade.UpdateHTTPClient = http.DefaultClient
 var authHTTPClient facade.AuthHTTPClient = http.DefaultClient
+var executablePath = os.Executable
 
 func main() {
 	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -156,52 +157,82 @@ func newVersionCommand(stdout io.Writer) *cli.Command {
 				Value: "text",
 				Usage: "Output format: text or json",
 			},
+			&cli.BoolFlag{Name: "check", Usage: "Check the latest hosted paxl release"},
+			&cli.StringFlag{
+				Name:  "manifest-url",
+				Usage: "Release manifest URL override for --check",
+			},
+			&cli.StringFlag{
+				Name:  "resolver-url",
+				Value: facade.DefaultUpdateResolverURL,
+				Usage: "Artifact resolver URL for --check",
+			},
+			&cli.StringFlag{
+				Name:  "tag",
+				Value: facade.DefaultUpdateTag,
+				Usage: "Release tag to check",
+			},
+			&cli.StringFlag{
+				Name:  "platform",
+				Usage: "Release platform override like darwin/arm64",
+			},
+			&cli.StringFlag{
+				Name:  "timeout",
+				Value: "3s",
+				Usage: "Update check timeout",
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			_ = ctx
-			return versionCommand(cmd, stdout)
+			return versionCommand(ctx, cmd, stdout)
 		},
 	}
 }
 
 func newUpdateCommand(stdout io.Writer) *cli.Command {
+	updateFlags := func(timeout string) []cli.Flag {
+		return []cli.Flag{
+			&cli.StringFlag{
+				Name:  "format",
+				Value: "text",
+				Usage: "Output format: text, json, or jsonl",
+			},
+			&cli.StringFlag{
+				Name:  "manifest-url",
+				Usage: "Release manifest URL override",
+			},
+			&cli.StringFlag{
+				Name:  "resolver-url",
+				Value: facade.DefaultUpdateResolverURL,
+				Usage: "Artifact resolver URL",
+			},
+			&cli.StringFlag{
+				Name:  "tag",
+				Value: facade.DefaultUpdateTag,
+				Usage: "Release tag to check",
+			},
+			&cli.StringFlag{
+				Name:  "platform",
+				Usage: "Release platform override like darwin/arm64",
+			},
+			&cli.StringFlag{
+				Name:  "timeout",
+				Value: timeout,
+				Usage: "Update timeout",
+			},
+		}
+	}
 	return &cli.Command{
 		Name:  "update",
-		Usage: "Check for paxl binary updates",
+		Usage: "Update the paxl binary in place",
+		Flags: updateFlags("30s"),
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			return updateCommand(ctx, cmd, stdout)
+		},
 		Commands: []*cli.Command{
 			{
 				Name:  "check",
 				Usage: "Check the latest hosted paxl release",
-				Flags: []cli.Flag{
-					&cli.StringFlag{
-						Name:  "format",
-						Value: "text",
-						Usage: "Output format: text, json, or jsonl",
-					},
-					&cli.StringFlag{
-						Name:  "manifest-url",
-						Usage: "Release manifest URL override",
-					},
-					&cli.StringFlag{
-						Name:  "resolver-url",
-						Value: facade.DefaultUpdateResolverURL,
-						Usage: "Artifact resolver URL",
-					},
-					&cli.StringFlag{
-						Name:  "tag",
-						Value: facade.DefaultUpdateTag,
-						Usage: "Release tag to check",
-					},
-					&cli.StringFlag{
-						Name:  "platform",
-						Usage: "Release platform override like darwin/arm64",
-					},
-					&cli.StringFlag{
-						Name:  "timeout",
-						Value: "3s",
-						Usage: "Update check timeout",
-					},
-				},
+				Flags: updateFlags("3s"),
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					return updateCheck(ctx, cmd, stdout)
 				},
@@ -719,7 +750,10 @@ type versionMetadata struct {
 	Dirty   string `json:"dirty,omitempty"`
 }
 
-func versionCommand(cmd *cli.Command, stdout io.Writer) error {
+func versionCommand(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	if cmd.Bool("check") {
+		return updateCheck(ctx, cmd, stdout)
+	}
 	meta := currentVersionMetadata()
 	switch cmd.String("format") {
 	case "text":
@@ -786,6 +820,158 @@ func updateCheck(ctx context.Context, cmd *cli.Command, stdout io.Writer) error 
 	if err := renderUpdateCheck(stdout, resp, cmd.String("format")); err != nil {
 		return fmt.Errorf("render update check: %w", err)
 	}
+	return nil
+}
+
+type applyUpdateResponse struct {
+	CurrentVersion  string              `json:"current_version"`
+	LatestVersion   string              `json:"latest_version"`
+	Status          facade.UpdateStatus `json:"status"`
+	UpdateAvailable bool                `json:"update_available"`
+	Updated         bool                `json:"updated"`
+	Path            string              `json:"path,omitempty"`
+	Platform        string              `json:"platform"`
+	SHA256          string              `json:"sha256,omitempty"`
+	SizeBytes       int64               `json:"size_bytes,omitempty"`
+}
+
+func updateCommand(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	req, err := parseCheckUpdateRequest(cmd)
+	if err != nil {
+		return fmt.Errorf("parse update request: %w", err)
+	}
+	runCtx, cancel, err := contextWithTimeout(ctx, cmd.String("timeout"))
+	if err != nil {
+		return fmt.Errorf("parse update timeout: %w", err)
+	}
+	defer cancel()
+	check, err := facade.NewUpdateFacade(updateHTTPClient).Check(runCtx, req)
+	if err != nil {
+		return fmt.Errorf("check update: %w", err)
+	}
+	resp := &applyUpdateResponse{
+		CurrentVersion:  check.CurrentVersion,
+		LatestVersion:   check.LatestVersion,
+		Status:          check.Status,
+		UpdateAvailable: check.UpdateAvailable,
+		Platform:        check.Platform,
+		SHA256:          check.SHA256,
+		SizeBytes:       check.SizeBytes,
+	}
+	if !check.UpdateAvailable {
+		return renderApplyUpdate(stdout, resp, cmd.String("format"))
+	}
+	binary, err := downloadUpdateBinary(
+		runCtx,
+		updateHTTPClient,
+		check.DownloadURL,
+		check.SizeBytes,
+	)
+	if err != nil {
+		return fmt.Errorf("download update: %w", err)
+	}
+	if err := verifyUpdateBinary(binary, check.SHA256); err != nil {
+		return fmt.Errorf("verify update: %w", err)
+	}
+	path, err := executablePath()
+	if err != nil {
+		return fmt.Errorf("resolve executable path: %w", err)
+	}
+	if err := replaceExecutable(path, binary); err != nil {
+		return fmt.Errorf("replace executable: %w", err)
+	}
+	resp.Updated = true
+	resp.Path = path
+	return renderApplyUpdate(stdout, resp, cmd.String("format"))
+}
+
+func downloadUpdateBinary(
+	ctx context.Context,
+	client facade.UpdateHTTPClient,
+	url string,
+	expectedSize int64,
+) ([]byte, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil) // #nosec G107
+	if err != nil {
+		return nil, fmt.Errorf("create download request: %w", err)
+	}
+	req.Header.Set("User-Agent", "paxl-update")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request download: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("download returned HTTP %d", resp.StatusCode)
+	}
+	limit := expectedSize + 1
+	if limit <= 1 {
+		limit = 128 << 20
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit))
+	if err != nil {
+		return nil, fmt.Errorf("read download: %w", err)
+	}
+	if expectedSize > 0 && int64(len(body)) != expectedSize {
+		return nil, fmt.Errorf(
+			"download size %d does not match expected %d",
+			len(body),
+			expectedSize,
+		)
+	}
+	return body, nil
+}
+
+func verifyUpdateBinary(binary []byte, expectedSHA string) error {
+	sum := sha256.Sum256(binary)
+	got := hex.EncodeToString(sum[:])
+	if !strings.EqualFold(got, strings.TrimSpace(expectedSHA)) {
+		return fmt.Errorf("sha256 %s does not match expected %s", got, expectedSHA)
+	}
+	return nil
+}
+
+func replaceExecutable(path string, binary []byte) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("executable path is required")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat executable: %w", err)
+	}
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	tmp, err := os.CreateTemp(dir, "."+base+".update-*")
+	if err != nil {
+		return fmt.Errorf("create temp executable: %w", err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(binary); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp executable: %w", err)
+	}
+	if err := tmp.Chmod(info.Mode().Perm() | 0o700); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temp executable: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp executable: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename temp executable: %w", err)
+	}
+	cleanup = false
 	return nil
 }
 
@@ -2511,7 +2697,7 @@ func renderUpdateCheck(stdout io.Writer, resp *facade.CheckUpdateResponse, forma
 			return fmt.Errorf("write update status: %w", err)
 		}
 		if resp.UpdateAvailable {
-			if _, err := fmt.Fprintln(stdout, "\nRun the installer again to upgrade."); err != nil {
+			if _, err := fmt.Fprintln(stdout, "\nRun `paxl update` to upgrade."); err != nil {
 				return fmt.Errorf("write update instruction: %w", err)
 			}
 		}
@@ -2519,6 +2705,47 @@ func renderUpdateCheck(stdout io.Writer, resp *facade.CheckUpdateResponse, forma
 	case "json", "jsonl":
 		if err := json.NewEncoder(stdout).Encode(resp); err != nil {
 			return fmt.Errorf("encode update check: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func renderApplyUpdate(stdout io.Writer, resp *applyUpdateResponse, format string) error {
+	switch format {
+	case "text":
+		if resp.Updated {
+			if _, err := fmt.Fprintf(
+				stdout,
+				"Updated paxl %s -> %s\n",
+				resp.CurrentVersion,
+				resp.LatestVersion,
+			); err != nil {
+				return fmt.Errorf("write update result: %w", err)
+			}
+			if _, err := fmt.Fprintf(stdout, "Path: %s\n", resp.Path); err != nil {
+				return fmt.Errorf("write update path: %w", err)
+			}
+			return nil
+		}
+		if _, err := fmt.Fprintf(stdout, "Current: %s\n", resp.CurrentVersion); err != nil {
+			return fmt.Errorf("write current version: %w", err)
+		}
+		if _, err := fmt.Fprintf(stdout, "Latest:  %s\n", resp.LatestVersion); err != nil {
+			return fmt.Errorf("write latest version: %w", err)
+		}
+		if _, err := fmt.Fprintf(
+			stdout,
+			"Status:  %s\n",
+			updateStatusText(resp.Status),
+		); err != nil {
+			return fmt.Errorf("write update status: %w", err)
+		}
+		return nil
+	case "json", "jsonl":
+		if err := json.NewEncoder(stdout).Encode(resp); err != nil {
+			return fmt.Errorf("encode update result: %w", err)
 		}
 		return nil
 	default:
