@@ -230,70 +230,48 @@ func hermesACPClient(timeout time.Duration) *acpClient {
 }
 
 func decodeHermesACPSession(raw json.RawMessage) hermesSessionInfo {
-	var typed struct {
-		SessionID      string   `json:"sessionId"`
-		SessionIDAlt   string   `json:"session_id"`
-		ID             string   `json:"id"`
-		AgentType      string   `json:"agentType"`
-		AgentTypeAlt   string   `json:"agent_type"`
-		NativeID       string   `json:"nativeId"`
-		NativeIDAlt    string   `json:"native_id"`
-		Name           string   `json:"name"`
-		Title          string   `json:"title"`
-		CWD            string   `json:"cwd"`
-		ProjectID      string   `json:"projectId"`
-		ProjectIDAlt   string   `json:"project_id"`
-		LastActive     string   `json:"lastActive"`
-		LastActiveAlt  string   `json:"last_active"`
-		Preview        string   `json:"preview"`
-		WorkspaceRoots []string `json:"workspaceRoots"`
-		Status         string   `json:"status"`
-		CurrentTask    string   `json:"currentTask"`
-		CurrentTaskAlt string   `json:"current_task"`
-		UpdatedAt      string   `json:"updatedAt"`
-		UpdatedAtAlt   string   `json:"updated_at"`
-		LastUpdated    string   `json:"lastUpdated"`
-		LastUpdatedAlt string   `json:"last_updated"`
-		Timestamp      string   `json:"timestamp"`
-	}
-	if err := json.Unmarshal(raw, &typed); err != nil {
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
 		return hermesSessionInfo{}
 	}
-	workspaceRoots := typed.WorkspaceRoots
-	if len(workspaceRoots) == 0 && typed.CWD != "" {
-		workspaceRoots = []string{typed.CWD}
+	workspaceRoots := stringSliceMapValue(fields, "workspaceRoots", "workspace_roots")
+	cwd := stringMapValue(fields, "cwd")
+	if len(workspaceRoots) == 0 && cwd != "" {
+		workspaceRoots = []string{cwd}
 	}
 	return hermesSessionInfo{
 		SessionID: firstNonEmpty(
-			typed.SessionID,
-			typed.SessionIDAlt,
-			typed.ID,
-			typed.NativeID,
-			typed.NativeIDAlt,
+			stringMapValue(fields, "sessionId", "session_id"),
+			stringMapValue(fields, "id"),
+			stringMapValue(fields, "nativeId", "native_id"),
 		),
-		AgentType: firstNonEmpty(typed.AgentType, typed.AgentTypeAlt, "hermes"),
+		AgentType: firstNonEmpty(stringMapValue(fields, "agentType", "agent_type"), "hermes"),
 		NativeID: firstNonEmpty(
-			typed.NativeID,
-			typed.NativeIDAlt,
-			typed.SessionID,
-			typed.SessionIDAlt,
-			typed.ID,
+			stringMapValue(fields, "nativeId", "native_id"),
+			stringMapValue(fields, "sessionId", "session_id"),
+			stringMapValue(fields, "id"),
 		),
-		Name:           firstNonEmpty(typed.Name, typed.Title),
-		ProjectID:      firstNonEmpty(typed.ProjectID, typed.ProjectIDAlt, typed.CWD),
-		LastActive:     firstNonEmpty(typed.LastActive, typed.LastActiveAlt, typed.Timestamp),
-		Preview:        typed.Preview,
+		Name: firstNonEmpty(
+			stringMapValue(fields, "name"),
+			stringMapValue(fields, "title"),
+		),
+		ProjectID: firstNonEmpty(
+			stringMapValue(fields, "projectId", "project_id"),
+			cwd,
+		),
+		LastActive: firstNonEmpty(
+			timestampMapValue(fields, "lastActive", "last_active"),
+			timestampMapValue(fields, "timestamp"),
+		),
+		Preview:        stringMapValue(fields, "preview"),
 		WorkspaceRoots: workspaceRoots,
-		Status:         typed.Status,
-		CurrentTask:    firstNonEmpty(typed.CurrentTask, typed.CurrentTaskAlt),
+		Status:         stringMapValue(fields, "status"),
+		CurrentTask:    stringMapValue(fields, "currentTask", "current_task"),
 		UpdatedAt: firstNonEmpty(
-			typed.UpdatedAt,
-			typed.UpdatedAtAlt,
-			typed.LastUpdated,
-			typed.LastUpdatedAlt,
-			typed.LastActive,
-			typed.LastActiveAlt,
-			typed.Timestamp,
+			timestampMapValue(fields, "updatedAt", "updated_at"),
+			timestampMapValue(fields, "lastUpdated", "last_updated"),
+			timestampMapValue(fields, "lastActive", "last_active"),
+			timestampMapValue(fields, "timestamp"),
 		),
 		RawJSON: string(raw),
 	}
@@ -491,10 +469,19 @@ func mergeHermesLocalMetadata(info *hermesSessionInfo, fields map[string]any, ra
 	info.Status = firstNonEmpty(info.Status, stringMapValue(fields, "status"))
 	info.LastActive = firstNonEmpty(
 		info.LastActive,
-		stringMapValue(fields, "lastActive", "timestamp"),
+		timestampMapValue(fields, "lastActive", "last_active", "timestamp"),
 	)
 	info.UpdatedAt = firstNonEmpty(
-		stringMapValue(fields, "updatedAt", "updated_at", "lastUpdated", "lastActive", "timestamp"),
+		timestampMapValue(
+			fields,
+			"updatedAt",
+			"updated_at",
+			"lastUpdated",
+			"last_updated",
+			"lastActive",
+			"last_active",
+			"timestamp",
+		),
 		info.UpdatedAt,
 	)
 	if info.RawJSON == "" && len(raw) > 0 {
@@ -536,8 +523,22 @@ func appendHermesLocalMessage(local *hermesLocalSession, fields map[string]any, 
 		return
 	}
 	timestamp := firstNonEmpty(
-		stringMapValue(fields, "timestamp", "createdAt", "updatedAt"),
-		stringMapValue(message, "timestamp", "createdAt", "updatedAt"),
+		timestampMapValue(
+			fields,
+			"timestamp",
+			"createdAt",
+			"created_at",
+			"updatedAt",
+			"updated_at",
+		),
+		timestampMapValue(
+			message,
+			"timestamp",
+			"createdAt",
+			"created_at",
+			"updatedAt",
+			"updated_at",
+		),
 	)
 	if local.info.Name == "" && role == "user" {
 		local.info.Name = titleCandidate(content)
@@ -612,12 +613,94 @@ func stringMapValue(fields map[string]any, keys ...string) string {
 		if !ok {
 			continue
 		}
-		text, ok := value.(string)
-		if ok && strings.TrimSpace(text) != "" {
-			return strings.TrimSpace(text)
+		switch typed := value.(type) {
+		case string:
+			if strings.TrimSpace(typed) != "" {
+				return strings.TrimSpace(typed)
+			}
+		case float64:
+			return fmt.Sprintf("%.0f", typed)
+		case int64:
+			return fmt.Sprintf("%d", typed)
+		case int:
+			return fmt.Sprintf("%d", typed)
 		}
 	}
 	return ""
+}
+
+func timestampMapValue(fields map[string]any, keys ...string) string {
+	for _, key := range keys {
+		value, ok := fields[key]
+		if !ok {
+			continue
+		}
+		switch typed := value.(type) {
+		case string:
+			if strings.TrimSpace(typed) != "" {
+				return strings.TrimSpace(typed)
+			}
+		case float64:
+			if formatted := hermesNumericTimestamp(typed); formatted != "" {
+				return formatted
+			}
+		case int64:
+			if formatted := hermesNumericTimestamp(float64(typed)); formatted != "" {
+				return formatted
+			}
+		case int:
+			if formatted := hermesNumericTimestamp(float64(typed)); formatted != "" {
+				return formatted
+			}
+		}
+	}
+	return ""
+}
+
+func hermesNumericTimestamp(value float64) string {
+	if value <= 0 {
+		return ""
+	}
+	switch {
+	case value > 1e17:
+		return time.Unix(0, int64(value)).UTC().Format(time.RFC3339Nano)
+	case value > 1e12:
+		return unixSeconds(value / 1000)
+	case value > 600_000_000 && value < 1_000_000_000:
+		return unixSeconds(value + 978_307_200)
+	default:
+		return unixSeconds(value)
+	}
+}
+
+func unixSeconds(value float64) string {
+	sec := int64(value)
+	nsec := int64((value - float64(sec)) * 1e9)
+	return time.Unix(sec, nsec).UTC().Format(time.RFC3339Nano)
+}
+
+func stringSliceMapValue(fields map[string]any, keys ...string) []string {
+	for _, key := range keys {
+		value, ok := fields[key]
+		if !ok {
+			continue
+		}
+		raw, ok := value.([]any)
+		if !ok {
+			continue
+		}
+		out := make([]string, 0, len(raw))
+		for _, item := range raw {
+			text, ok := item.(string)
+			if ok && strings.TrimSpace(text) != "" {
+				out = append(out, strings.TrimSpace(text))
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return nil
 }
 
 func firstNonEmptyBytes(values ...[]byte) []byte {
