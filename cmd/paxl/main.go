@@ -23,6 +23,7 @@ import (
 	"github.com/pax-oss/paxl/internal/facade"
 	"github.com/pax-oss/paxl/internal/model"
 	"github.com/pax-oss/paxl/internal/model/store"
+	"github.com/pax-oss/paxl/pkg/adaptor"
 	"github.com/urfave/cli/v3"
 )
 
@@ -157,7 +158,11 @@ func newNodeCommand(stdout io.Writer) *cli.Command {
 				Name:  "list",
 				Usage: "List nodes visible to the logged-in user",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "format", Value: "table", Usage: "Output format: table or jsonl"},
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "table",
+						Usage: "Output format: table or jsonl",
+					},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					return nodeList(ctx, cmd, stdout)
@@ -330,6 +335,26 @@ func newAgentCommand(
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					return agentList(ctx, cmd, agentFacade, stdout, stderr, diagnostics)
+				},
+			},
+			{
+				Name:  "bridge",
+				Usage: "Manage local agent bridge integrations",
+				Commands: []*cli.Command{
+					{
+						Name:      "install",
+						Usage:     "Install an agent bridge extension",
+						ArgsUsage: "<agent>",
+						Flags: []cli.Flag{
+							&cli.StringFlag{
+								Name:  "path",
+								Usage: "Install path override",
+							},
+						},
+						Action: func(ctx context.Context, cmd *cli.Command) error {
+							return agentBridgeInstall(ctx, cmd, stdout)
+						},
+					},
 				},
 			},
 		},
@@ -802,6 +827,34 @@ func agentList(
 	}
 	if err := renderAgentList(stdout, resp, cmd.String("format")); err != nil {
 		return fmt.Errorf("render agent list: %w", err)
+	}
+	return nil
+}
+
+func agentBridgeInstall(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	_ = ctx
+	agentName := strings.TrimSpace(cmd.Args().First())
+	if agentName == "" {
+		return fmt.Errorf("agent is required")
+	}
+	agent, err := model.ParseAgentName(agentName)
+	if err != nil {
+		return fmt.Errorf("parse agent: %w", err)
+	}
+	if agent != model.AgentNamePi {
+		return fmt.Errorf("bridge install currently supports only pi")
+	}
+	installedPath, err := adaptor.InstallPiBridgeExtension(cmd.String("path"))
+	if err != nil {
+		return fmt.Errorf("install pi bridge extension: %w", err)
+	}
+	if _, err := fmt.Fprintf(
+		stdout,
+		"Installed pi bridge extension: %s\nLoad it with: pi -e %s\n",
+		installedPath,
+		installedPath,
+	); err != nil {
+		return fmt.Errorf("write bridge install result: %w", err)
 	}
 	return nil
 }

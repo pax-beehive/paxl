@@ -20,7 +20,8 @@ func NewPiAdapter() Adapter {
 			Kind:       model.AgentKindLocal,
 			Capability: model.AgentCapabilityLocalCLI,
 			Command:    []string{"pi"},
-			Reason:     "Run Pi locally so ~/.pi/agent/sessions exists and install the pi CLI.",
+			Reason: "Run Pi locally so ~/.pi/agent/sessions exists and install the pi CLI. " +
+				"Load the paxl Pi bridge extension to steer active Pi sessions.",
 		},
 		cliProbe:     piCLIAvailable,
 		sessionProbe: piSessionsAvailable,
@@ -61,17 +62,24 @@ type piBlock struct {
 }
 
 func listPiSessions(ctx context.Context, req *ListSessionsRequest) (*ListSessionsResponse, error) {
+	active, err := listPiBridgeSessions(ctx)
+	if err != nil {
+		return nil, err
+	}
 	paths, err := piLogPaths(ctx)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &ListSessionsResponse{}, nil
+			return sortedSessions(active, req), nil
 		}
 		return nil, fmt.Errorf("list pi log paths: %w", err)
 	}
-	sessions := map[string]*model.Session{}
+	sessions := active
 	for _, path := range paths {
 		session, err := readPiSession(path)
 		if err == nil && session.ID != "" {
+			if _, ok := sessions[session.ID]; ok {
+				continue
+			}
 			sessions[session.ID] = session
 		}
 	}
@@ -103,6 +111,9 @@ func promptPiSession(
 	}
 	if err := validateNativeSessionID(req.NativeID); err != nil {
 		return nil, err
+	}
+	if delivery, err := promptPiBridgeSession(ctx, req.NativeID, req.Text); err == nil {
+		return &PromptResponse{DeliveryMethod: delivery}, nil
 	}
 	return runPromptCommand(
 		ctx,

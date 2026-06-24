@@ -230,6 +230,35 @@ func (s *CommandSuite) TestAgentListAcceptsProbeFlagForCompatibility() {
 	s.Contains(s.stdout.String(), "codex")
 }
 
+func (s *CommandSuite) TestAgentBridgeInstallPiWritesExtension() {
+	installPath := filepath.Join(s.T().TempDir(), "paxl-bridge.js")
+
+	err := run(
+		context.Background(),
+		[]string{"agent", "bridge", "install", "pi", "--path", installPath},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	raw, err := os.ReadFile(installPath)
+	s.Require().NoError(err)
+	s.Contains(string(raw), "paxl-pi-bridge")
+	s.Contains(s.stdout.String(), "pi -e "+installPath)
+}
+
+func (s *CommandSuite) TestAgentBridgeInstallRejectsUnsupportedAgent() {
+	err := run(
+		context.Background(),
+		[]string{"agent", "bridge", "install", "codex"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().Error(err)
+	s.Contains(err.Error(), "supports only pi")
+}
+
 func (s *CommandSuite) TestAgentListRejectsUnknownFormatBeforeFacadeCall() {
 	err := run(
 		context.Background(),

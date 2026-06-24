@@ -1,9 +1,13 @@
 package adaptor
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -278,11 +282,139 @@ func (s *LocalSessionsSuite) TestClaudeMalformedContentKeepsRawContentText() {
 
 func (s *LocalSessionsSuite) TestListPiSessionsReturnsEmptyWhenLocalRootIsMissing() {
 	s.T().Setenv("PI_CODING_AGENT_DIR", filepath.Join(s.T().TempDir(), "missing"))
+	s.T().Setenv("PAXL_PI_BRIDGE_DIR", filepath.Join(s.T().TempDir(), "missing-bridge"))
 
 	resp, err := listPiSessions(context.Background(), &ListSessionsRequest{})
 
 	s.Require().NoError(err)
 	s.Empty(resp.Sessions)
+}
+
+func (s *LocalSessionsSuite) TestListPiSessionsIncludesActiveBridge() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("unix sockets are unavailable on windows")
+	}
+	bridgeDir := s.shortTempDir()
+	socketPath := filepath.Join(bridgeDir, "active.sock")
+	s.T().Setenv("PAXL_PI_BRIDGE_DIR", bridgeDir)
+	s.T().Setenv("PI_CODING_AGENT_DIR", filepath.Join(s.T().TempDir(), "missing"))
+	listener := s.listenUnix(socketPath)
+	defer closeListener(listener)
+	s.writePiBridgeRecord(bridgeDir, piBridgeRecord{
+		SessionID:  "pi-active",
+		CWD:        "/tmp/project",
+		Title:      "Active Pi",
+		SocketPath: socketPath,
+		PID:        os.Getpid(),
+		UpdatedAt:  "2026-06-24T04:00:00Z",
+	})
+
+	resp, err := listPiSessions(context.Background(), &ListSessionsRequest{})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Sessions, 1)
+	s.Equal("pi:pi-active", resp.Sessions[0].ID)
+	s.Equal("online", resp.Sessions[0].Status)
+	s.Equal("Active Pi", resp.Sessions[0].Title)
+}
+
+func (s *LocalSessionsSuite) TestPromptPiSessionUsesActiveBridgeBeforeCLI() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("unix sockets are unavailable on windows")
+	}
+	bridgeDir := s.shortTempDir()
+	socketPath := filepath.Join(bridgeDir, "active.sock")
+	s.T().Setenv("PAXL_PI_BRIDGE_DIR", bridgeDir)
+	s.T().Setenv("PATH", s.T().TempDir())
+	listener := s.listenUnix(socketPath)
+	defer closeListener(listener)
+	s.writePiBridgeRecord(bridgeDir, piBridgeRecord{
+		SessionID:  "pi-active",
+		CWD:        "/tmp/project",
+		Title:      "Active Pi",
+		SocketPath: socketPath,
+		PID:        os.Getpid(),
+		UpdatedAt:  "2026-06-24T04:00:00Z",
+	})
+	requests := make(chan map[string]any, 1)
+	go serveOnePiBridgeRequest(listener, requests)
+
+	resp, err := promptPiSession(
+		context.Background(),
+		&PromptRequest{NativeID: "pi-active", Text: "handoff text"},
+		&Option{},
+	)
+
+	s.Require().NoError(err)
+	s.Equal("pi_extension_steer", resp.DeliveryMethod)
+	request := <-requests
+	s.Equal("session/prompt", request["method"])
+	params, ok := request["params"].(map[string]any)
+	s.Require().True(ok)
+	s.Equal("pi-active", params["sessionId"])
+	s.Equal("steer", params["delivery"])
+}
+
+func (s *LocalSessionsSuite) TestInstallPiBridgeExtensionUsesDefaultPiExtensionPath() {
+	piHome := s.T().TempDir()
+	s.T().Setenv("PI_CODING_AGENT_DIR", piHome)
+
+	installedPath, err := InstallPiBridgeExtension("")
+
+	s.Require().NoError(err)
+	s.Equal(filepath.Join(piHome, "extensions", "paxl-bridge.js"), installedPath)
+	raw, err := os.ReadFile(installedPath)
+	s.Require().NoError(err)
+	s.Contains(string(raw), "paxl-pi-bridge")
+}
+
+func (s *LocalSessionsSuite) TestPiBridgeExtensionSourceReadsEmbeddedExtension() {
+	source, err := PiBridgeExtensionSource()
+
+	s.Require().NoError(err)
+	s.Contains(source, "session/prompt")
+}
+
+func (s *LocalSessionsSuite) TestListPiBridgeSessionsSkipsInvalidAndStaleRecords() {
+	bridgeDir := s.T().TempDir()
+	s.T().Setenv("PAXL_PI_BRIDGE_DIR", bridgeDir)
+	s.writePiBridgeRecord(bridgeDir, piBridgeRecord{
+		SessionID:  "stale",
+		SocketPath: filepath.Join(bridgeDir, "missing.sock"),
+	})
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(bridgeDir, "sessions", "invalid.json"),
+		[]byte("{"),
+		0o600,
+	))
+
+	sessions, err := listPiBridgeSessions(context.Background())
+
+	s.Require().NoError(err)
+	s.Empty(sessions)
+}
+
+func (s *LocalSessionsSuite) TestPiBridgeCallReturnsRPCError() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("unix sockets are unavailable on windows")
+	}
+	bridgeDir := s.shortTempDir()
+	socketPath := filepath.Join(bridgeDir, "error.sock")
+	listener := s.listenUnix(socketPath)
+	defer closeListener(listener)
+	go serveOnePiBridgeError(listener)
+
+	err := piBridgeCall(
+		context.Background(),
+		socketPath,
+		7,
+		"session/prompt",
+		map[string]any{},
+		nil,
+	)
+
+	s.Require().Error(err)
+	s.Contains(err.Error(), "pi bridge rpc error -32602")
 }
 
 func (s *LocalSessionsSuite) TestListKiroSessionsReturnsEmptyWhenLocalRootIsMissing() {
@@ -349,12 +481,94 @@ func (s *LocalSessionsSuite) TestListPiSessionsHonorsCanceledContext() {
 	piHome := s.T().TempDir()
 	s.Require().NoError(os.MkdirAll(filepath.Join(piHome, "sessions"), 0o700))
 	s.T().Setenv("PI_CODING_AGENT_DIR", piHome)
+	s.T().Setenv("PAXL_PI_BRIDGE_DIR", filepath.Join(s.T().TempDir(), "missing-bridge"))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	_, err := listPiSessions(ctx, &ListSessionsRequest{})
 
 	s.ErrorIs(err, context.Canceled)
+}
+
+func (s *LocalSessionsSuite) writePiBridgeRecord(bridgeDir string, record piBridgeRecord) {
+	sessionDir := filepath.Join(bridgeDir, "sessions")
+	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
+	raw, err := json.Marshal(record)
+	s.Require().NoError(err)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(sessionDir, record.SessionID+".json"),
+		append(raw, '\n'),
+		0o600,
+	))
+}
+
+func (s *LocalSessionsSuite) shortTempDir() string {
+	dir, err := os.MkdirTemp("/tmp", "paxl-bridge-*")
+	s.Require().NoError(err)
+	s.T().Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
+func (s *LocalSessionsSuite) listenUnix(socketPath string) net.Listener {
+	listener, err := new(net.ListenConfig).Listen(context.Background(), "unix", socketPath)
+	if err != nil && strings.Contains(err.Error(), "operation not permitted") {
+		s.T().Skipf("unix socket bind unavailable in this environment: %v", err)
+	}
+	s.Require().NoError(err)
+	return listener
+}
+
+func serveOnePiBridgeRequest(listener net.Listener, requests chan<- map[string]any) {
+	conn, err := listener.Accept()
+	if err != nil {
+		return
+	}
+	defer closeConn(conn)
+	line, err := bufio.NewReader(conn).ReadBytes('\n')
+	if err != nil {
+		return
+	}
+	var request map[string]any
+	if err := json.Unmarshal(line, &request); err != nil {
+		return
+	}
+	requests <- request
+	response := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      request["id"],
+		"result":  map[string]any{"delivery": "pi_extension_steer"},
+	}
+	raw, _ := json.Marshal(response)
+	_, _ = conn.Write(append(raw, '\n'))
+}
+
+func serveOnePiBridgeError(listener net.Listener) {
+	conn, err := listener.Accept()
+	if err != nil {
+		return
+	}
+	defer closeConn(conn)
+	line, err := bufio.NewReader(conn).ReadBytes('\n')
+	if err != nil {
+		return
+	}
+	var request map[string]any
+	if err := json.Unmarshal(line, &request); err != nil {
+		return
+	}
+	response := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      request["id"],
+		"error":   map[string]any{"code": -32602, "message": "bad params"},
+	}
+	raw, _ := json.Marshal(response)
+	_, _ = conn.Write(append(raw, '\n'))
+}
+
+func closeListener(listener net.Listener) {
+	if listener != nil {
+		_ = listener.Close()
+	}
 }
 
 func (s *LocalSessionsSuite) TestListKiroSessionsHonorsCanceledContext() {
