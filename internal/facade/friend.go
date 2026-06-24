@@ -57,6 +57,16 @@ type AcceptFriendResponse struct {
 	UserID string
 }
 
+type UpdateFriendAliasRequest struct {
+	FriendID string
+	Alias    string
+}
+
+type UpdateFriendAliasResponse struct {
+	Friend *model.Friend
+	UserID string
+}
+
 type RemoveFriendRequest struct {
 	FriendID string
 }
@@ -219,6 +229,28 @@ func (f *FriendFacade) Accept(
 		return nil, err
 	}
 	return &AcceptFriendResponse{Friend: friend, UserID: userID}, nil
+}
+
+func (f *FriendFacade) UpdateAlias(
+	ctx context.Context,
+	req *UpdateFriendAliasRequest,
+	opts ...func(*Option),
+) (*UpdateFriendAliasResponse, error) {
+	_ = applyOptions(opts)
+	if req == nil || strings.TrimSpace(req.FriendID) == "" {
+		return nil, fmt.Errorf("update friend alias: friend id is required")
+	}
+	alias := strings.TrimPrefix(strings.TrimSpace(req.Alias), "@")
+	if alias == "" {
+		return nil, fmt.Errorf("update friend alias: alias is required")
+	}
+	friend, userID, err := f.updateFriend(ctx, req.FriendID, "alias", map[string]any{
+		"alias": alias,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &UpdateFriendAliasResponse{Friend: friend, UserID: userID}, nil
 }
 
 func (f *FriendFacade) Remove(

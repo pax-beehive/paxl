@@ -751,6 +751,21 @@ func newFriendCommand(stdout io.Writer) *cli.Command {
 				},
 			},
 			{
+				Name:      "alias",
+				Usage:     "Update a friend alias",
+				ArgsUsage: "<friend-id> <alias>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "table",
+						Usage: "Output format: table or jsonl",
+					},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return friendAlias(ctx, cmd, stdout)
+				},
+			},
+			{
 				Name:      "remove",
 				Usage:     "Remove a friend",
 				ArgsUsage: "<friend-id>",
@@ -1644,6 +1659,28 @@ func friendAccept(ctx context.Context, cmd *cli.Command, stdout io.Writer) error
 	)
 }
 
+func friendAlias(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	req, err := parseUpdateFriendAliasRequest(cmd)
+	if err != nil {
+		return fmt.Errorf("parse friend alias: %w", err)
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open friend store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	friendFacade := facade.NewFriendFacade(nil, opened.Store)
+	resp, err := friendFacade.UpdateAlias(ctx, req)
+	if err != nil {
+		return fmt.Errorf("update friend alias: %w", err)
+	}
+	return renderFriendList(
+		stdout,
+		&facade.ListFriendsResponse{Friends: []*model.Friend{resp.Friend}, UserID: resp.UserID},
+		cmd.String("format"),
+	)
+}
+
 func friendRemove(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
 	req, err := parseRemoveFriendRequest(cmd)
 	if err != nil {
@@ -2008,6 +2045,24 @@ func parseAcceptFriendRequest(cmd *cli.Command) (*facade.AcceptFriendRequest, er
 	return &facade.AcceptFriendRequest{
 		FriendID: friendID,
 		Alias:    strings.TrimSpace(cmd.String("alias")),
+	}, nil
+}
+
+func parseUpdateFriendAliasRequest(cmd *cli.Command) (*facade.UpdateFriendAliasRequest, error) {
+	friendID := strings.TrimSpace(cmd.Args().First())
+	if friendID == "" {
+		return nil, fmt.Errorf("friend id is required")
+	}
+	alias := strings.TrimSpace(cmd.Args().Get(1))
+	if alias == "" {
+		return nil, fmt.Errorf("alias is required")
+	}
+	if err := validateFormat(cmd.String("format"), "table", "jsonl"); err != nil {
+		return nil, err
+	}
+	return &facade.UpdateFriendAliasRequest{
+		FriendID: friendID,
+		Alias:    alias,
 	}, nil
 }
 

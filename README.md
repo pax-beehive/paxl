@@ -197,6 +197,7 @@ raw email address; `--to` must be a friend alias such as `@alice`.
 ```sh
 paxl friend request alice@example.com --alias alice
 # after Alice accepts the friend request
+paxl friend alias <friend-id> alice
 paxl capsule send <capsule-id> --to @alice --message "please review"
 paxl outbox list
 paxl inbox list
@@ -549,6 +550,7 @@ Manage friends:
 ```sh
 paxl friend list
 paxl friend accept <friend-id> --alias alice
+paxl friend alias <friend-id> alice
 paxl friend remove <friend-id>
 paxl friend block <friend-id>
 ```
