@@ -721,7 +721,6 @@ func (s *RegistrySuite) TestPiAdapterPromptsThroughCLIResume() {
 	if runtime.GOOS == "windows" {
 		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
 	}
-	s.T().Setenv("PAXL_PI_BRIDGE_DIR", filepath.Join(s.T().TempDir(), "missing-bridge"))
 	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
 	argsPath := filepath.Join(s.T().TempDir(), "args.txt")
 	s.installArgCapturingFakeCommand("pi", capturePath, argsPath)
