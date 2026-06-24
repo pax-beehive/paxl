@@ -81,6 +81,7 @@ func newCommandWithDiagnostics(
 			newLoginCommand(stdout),
 			newWhoamiCommand(stdout),
 			newLogoutCommand(stdout),
+			newNodeCommand(stdout),
 			newAgentCommand(agentFacade, stdout, stderr, diagnostics),
 			newSessionCommand(stdout, stderr, diagnostics),
 			newCapsuleCommand(stdout, stderr, diagnostics),
@@ -143,6 +144,25 @@ func newLogoutCommand(stdout io.Writer) *cli.Command {
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			return logoutCommand(ctx, cmd, stdout)
+		},
+	}
+}
+
+func newNodeCommand(stdout io.Writer) *cli.Command {
+	return &cli.Command{
+		Name:  "node",
+		Usage: "Inspect pax-manager nodes for the logged-in user",
+		Commands: []*cli.Command{
+			{
+				Name:  "list",
+				Usage: "List nodes visible to the logged-in user",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "format", Value: "table", Usage: "Output format: table or jsonl"},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return nodeList(ctx, cmd, stdout)
+				},
+			},
 		},
 	}
 }
@@ -1033,6 +1053,20 @@ func logoutCommand(ctx context.Context, cmd *cli.Command, stdout io.Writer) erro
 		return err
 	}
 	return renderLogout(stdout, resp, cmd.String("format"))
+}
+
+func nodeList(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open session store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	nodeFacade := facade.NewNodeFacade(authHTTPClient, opened.Store)
+	resp, err := nodeFacade.List(ctx, &facade.ListNodesRequest{})
+	if err != nil {
+		return fmt.Errorf("list nodes: %w", err)
+	}
+	return renderNodeList(stdout, resp, cmd.String("format"))
 }
 
 func sessionList(
@@ -2861,6 +2895,72 @@ func renderLogout(stdout io.Writer, resp *facade.LogoutResponse, format string) 
 	default:
 		return fmt.Errorf("unsupported format %q", format)
 	}
+}
+
+func renderNodeList(stdout io.Writer, resp *facade.ListNodesResponse, format string) error {
+	switch format {
+	case "table":
+		writer := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		if _, err := fmt.Fprintln(
+			writer,
+			"ID\tKIND\tNAME\tHOSTNAME\tSTATUS\tCURRENT\tREGISTERED",
+		); err != nil {
+			return fmt.Errorf("write node list header: %w", err)
+		}
+		for _, node := range resp.Nodes {
+			current := ""
+			if node.NodeID == resp.CurrentNodeID {
+				current = "*"
+			}
+			if _, err := fmt.Fprintf(
+				writer,
+				"%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				node.NodeID,
+				firstNonEmpty(node.Kind, "-"),
+				firstNonEmpty(node.Name, "-"),
+				firstNonEmpty(node.Hostname, "-"),
+				firstNonEmpty(node.Status, "-"),
+				current,
+				firstNonEmpty(node.RegisteredAt, "-"),
+			); err != nil {
+				return fmt.Errorf("write node row: %w", err)
+			}
+		}
+		return writer.Flush()
+	case "jsonl":
+		for _, node := range resp.Nodes {
+			if err := encodeNodeJSONL(stdout, node, node.NodeID == resp.CurrentNodeID); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func encodeNodeJSONL(stdout io.Writer, node *model.Node, current bool) error {
+	if err := json.NewEncoder(stdout).Encode(map[string]any{
+		"schemaVersion": "paxl.node.v1",
+		"nodeId":        node.NodeID,
+		"ownerUserId":   node.OwnerUserID,
+		"kind":          node.Kind,
+		"name":          node.Name,
+		"hostname":      node.Hostname,
+		"machineType":   node.MachineType,
+		"os":            node.OS,
+		"arch":          node.Arch,
+		"paxdVersion":   node.PaxdVersion,
+		"apiEndpoint":   node.APIEndpoint,
+		"status":        node.Status,
+		"online":        node.Online,
+		"current":       current,
+		"registeredAt":  node.RegisteredAt,
+		"lastHeartbeat": node.LastHeartbeat,
+	}); err != nil {
+		return fmt.Errorf("encode node: %w", err)
+	}
+	return nil
 }
 
 func updateStatusText(status facade.UpdateStatus) string {

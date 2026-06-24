@@ -304,6 +304,73 @@ func (s *CommandSuite) TestUpdateCommandExposesCheck() {
 	s.True(hasCommand(command, "check"))
 }
 
+func (s *CommandSuite) TestNodeListUsesManagerNodes() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	s.seedManagerCredential(dbPath, "https://manager.example")
+	oldClient := authHTTPClient
+	authHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		s.Equal(http.MethodGet, req.Method)
+		s.Equal("/api/v1/user/usr_1/nodes", req.URL.Path)
+		s.Equal("Bearer paxu_test", req.Header.Get("Authorization"))
+		return commandJSONResponse(`{
+			"data":{
+				"nodes":[{
+					"node_id":"node_paxl",
+					"kind":"paxl",
+					"name":"paxl-mac",
+					"hostname":"paxl-mac",
+					"status":"offline",
+					"registered_at":"2026-06-24T00:00:00Z"
+				},{
+					"node_id":"node_paxd",
+					"kind":"paxd",
+					"name":"workstation",
+					"hostname":"workstation",
+					"status":"online",
+					"registered_at":"2026-06-23T00:00:00Z"
+				}]
+			},
+			"code":200,
+			"message":"ok"
+		}`), nil
+	})
+	s.T().Cleanup(func() { authHTTPClient = oldClient })
+
+	err := run(context.Background(), []string{"--db", dbPath, "node", "list"}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "node_paxl")
+	s.Contains(s.stdout.String(), "paxl")
+	s.Contains(s.stdout.String(), "*")
+	s.Contains(s.stdout.String(), "node_paxd")
+}
+
+func (s *CommandSuite) TestNodeListSupportsJSONL() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	s.seedManagerCredential(dbPath, "https://manager.example")
+	oldClient := authHTTPClient
+	authHTTPClient = commandRoundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return commandJSONResponse(`{
+			"data":{"nodes":[{"node_id":"node_paxl","kind":"paxl","status":"offline"}]},
+			"code":200,
+			"message":"ok"
+		}`), nil
+	})
+	s.T().Cleanup(func() { authHTTPClient = oldClient })
+
+	err := run(
+		context.Background(),
+		[]string{"--db", dbPath, "node", "list", "--format", "jsonl"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"schemaVersion":"paxl.node.v1"`)
+	s.Contains(s.stdout.String(), `"nodeId":"node_paxl"`)
+	s.Contains(s.stdout.String(), `"current":true`)
+}
+
 func (s *CommandSuite) TestAuthCommandsLoginWhoamiAndLogout() {
 	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
 	var deleteCalled bool
@@ -2480,6 +2547,7 @@ func (s *CommandSuite) seedManagerCredential(dbPath string, managerURL string) {
 		Credential: &model.AuthCredential{
 			ManagerURL:  managerURL,
 			APIKey:      "paxu_test",
+			NodeID:      "node_paxl",
 			UserID:      "usr_1",
 			Email:       "me@example.com",
 			DisplayName: "Me",
