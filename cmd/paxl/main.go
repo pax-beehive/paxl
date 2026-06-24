@@ -2824,6 +2824,11 @@ func renderWhoami(stdout io.Writer, resp *facade.WhoamiResponse, format string) 
 		if _, err := fmt.Fprintf(stdout, "user_id %s\n", resp.User.UserID); err != nil {
 			return fmt.Errorf("write whoami user id: %w", err)
 		}
+		if resp.Credential != nil && resp.Credential.NodeID != "" {
+			if _, err := fmt.Fprintf(stdout, "node_id %s\n", resp.Credential.NodeID); err != nil {
+				return fmt.Errorf("write whoami node id: %w", err)
+			}
+		}
 		return nil
 	case "json":
 		if err := json.NewEncoder(stdout).Encode(resp); err != nil {

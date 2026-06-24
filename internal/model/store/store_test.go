@@ -72,6 +72,7 @@ func (s *StoreSuite) TestAuthCredentialLifecycle() {
 			ManagerURL:   "https://manager.example",
 			APIKey:       "paxu_test",
 			UserAPIKeyID: "key-1",
+			NodeID:       "node_paxl",
 			UserID:       "usr_1",
 			Email:        "cli@example.com",
 			DisplayName:  "CLI",
@@ -85,6 +86,7 @@ func (s *StoreSuite) TestAuthCredentialLifecycle() {
 	s.Require().NotNil(got.Credential)
 	s.Equal("https://manager.example", got.Credential.ManagerURL)
 	s.Equal("paxu_test", got.Credential.APIKey)
+	s.Equal("node_paxl", got.Credential.NodeID)
 
 	_, err = s.store.DeleteAuthCredential(s.ctx)
 	s.Require().NoError(err)
@@ -113,6 +115,7 @@ func (s *StoreSuite) TestGetAuthCredentialScansNullableOptionalFields() {
 	s.Require().NoError(err)
 	s.Require().NotNil(got.Credential)
 	s.Empty(got.Credential.UserAPIKeyID)
+	s.Empty(got.Credential.NodeID)
 	s.Empty(got.Credential.DisplayName)
 	s.Empty(got.Credential.Role)
 }

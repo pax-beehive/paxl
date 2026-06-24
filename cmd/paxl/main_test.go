@@ -332,6 +332,7 @@ func (s *CommandSuite) TestAuthCommandsLoginWhoamiAndLogout() {
 				"data":{
 					"status":"approved",
 					"api_key":"paxu_test",
+					"node_id":"node_paxl",
 					"api_key_meta":{"key_id":"key-1"},
 					"user":{"user_id":"usr_1","email":"cli@example.com","display_name":"CLI","role":"user"}
 				},
@@ -380,6 +381,7 @@ func (s *CommandSuite) TestAuthCommandsLoginWhoamiAndLogout() {
 	err = run(context.Background(), []string{"--db", dbPath, "whoami"}, &s.stdout, &s.stderr)
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), "user cli@example.com")
+	s.Contains(s.stdout.String(), "node_id node_paxl")
 	s.stdout.Reset()
 
 	err = run(context.Background(), []string{"--db", dbPath, "logout"}, &s.stdout, &s.stderr)

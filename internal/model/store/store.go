@@ -188,22 +188,23 @@ func (s *Store) SaveAuthCredential(
 	credential.UpdatedAt = now
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO auth_credentials (
-			id, manager_url, api_key, user_api_key_id, user_id, email, display_name,
+			id, manager_url, api_key, user_api_key_id, node_id, user_id, email, display_name,
 			role, created_at, updated_at
 		)
-		VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			manager_url = excluded.manager_url,
 			api_key = excluded.api_key,
 			user_api_key_id = excluded.user_api_key_id,
+			node_id = excluded.node_id,
 			user_id = excluded.user_id,
 			email = excluded.email,
 			display_name = excluded.display_name,
 			role = excluded.role,
 			updated_at = excluded.updated_at
-	`, credential.ManagerURL, credential.APIKey, credential.UserAPIKeyID, credential.UserID,
-		credential.Email, credential.DisplayName, credential.Role, credential.CreatedAt,
-		credential.UpdatedAt)
+	`, credential.ManagerURL, credential.APIKey, credential.UserAPIKeyID, credential.NodeID,
+		credential.UserID, credential.Email, credential.DisplayName, credential.Role,
+		credential.CreatedAt, credential.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("save auth credential: %w", err)
 	}
@@ -212,17 +213,18 @@ func (s *Store) SaveAuthCredential(
 
 func (s *Store) GetAuthCredential(ctx context.Context) (*GetAuthCredentialResponse, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT manager_url, api_key, user_api_key_id, user_id, email, display_name,
+		SELECT manager_url, api_key, user_api_key_id, node_id, user_id, email, display_name,
 			role, created_at, updated_at
 		FROM auth_credentials
 		WHERE id = 'default'
 	`)
 	credential := &model.AuthCredential{}
-	var userAPIKeyID, displayName, role sql.NullString
+	var userAPIKeyID, nodeID, displayName, role sql.NullString
 	err := row.Scan(
 		&credential.ManagerURL,
 		&credential.APIKey,
 		&userAPIKeyID,
+		&nodeID,
 		&credential.UserID,
 		&credential.Email,
 		&displayName,
@@ -237,6 +239,7 @@ func (s *Store) GetAuthCredential(ctx context.Context) (*GetAuthCredentialRespon
 		return nil, fmt.Errorf("get auth credential: %w", err)
 	}
 	credential.UserAPIKeyID = userAPIKeyID.String
+	credential.NodeID = nodeID.String
 	credential.DisplayName = displayName.String
 	credential.Role = role.String
 	return &GetAuthCredentialResponse{Credential: credential}, nil
@@ -636,6 +639,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		manager_url TEXT NOT NULL,
 		api_key TEXT NOT NULL,
 		user_api_key_id TEXT,
+		node_id TEXT,
 		user_id TEXT NOT NULL,
 		email TEXT NOT NULL,
 		display_name TEXT,
@@ -652,6 +656,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		column     string
 		definition string
 	}{
+		{table: "auth_credentials", column: "node_id", definition: "node_id TEXT"},
 		{table: "knowledge_capsules", column: "source_node_id", definition: "source_node_id TEXT"},
 		{
 			table:      "session_knowledge_injections",
@@ -1075,7 +1080,8 @@ func ensureColumn(
 
 func knownMigrationColumn(table string, column string) bool {
 	switch table + "." + column {
-	case "knowledge_capsules.source_node_id",
+	case "auth_credentials.node_id",
+		"knowledge_capsules.source_node_id",
 		"session_knowledge_injections.source_node_id",
 		"session_knowledge_injections.source_agent",
 		"session_knowledge_injections.source_session_id",

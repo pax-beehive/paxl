@@ -60,6 +60,7 @@ func (s *AuthFacadeSuite) TestLoginWhoamiAndLogoutUseStoredBearerCredential() {
 				"data":{
 					"status":"approved",
 					"api_key":"paxu_test",
+					"node_id":"node_paxl",
 					"api_key_meta":{"key_id":"key-1"},
 					"user":{"user_id":"usr_1","email":"cli@example.com","display_name":"CLI","role":"user"}
 				},
@@ -93,10 +94,12 @@ func (s *AuthFacadeSuite) TestLoginWhoamiAndLogoutUseStoredBearerCredential() {
 	s.Require().NoError(err)
 	s.Equal("ABC123", login.UserCode)
 	s.Equal("cli@example.com", login.Credential.Email)
+	s.Equal("node_paxl", login.Credential.NodeID)
 
 	whoami, err := authFacade.Whoami(s.ctx)
 	s.Require().NoError(err)
 	s.Equal("cli@example.com", whoami.User.Email)
+	s.Equal("node_paxl", whoami.Credential.NodeID)
 
 	logout, err := authFacade.Logout(s.ctx)
 	s.Require().NoError(err)

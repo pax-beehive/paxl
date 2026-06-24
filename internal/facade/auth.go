@@ -81,6 +81,7 @@ type deviceLoginStartResponse struct {
 type deviceLoginPollResponse struct {
 	Status    string      `json:"status"`
 	APIKey    string      `json:"api_key"`
+	NodeID    string      `json:"node_id"`
 	User      *AuthUser   `json:"user"`
 	APIKeyRef *apiKeyMeta `json:"api_key_meta"`
 }
@@ -160,6 +161,7 @@ func (f *AuthFacade) Login(
 				DisplayName:  poll.User.DisplayName,
 				Role:         poll.User.Role,
 				UserAPIKeyID: apiKeyID(poll.APIKeyRef),
+				NodeID:       poll.NodeID,
 			}
 			if _, err := f.store.SaveAuthCredential(
 				pollCtx,
