@@ -127,17 +127,31 @@ func (f *NodeFacade) ListSessions(
 	}]
 	nodeID := strings.TrimSpace(req.NodeID)
 	agentID := strings.TrimSpace(req.AgentID)
-	if err := f.auth.managerJSON(
+	err = f.auth.managerJSON(
 		ctx,
 		http.MethodGet,
 		credential.ManagerURL,
-		userNodePath(credential.UserID)+"/"+url.PathEscape(nodeID)+
-			"/agents/"+url.PathEscape(agentID)+"/sessions",
+		nodeAgentSessionsPath(credential.UserID, nodeID, agentID),
 		credential.APIKey,
 		nil,
 		&envelope,
-	); err != nil {
-		return nil, err
+	)
+	if err != nil {
+		if !strings.Contains(err.Error(), "manager returned HTTP 404") {
+			return nil, err
+		}
+		if fallbackErr := f.auth.managerJSON(
+			ctx,
+			http.MethodGet,
+			credential.ManagerURL,
+			legacyAgentSessionsPath(agentID),
+			credential.APIKey,
+			nil,
+			&envelope,
+		); fallbackErr != nil {
+			return nil, err
+		}
+		envelope.Data.Sessions = filterNodeSessions(envelope.Data.Sessions, nodeID)
 	}
 	return &ListNodeSessionsResponse{
 		Sessions: envelope.Data.Sessions,
@@ -148,4 +162,26 @@ func (f *NodeFacade) ListSessions(
 
 func userNodePath(userID string) string {
 	return "/api/v1/user/" + url.PathEscape(userID) + "/nodes"
+}
+
+func nodeAgentSessionsPath(userID string, nodeID string, agentID string) string {
+	return userNodePath(userID) + "/" + url.PathEscape(nodeID) + "/agents/" +
+		url.PathEscape(agentID) + "/sessions"
+}
+
+func legacyAgentSessionsPath(agentID string) string {
+	return "/api/user/agents/" + url.PathEscape(agentID) + "/sessions"
+}
+
+func filterNodeSessions(sessions []*model.NodeSession, nodeID string) []*model.NodeSession {
+	filtered := make([]*model.NodeSession, 0, len(sessions))
+	for _, session := range sessions {
+		if session == nil {
+			continue
+		}
+		if session.NodeID == "" || session.NodeID == nodeID {
+			filtered = append(filtered, session)
+		}
+	}
+	return filtered
 }

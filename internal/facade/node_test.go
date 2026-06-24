@@ -134,6 +134,64 @@ func (s *NodeFacadeSuite) TestListSessionsFetchesNodeAgentSessions() {
 	s.Equal("sess_1", resp.Sessions[0].SessionID)
 }
 
+func (s *NodeFacadeSuite) TestListSessionsFallsBackToLegacyAgentSessions() {
+	requests := 0
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		s.Equal(http.MethodGet, req.Method)
+		s.Equal("Bearer paxu_test", req.Header.Get("Authorization"))
+		switch req.URL.Path {
+		case "/api/v1/user/usr_1/nodes/node_1/agents/agent_1/sessions":
+			resp := jsonResponse(`{"message":"not found"}`)
+			resp.StatusCode = http.StatusNotFound
+			return resp, nil
+		case "/api/user/agents/agent_1/sessions":
+			return jsonResponse(`{
+				"data":{"sessions":[
+					{
+						"node_id":"node_1",
+						"agent_id":"agent_1",
+						"session_id":"sess_1",
+						"name":"Debugging",
+						"status":"active"
+					},
+					{
+						"node_id":"node_2",
+						"agent_id":"agent_1",
+						"session_id":"sess_other",
+						"name":"Other",
+						"status":"active"
+					},
+					{
+						"agent_id":"agent_1",
+						"session_id":"sess_legacy",
+						"name":"Legacy",
+						"status":"idle"
+					}
+				]},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL.Path)
+		}
+	})
+	nodeFacade := NewNodeFacade(client, s.store)
+
+	resp, err := nodeFacade.ListSessions(
+		s.ctx,
+		&ListNodeSessionsRequest{NodeID: "node_1", AgentID: "agent_1"},
+	)
+
+	s.Require().NoError(err)
+	s.Equal(2, requests)
+	s.Equal("node_1", resp.NodeID)
+	s.Equal("agent_1", resp.AgentID)
+	s.Require().Len(resp.Sessions, 2)
+	s.Equal("sess_1", resp.Sessions[0].SessionID)
+	s.Equal("sess_legacy", resp.Sessions[1].SessionID)
+}
+
 func (s *NodeFacadeSuite) seedCredential() {
 	_, err := s.store.SaveAuthCredential(s.ctx, &store.SaveAuthCredentialRequest{
 		Credential: &model.AuthCredential{
