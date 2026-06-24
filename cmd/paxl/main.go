@@ -163,6 +163,48 @@ func newNodeCommand(stdout io.Writer) *cli.Command {
 					return nodeList(ctx, cmd, stdout)
 				},
 			},
+			{
+				Name:  "agent",
+				Usage: "Inspect remote agents hosted by a node",
+				Commands: []*cli.Command{
+					{
+						Name:      "list",
+						Usage:     "List remote agents hosted by a node",
+						ArgsUsage: "<node-id>",
+						Flags: []cli.Flag{
+							&cli.StringFlag{
+								Name:  "format",
+								Value: "table",
+								Usage: "Output format: table or jsonl",
+							},
+						},
+						Action: func(ctx context.Context, cmd *cli.Command) error {
+							return nodeAgentList(ctx, cmd, stdout)
+						},
+					},
+				},
+			},
+			{
+				Name:  "session",
+				Usage: "Inspect remote sessions hosted by a node agent",
+				Commands: []*cli.Command{
+					{
+						Name:      "list",
+						Usage:     "List remote sessions for a node agent",
+						ArgsUsage: "<node-id> <agent-id>",
+						Flags: []cli.Flag{
+							&cli.StringFlag{
+								Name:  "format",
+								Value: "table",
+								Usage: "Output format: table or jsonl",
+							},
+						},
+						Action: func(ctx context.Context, cmd *cli.Command) error {
+							return nodeSessionList(ctx, cmd, stdout)
+						},
+					},
+				},
+			},
 		},
 	}
 }
@@ -1067,6 +1109,46 @@ func nodeList(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
 		return fmt.Errorf("list nodes: %w", err)
 	}
 	return renderNodeList(stdout, resp, cmd.String("format"))
+}
+
+func nodeAgentList(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	nodeID := cmd.Args().First()
+	if nodeID == "" {
+		return fmt.Errorf("node id is required")
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open session store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	nodeFacade := facade.NewNodeFacade(authHTTPClient, opened.Store)
+	resp, err := nodeFacade.ListAgents(ctx, &facade.ListNodeAgentsRequest{NodeID: nodeID})
+	if err != nil {
+		return fmt.Errorf("list node agents: %w", err)
+	}
+	return renderNodeAgentList(stdout, resp, cmd.String("format"))
+}
+
+func nodeSessionList(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	nodeID := cmd.Args().First()
+	agentID := cmd.Args().Get(1)
+	if nodeID == "" || agentID == "" {
+		return fmt.Errorf("node id and agent id are required")
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open session store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	nodeFacade := facade.NewNodeFacade(authHTTPClient, opened.Store)
+	resp, err := nodeFacade.ListSessions(ctx, &facade.ListNodeSessionsRequest{
+		NodeID:  nodeID,
+		AgentID: agentID,
+	})
+	if err != nil {
+		return fmt.Errorf("list node sessions: %w", err)
+	}
+	return renderNodeSessionList(stdout, resp, cmd.String("format"))
 }
 
 func sessionList(
@@ -2959,6 +3041,135 @@ func encodeNodeJSONL(stdout io.Writer, node *model.Node, current bool) error {
 		"lastHeartbeat": node.LastHeartbeat,
 	}); err != nil {
 		return fmt.Errorf("encode node: %w", err)
+	}
+	return nil
+}
+
+func renderNodeAgentList(
+	stdout io.Writer,
+	resp *facade.ListNodeAgentsResponse,
+	format string,
+) error {
+	switch format {
+	case "table":
+		writer := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		if _, err := fmt.Fprintln(
+			writer,
+			"ID\tNODE\tTYPE\tNAME\tSTATUS\tREGISTERED",
+		); err != nil {
+			return fmt.Errorf("write node agent list header: %w", err)
+		}
+		for _, agent := range resp.Agents {
+			if _, err := fmt.Fprintf(
+				writer,
+				"%s\t%s\t%s\t%s\t%s\t%s\n",
+				agent.AgentID,
+				firstNonEmpty(agent.NodeID, resp.NodeID, "-"),
+				firstNonEmpty(agent.AgentType, "-"),
+				firstNonEmpty(agent.Name, "-"),
+				firstNonEmpty(agent.Status, "-"),
+				firstNonEmpty(agent.RegisteredAt, "-"),
+			); err != nil {
+				return fmt.Errorf("write node agent row: %w", err)
+			}
+		}
+		return writer.Flush()
+	case "jsonl":
+		for _, agent := range resp.Agents {
+			if err := encodeNodeAgentJSONL(stdout, agent); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func encodeNodeAgentJSONL(stdout io.Writer, agent *model.NodeAgent) error {
+	if err := json.NewEncoder(stdout).Encode(map[string]any{
+		"schemaVersion": "paxl.node_agent.v1",
+		"agentId":       agent.AgentID,
+		"nodeId":        agent.NodeID,
+		"ownerUserId":   agent.OwnerUserID,
+		"name":          agent.Name,
+		"agentType":     agent.AgentType,
+		"status":        agent.Status,
+		"online":        agent.Online,
+		"registeredAt":  agent.RegisteredAt,
+		"lastHeartbeat": agent.LastHeartbeat,
+	}); err != nil {
+		return fmt.Errorf("encode node agent: %w", err)
+	}
+	return nil
+}
+
+func renderNodeSessionList(
+	stdout io.Writer,
+	resp *facade.ListNodeSessionsResponse,
+	format string,
+) error {
+	switch format {
+	case "table":
+		writer := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		if _, err := fmt.Fprintln(
+			writer,
+			"ID\tNODE\tAGENT\tNAME\tSTATUS\tUPDATED\tPREVIEW",
+		); err != nil {
+			return fmt.Errorf("write node session list header: %w", err)
+		}
+		for _, session := range resp.Sessions {
+			if _, err := fmt.Fprintf(
+				writer,
+				"%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				session.SessionID,
+				firstNonEmpty(session.NodeID, resp.NodeID, "-"),
+				firstNonEmpty(session.AgentID, resp.AgentID, "-"),
+				firstNonEmpty(session.Name, "-"),
+				firstNonEmpty(session.Status, "-"),
+				firstNonEmpty(session.UpdatedAt, session.LastMessageAt, "-"),
+				firstNonEmpty(session.Preview, "-"),
+			); err != nil {
+				return fmt.Errorf("write node session row: %w", err)
+			}
+		}
+		return writer.Flush()
+	case "jsonl":
+		for _, session := range resp.Sessions {
+			if err := encodeNodeSessionJSONL(stdout, session); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func encodeNodeSessionJSONL(stdout io.Writer, session *model.NodeSession) error {
+	if err := json.NewEncoder(stdout).Encode(map[string]any{
+		"schemaVersion":  "paxl.node_session.v1",
+		"id":             session.ID,
+		"nodeId":         session.NodeID,
+		"agentId":        session.AgentID,
+		"sessionId":      session.SessionID,
+		"name":           session.Name,
+		"agentType":      session.AgentType,
+		"projectId":      session.ProjectID,
+		"preview":        session.Preview,
+		"workspaceRoots": session.WorkspaceRoots,
+		"source":         session.Source,
+		"status":         session.Status,
+		"currentTask":    session.CurrentTask,
+		"lastMessageAt":  session.LastMessageAt,
+		"messageCount":   session.MessageCount,
+		"model":          session.Model,
+		"runId":          session.RunID,
+		"runStatus":      session.RunStatus,
+		"createdAt":      session.CreatedAt,
+		"updatedAt":      session.UpdatedAt,
+	}); err != nil {
+		return fmt.Errorf("encode node session: %w", err)
 	}
 	return nil
 }

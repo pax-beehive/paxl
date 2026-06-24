@@ -71,6 +71,69 @@ func (s *NodeFacadeSuite) TestListFetchesUserNodes() {
 	s.Equal("paxl", resp.Nodes[0].Kind)
 }
 
+func (s *NodeFacadeSuite) TestListAgentsFetchesNodeAgents() {
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet ||
+			req.URL.Path != "/api/v1/user/usr_1/nodes/node_1/agents" {
+			return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL.Path)
+		}
+		s.Equal("Bearer paxu_test", req.Header.Get("Authorization"))
+		return jsonResponse(`{
+			"data":{"agents":[{
+				"agent_id":"agent_1",
+				"node_id":"node_1",
+				"name":"hermes",
+				"agent_type":"hermes",
+				"status":"online"
+			}]},
+			"code":200,
+			"message":"ok"
+		}`), nil
+	})
+	nodeFacade := NewNodeFacade(client, s.store)
+
+	resp, err := nodeFacade.ListAgents(s.ctx, &ListNodeAgentsRequest{NodeID: "node_1"})
+
+	s.Require().NoError(err)
+	s.Equal("node_1", resp.NodeID)
+	s.Require().Len(resp.Agents, 1)
+	s.Equal("agent_1", resp.Agents[0].AgentID)
+}
+
+func (s *NodeFacadeSuite) TestListSessionsFetchesNodeAgentSessions() {
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet ||
+			req.URL.Path != "/api/v1/user/usr_1/nodes/node_1/agents/agent_1/sessions" {
+			return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL.Path)
+		}
+		s.Equal("Bearer paxu_test", req.Header.Get("Authorization"))
+		return jsonResponse(`{
+			"data":{"sessions":[{
+				"node_id":"node_1",
+				"agent_id":"agent_1",
+				"session_id":"sess_1",
+				"name":"Debugging",
+				"status":"active",
+				"preview":"Investigating"
+			}]},
+			"code":200,
+			"message":"ok"
+		}`), nil
+	})
+	nodeFacade := NewNodeFacade(client, s.store)
+
+	resp, err := nodeFacade.ListSessions(
+		s.ctx,
+		&ListNodeSessionsRequest{NodeID: "node_1", AgentID: "agent_1"},
+	)
+
+	s.Require().NoError(err)
+	s.Equal("node_1", resp.NodeID)
+	s.Equal("agent_1", resp.AgentID)
+	s.Require().Len(resp.Sessions, 1)
+	s.Equal("sess_1", resp.Sessions[0].SessionID)
+}
+
 func (s *NodeFacadeSuite) seedCredential() {
 	_, err := s.store.SaveAuthCredential(s.ctx, &store.SaveAuthCredentialRequest{
 		Credential: &model.AuthCredential{

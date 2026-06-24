@@ -371,6 +371,107 @@ func (s *CommandSuite) TestNodeListSupportsJSONL() {
 	s.Contains(s.stdout.String(), `"current":true`)
 }
 
+func (s *CommandSuite) TestNodeAgentListUsesManagerNodeAgents() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	s.seedManagerCredential(dbPath, "https://manager.example")
+	oldClient := authHTTPClient
+	authHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		s.Equal(http.MethodGet, req.Method)
+		s.Equal("/api/v1/user/usr_1/nodes/node_1/agents", req.URL.Path)
+		s.Equal("Bearer paxu_test", req.Header.Get("Authorization"))
+		return commandJSONResponse(`{
+			"data":{"agents":[{
+				"agent_id":"agent_1",
+				"node_id":"node_1",
+				"name":"hermes",
+				"agent_type":"hermes",
+				"status":"online",
+				"registered_at":"2026-06-24T00:00:00Z"
+			}]},
+			"code":200,
+			"message":"ok"
+		}`), nil
+	})
+	s.T().Cleanup(func() { authHTTPClient = oldClient })
+
+	err := run(
+		context.Background(),
+		[]string{"--db", dbPath, "node", "agent", "list", "node_1"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "agent_1")
+	s.Contains(s.stdout.String(), "hermes")
+	s.Contains(s.stdout.String(), "online")
+}
+
+func (s *CommandSuite) TestNodeSessionListUsesManagerNodeSessions() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	s.seedManagerCredential(dbPath, "https://manager.example")
+	oldClient := authHTTPClient
+	authHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		s.Equal(http.MethodGet, req.Method)
+		s.Equal("/api/v1/user/usr_1/nodes/node_1/agents/agent_1/sessions", req.URL.Path)
+		s.Equal("Bearer paxu_test", req.Header.Get("Authorization"))
+		return commandJSONResponse(`{
+			"data":{"sessions":[{
+				"node_id":"node_1",
+				"agent_id":"agent_1",
+				"session_id":"sess_1",
+				"name":"Debugging",
+				"status":"active",
+				"preview":"Investigating",
+				"updated_at":"2026-06-24T00:00:00Z"
+			}]},
+			"code":200,
+			"message":"ok"
+		}`), nil
+	})
+	s.T().Cleanup(func() { authHTTPClient = oldClient })
+
+	err := run(
+		context.Background(),
+		[]string{"--db", dbPath, "node", "session", "list", "node_1", "agent_1"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "sess_1")
+	s.Contains(s.stdout.String(), "Debugging")
+	s.Contains(s.stdout.String(), "Investigating")
+}
+
+func (s *CommandSuite) TestNodeSessionListSupportsJSONL() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	s.seedManagerCredential(dbPath, "https://manager.example")
+	oldClient := authHTTPClient
+	authHTTPClient = commandRoundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return commandJSONResponse(`{
+			"data":{"sessions":[{"session_id":"sess_1","node_id":"node_1","agent_id":"agent_1"}]},
+			"code":200,
+			"message":"ok"
+		}`), nil
+	})
+	s.T().Cleanup(func() { authHTTPClient = oldClient })
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath, "node", "session", "list", "node_1", "agent_1",
+			"--format", "jsonl",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"schemaVersion":"paxl.node_session.v1"`)
+	s.Contains(s.stdout.String(), `"sessionId":"sess_1"`)
+}
+
 func (s *CommandSuite) TestAuthCommandsLoginWhoamiAndLogout() {
 	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
 	var deleteCalled bool
