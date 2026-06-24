@@ -108,6 +108,42 @@ func (s *FriendFacadeSuite) TestAcceptPostsAlias() {
 	s.Equal("alice", resp.Friend.RecipientAlias)
 }
 
+func (s *FriendFacadeSuite) TestUpdateAliasPostsAliasAction() {
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		s.Equal(http.MethodPost, req.Method)
+		s.Equal("/api/v1/user/usr_1/friends/fr_1/alias", req.URL.Path)
+		body, err := io.ReadAll(req.Body)
+		s.Require().NoError(err)
+		s.Contains(string(body), `"alias":"teammate"`)
+		return jsonResponse(`{
+			"data":{
+				"friend":{
+					"friend_id":"fr_1",
+					"requester_user_id":"usr_1",
+					"requester_email":"cli@example.com",
+					"requester_alias":"teammate",
+					"recipient_email":"bob@example.com",
+					"status":"accepted",
+					"created_at":"2026-06-22T00:00:00Z",
+					"accepted_at":"2026-06-22T00:01:00Z"
+				}
+			},
+			"code":200,
+			"message":"ok"
+		}`), nil
+	})
+	friendFacade := NewFriendFacade(client, s.store)
+
+	resp, err := friendFacade.UpdateAlias(
+		s.ctx,
+		&UpdateFriendAliasRequest{FriendID: "fr_1", Alias: "@teammate"},
+	)
+
+	s.Require().NoError(err)
+	s.Equal("accepted", resp.Friend.Status)
+	s.Equal("teammate", resp.Friend.RequesterAlias)
+}
+
 func (s *FriendFacadeSuite) TestGetFetchesFriendByID() {
 	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		s.Equal(http.MethodGet, req.Method)

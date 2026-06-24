@@ -1318,7 +1318,7 @@ func (s *CommandSuite) TestOutboxCommandExposesEnvelopeSubcommands() {
 }
 
 func (s *CommandSuite) TestFriendCommandExposesSubcommands() {
-	cases := []string{"request", "list", "accept", "remove", "block"}
+	cases := []string{"request", "list", "accept", "alias", "remove", "block"}
 	command := findCommand(newCommand(&s.stdout, &s.stderr), "friend")
 	s.Require().NotNil(command)
 
@@ -1731,6 +1731,15 @@ func (s *CommandSuite) TestFriendCommandsUseManagerFriends() {
 			s.Require().NoError(err)
 			s.Contains(string(body), `"alias":"bob"`)
 			return commandJSONResponse(friendCommandResponse("accepted")), nil
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/user/usr_1/friends/fr_1/alias":
+			body, err := io.ReadAll(req.Body)
+			s.Require().NoError(err)
+			s.Contains(string(body), `"alias":"teammate"`)
+			return commandJSONResponse(friendCommandResponseWithAliases(
+				"accepted",
+				"alice",
+				"teammate",
+			)), nil
 		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/user/usr_1/friends/fr_1/remove":
 			return commandJSONResponse(friendCommandResponse("removed")), nil
 		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/user/usr_1/friends/fr_1/block":
@@ -1774,6 +1783,16 @@ func (s *CommandSuite) TestFriendCommandsUseManagerFriends() {
 	)
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), "accepted")
+
+	s.SetupTest()
+	err = run(
+		context.Background(),
+		[]string{"--db", dbPath, "friend", "alias", "fr_1", "@teammate"},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "teammate")
 
 	s.SetupTest()
 	err = run(
@@ -2332,6 +2351,12 @@ func (s *CommandSuite) TestFriendCommandsRejectInvalidRequestsBeforeIO() {
 			name: "accept unknown format",
 			args: []string{"friend", "accept", "fr_1", "--format", "xml"},
 		},
+		{name: "alias missing friend", args: []string{"friend", "alias"}},
+		{name: "alias missing alias", args: []string{"friend", "alias", "fr_1"}},
+		{
+			name: "alias unknown format",
+			args: []string{"friend", "alias", "fr_1", "bob", "--format", "xml"},
+		},
 		{name: "remove missing friend", args: []string{"friend", "remove"}},
 		{name: "block missing friend", args: []string{"friend", "block"}},
 	}
@@ -2883,23 +2908,31 @@ func testSHA256(raw []byte) string {
 }
 
 func friendCommandResponse(status string) string {
+	return friendCommandResponseWithAliases(status, "alice", "bob")
+}
+
+func friendCommandResponseWithAliases(
+	status string,
+	requesterAlias string,
+	recipientAlias string,
+) string {
 	return fmt.Sprintf(`{
 		"data":{
 			"friend":{
 				"friend_id":"fr_1",
 				"requester_user_id":"usr_sender",
 				"requester_email":"alice@example.com",
-				"requester_alias":"alice",
+				"requester_alias":%q,
 				"recipient_user_id":"usr_1",
 				"recipient_email":"me@example.com",
-				"recipient_alias":"bob",
+				"recipient_alias":%q,
 				"status":%q,
 				"created_at":"2026-06-22T00:00:00Z"
 			}
 		},
 		"code":200,
 		"message":"ok"
-	}`, status)
+	}`, requesterAlias, recipientAlias, status)
 }
 
 func hasCommand(command *cli.Command, name string) bool {
