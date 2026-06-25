@@ -58,6 +58,11 @@ func (s *SetupFacadeSuite) TestInstallSetsUpCodexClaudeAndHermesHooks() {
 
 	s.FileExists(filepath.Join(s.home, ".pax", "paxl", "hooks", "agent-hook"))
 	s.FileExists(filepath.Join(s.home, ".codex", "paxl", "hooks", "user-prompt.json"))
+	s.codexConfigContains("UserPromptSubmit")
+	s.codexConfigContains(`type = "command"`)
+	s.codexConfigContains("async = false")
+	s.codexConfigContains("paxl --db ")
+	s.codexConfigContains("__agent-hook --agent codex --event user-prompt")
 	s.FileExists(filepath.Join(s.home, ".hermes", "paxl", "hooks", "user-prompt.json"))
 	s.claudeHookCommandContains("paxl __agent-hook --agent claude --event user-prompt")
 }
@@ -83,6 +88,31 @@ func (s *SetupFacadeSuite) TestInstallIsIdempotentForClaudeSettings() {
 	s.Len(groups, 1)
 }
 
+func (s *SetupFacadeSuite) TestInstallReplacesLegacyCodexHookShape() {
+	s.T().Setenv("CODEX_HOME", filepath.Join(s.home, ".codex"))
+	s.Require().NoError(os.MkdirAll(filepath.Join(s.home, ".codex"), 0o700))
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(s.home, ".codex", "config.toml"),
+		[]byte(
+			"[hooks]\nuserPromptSubmit = [\"paxl __agent-hook --agent codex --event user-prompt\"]\n",
+		),
+		0o600,
+	))
+
+	_, err := facade.NewSetupFacade().Install(s.ctx, &facade.SetupRequest{Agents: []model.AgentName{
+		model.AgentNameCodex,
+	}})
+
+	s.Require().NoError(err)
+	raw, err := os.ReadFile(filepath.Join(s.home, ".codex", "config.toml"))
+	s.Require().NoError(err)
+	config := string(raw)
+	s.Contains(config, "UserPromptSubmit")
+	s.Contains(config, `type = "command"`)
+	s.Contains(config, "async = false")
+	s.NotContains(config, "userPromptSubmit")
+}
+
 func (s *SetupFacadeSuite) TestInstallSupportsDryRun() {
 	s.T().Setenv("CODEX_HOME", filepath.Join(s.home, ".codex"))
 
@@ -103,6 +133,12 @@ func (s *SetupFacadeSuite) readClaudeSettings() map[string]any {
 	var settings map[string]any
 	s.Require().NoError(json.Unmarshal(raw, &settings))
 	return settings
+}
+
+func (s *SetupFacadeSuite) codexConfigContains(fragment string) {
+	raw, err := os.ReadFile(filepath.Join(s.home, ".codex", "config.toml"))
+	s.Require().NoError(err)
+	s.Contains(string(raw), fragment)
 }
 
 func (s *SetupFacadeSuite) claudeHookCommandContains(fragment string) {

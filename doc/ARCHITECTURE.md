@@ -205,6 +205,8 @@ Unlike `session mirror`, capsule creation is keyword-driven:
   fallback.
 - `--content-file` creates a capsule from prepared operator-written content
   instead of prompting the source agent or extracting transcript lines.
+- `--manual --content-file` creates a prepared-content capsule without loading
+  a source session and records `source_agent=paxl`, `source_session_id=manual`.
 - Capsules store source node, source agent, and source session metadata.
 - Injections store target node, target agent, and target session metadata.
 - Capsules are stored in SQLite.

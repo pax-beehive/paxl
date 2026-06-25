@@ -2,6 +2,7 @@ package facade_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -194,6 +195,35 @@ func (s *CapsuleFacadeSuite) TestCreateSourceGenerationIgnoresToolResultMarkerEc
 	s.Error(err)
 }
 
+func (s *CapsuleFacadeSuite) TestCreateManualCapsuleDoesNotLoadSourceSession() {
+	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
+
+	resp, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
+		Manual:  true,
+		Keyword: "routed envelopes",
+		Content: "Pax-manager must preserve route metadata for recipient-side hooks.",
+	})
+
+	s.Require().NoError(err)
+	s.Equal("manual", resp.Capsule.SourceSessionID)
+	s.Equal(model.AgentNamePaxl, resp.Capsule.SourceAgent)
+	s.Equal("Knowledge capsule: routed envelopes", resp.Capsule.Title)
+	s.Contains(resp.Capsule.Content, "recipient-side hooks")
+}
+
+func (s *CapsuleFacadeSuite) TestCreateManualCapsuleRejectsSourceSession() {
+	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
+
+	_, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
+		Manual:          true,
+		SourceSessionID: "codex:sess",
+		Keyword:         "bridge",
+		Content:         "Bridge content",
+	})
+
+	s.Error(err)
+}
+
 func (s *CapsuleFacadeSuite) TestInjectDeliversHandoffAndStoresInjection() {
 	if runtime.GOOS == "windows" {
 		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
@@ -329,6 +359,34 @@ func (s *CapsuleFacadeSuite) TestAgentHookFacadeHandlesNoMatchAndInvalidRequests
 		&facade.CompleteAgentHookRequest{InjectionID: "kci_missing"},
 	)
 	s.Error(err)
+}
+
+func (s *CapsuleFacadeSuite) TestAgentHookFacadeDeliversCodexAdditionalContextJSON() {
+	hookFacade := facade.NewAgentHookFacade(s.store)
+
+	delivered, err := hookFacade.Deliver(s.ctx, &facade.DeliverAgentHookRequest{
+		Agent:   model.AgentNameCodex,
+		Message: "system_handoff content",
+	})
+
+	s.Require().NoError(err)
+	s.Equal("stdout", delivered.DeliveryMethod)
+	var output map[string]any
+	s.Require().NoError(json.Unmarshal([]byte(delivered.Message), &output))
+	s.Equal(true, output["continue"])
+	s.Equal(true, output["suppressOutput"])
+	specific, ok := output["hookSpecificOutput"].(map[string]any)
+	s.Require().True(ok)
+	s.Equal("UserPromptSubmit", specific["hookEventName"])
+	s.Equal("system_handoff content", specific["additionalContext"])
+
+	fallback, err := hookFacade.Deliver(s.ctx, &facade.DeliverAgentHookRequest{
+		Agent:   model.AgentNameClaude,
+		Message: "plain handoff",
+	})
+	s.Require().NoError(err)
+	s.Equal("stdout", fallback.DeliveryMethod)
+	s.Equal("plain handoff", fallback.Message)
 }
 
 func (s *CapsuleFacadeSuite) TestInjectStartsNewTargetSession() {

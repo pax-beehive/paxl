@@ -340,6 +340,63 @@ func (s *CommandSuite) TestHiddenAgentHookConsumesMatchingInjectionOnce() {
 	s.Contains(s.stdout.String(), `"routeMatchValue":"handoff"`)
 }
 
+func (s *CommandSuite) TestHiddenAgentHookConsumesProjectRouteFromCodexStyleInput() {
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+	capsuleID := s.createLocalCapsule(dbPath, "bridge")
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"capsule", "inject", capsuleID,
+			"--match", "project",
+			"--project", "pax-manager",
+			"--agent", "codex",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+
+	s.stdout.Reset()
+	s.stderr.Reset()
+	s.withStdinJSON(map[string]string{
+		"sessionId":  "019efd02-b216-7412-b091-fbf8e1647364",
+		"userPrompt": "start planning",
+		"projectId":  "/Users/toddzheng/Workspace/golang/pax-mono/pax-manager",
+	}, func() {
+		err = run(
+			context.Background(),
+			[]string{"--db", dbPath, "__agent-hook", "--agent", "codex", "--event", "user-prompt"},
+			&s.stdout,
+			&s.stderr,
+		)
+	})
+
+	s.Require().NoError(err)
+	var hookOutput map[string]any
+	s.Require().NoError(json.Unmarshal(s.stdout.Bytes(), &hookOutput))
+	s.Equal(true, hookOutput["continue"])
+	s.Equal(true, hookOutput["suppressOutput"])
+	specific, ok := hookOutput["hookSpecificOutput"].(map[string]any)
+	s.Require().True(ok)
+	s.Equal("UserPromptSubmit", specific["hookEventName"])
+	additionalContext, ok := specific["additionalContext"].(string)
+	s.Require().True(ok)
+	s.Contains(additionalContext, "system_handoff")
+	s.Contains(additionalContext, "Bridge context")
+
+	s.stdout.Reset()
+	err = run(
+		context.Background(),
+		[]string{"--db", dbPath, "capsule", "injection", "--format", "jsonl"},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"status":"consumed"`)
+	s.Contains(s.stdout.String(), `"targetSessionId":"codex:019efd02-b216-7412-b091-fbf8e1647364"`)
+}
+
 func (s *CommandSuite) TestHiddenAgentHookNoopsWhenNoInjectionMatchesAndIsHiddenFromHelp() {
 	err := run(context.Background(), []string{"--help"}, &s.stdout, &s.stderr)
 	s.Require().NoError(err)
@@ -1955,6 +2012,36 @@ func (s *CommandSuite) TestCapsuleCreateSupportsContentFile() {
 	s.NotContains(s.stdout.String(), "Bridge context")
 }
 
+func (s *CommandSuite) TestCapsuleCreateSupportsManualContentFile() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	contentPath := filepath.Join(s.T().TempDir(), "capsule.md")
+	s.Require().NoError(os.WriteFile(
+		contentPath,
+		[]byte("Pax-manager must preserve routed envelope metadata on accept."),
+		0o600,
+	))
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"capsule", "create",
+			"--manual",
+			"--keyword", "routed envelopes",
+			"--content-file", contentPath,
+			"--format", "jsonl",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"sourceSessionId":"manual"`)
+	s.Contains(s.stdout.String(), `"sourceAgent":"paxl"`)
+	s.Contains(s.stdout.String(), `"title":"Knowledge capsule: routed envelopes"`)
+	s.Contains(s.stdout.String(), "Pax-manager must preserve routed envelope metadata on accept.")
+}
+
 func (s *CommandSuite) TestCapsuleCreateUsesSourceAgentGenerationByDefault() {
 	if runtime.GOOS == "windows" {
 		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
@@ -2323,6 +2410,33 @@ func (s *CommandSuite) TestCapsuleCreateRejectsMissingSourceSession() {
 	err := run(
 		context.Background(),
 		[]string{"capsule", "create", "--keyword", "bridge"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestCapsuleCreateRejectsManualWithSourceSession() {
+	err := run(
+		context.Background(),
+		[]string{
+			"capsule", "create", "codex:sess",
+			"--manual",
+			"--keyword", "bridge",
+			"--content-file", "capsule.md",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestCapsuleCreateRejectsManualWithoutContentFile() {
+	err := run(
+		context.Background(),
+		[]string{"capsule", "create", "--manual", "--keyword", "bridge"},
 		&s.stdout,
 		&s.stderr,
 	)

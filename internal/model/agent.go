@@ -16,29 +16,29 @@ const (
 	AgentNameGemini   AgentName = "gemini"
 	AgentNameHermes   AgentName = "hermes"
 	AgentNameOpenClaw AgentName = "openclaw"
+	AgentNamePaxl     AgentName = "paxl"
 )
 
+var supportedAgentNames = map[AgentName]struct{}{
+	AgentNameCodex:    {},
+	AgentNameClaude:   {},
+	AgentNamePi:       {},
+	AgentNameKiro:     {},
+	AgentNameGemini:   {},
+	AgentNameHermes:   {},
+	AgentNameOpenClaw: {},
+	AgentNamePaxl:     {},
+}
+
 func ParseAgentName(raw string) (AgentName, error) {
-	switch AgentName(strings.TrimSpace(strings.ToLower(raw))) {
-	case AgentNameUnknown:
-		return AgentNameUnknown, fmt.Errorf("parse agent name %q: unsupported agent", raw)
-	case AgentNameCodex:
-		return AgentNameCodex, nil
-	case AgentNameClaude:
-		return AgentNameClaude, nil
-	case AgentNamePi:
-		return AgentNamePi, nil
-	case AgentNameKiro:
-		return AgentNameKiro, nil
-	case AgentNameGemini:
-		return AgentNameGemini, nil
-	case AgentNameHermes:
-		return AgentNameHermes, nil
-	case AgentNameOpenClaw:
-		return AgentNameOpenClaw, nil
-	default:
+	agent := AgentName(strings.TrimSpace(strings.ToLower(raw)))
+	if agent == AgentNameUnknown {
 		return AgentNameUnknown, fmt.Errorf("parse agent name %q: unsupported agent", raw)
 	}
+	if _, ok := supportedAgentNames[agent]; !ok {
+		return AgentNameUnknown, fmt.Errorf("parse agent name %q: unsupported agent", raw)
+	}
+	return agent, nil
 }
 
 type AgentKind string

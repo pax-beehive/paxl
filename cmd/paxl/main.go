@@ -478,8 +478,8 @@ func newCapsuleCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 		Commands: []*cli.Command{
 			{
 				Name:      "create",
-				Usage:     "Ask the source session to produce a knowledge capsule",
-				ArgsUsage: "<source-session-id>",
+				Usage:     "Create a knowledge capsule from a source session or manual content",
+				ArgsUsage: "[source-session-id]",
 				Flags: []cli.Flag{
 					&cli.StringFlag{
 						Name:  "agent",
@@ -500,6 +500,10 @@ func newCapsuleCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 					&cli.StringFlag{
 						Name:  "content-file",
 						Usage: "Create the capsule from this file instead of prompting the source agent",
+					},
+					&cli.BoolFlag{
+						Name:  "manual",
+						Usage: "Create a capsule from provided content without a source session",
 					},
 					&cli.StringFlag{
 						Name:  "format",
@@ -928,8 +932,19 @@ func agentHook(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
 	if resp == nil || strings.TrimSpace(resp.Message) == "" {
 		return nil
 	}
-	if _, err := fmt.Fprintln(stdout, resp.Message); err != nil {
-		return fmt.Errorf("write hook injection: %w", err)
+	delivered, err := hookFacade.Deliver(ctx, &facade.DeliverAgentHookRequest{
+		Agent:       agent,
+		SessionID:   event.SessionID,
+		InjectionID: resp.Injection.InjectionID,
+		Message:     resp.Message,
+	})
+	if err != nil {
+		return fmt.Errorf("deliver agent hook: %w", err)
+	}
+	if delivered.DeliveryMethod == "stdout" {
+		if _, err := fmt.Fprintln(stdout, delivered.Message); err != nil {
+			return fmt.Errorf("write hook injection: %w", err)
+		}
 	}
 	if _, err := hookFacade.Complete(ctx, &facade.CompleteAgentHookRequest{
 		InjectionID: resp.Injection.InjectionID,
@@ -940,23 +955,40 @@ func agentHook(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
 }
 
 type agentHookInput struct {
-	SessionID   string `json:"session_id"`
-	Prompt      string `json:"prompt"`
-	UserPrompt  string `json:"user_prompt"`
-	CWD         string `json:"cwd"`
-	Workspace   string `json:"workspace"`
-	ProjectPath string `json:"project_path"`
+	SessionID        string `json:"session_id"`
+	SessionIDCamel   string `json:"sessionId"`
+	Prompt           string `json:"prompt"`
+	UserPrompt       string `json:"user_prompt"`
+	UserPromptCamel  string `json:"userPrompt"`
+	CWD              string `json:"cwd"`
+	Workspace        string `json:"workspace"`
+	ProjectID        string `json:"project_id"`
+	ProjectIDCamel   string `json:"projectId"`
+	ProjectPath      string `json:"project_path"`
+	ProjectPathCamel string `json:"projectPath"`
 }
 
 func parseAgentHookInput(raw []byte) agentHookInput {
 	var input agentHookInput
 	if err := json.Unmarshal(raw, &input); err != nil {
-		return agentHookInput{Prompt: strings.TrimSpace(string(raw))}
+		return agentHookInput{
+			Prompt:      strings.TrimSpace(string(raw)),
+			ProjectPath: currentWorkingDirectory(),
+		}
 	}
+	input.SessionID = firstNonEmpty(input.SessionID, input.SessionIDCamel)
 	if strings.TrimSpace(input.Prompt) == "" {
-		input.Prompt = input.UserPrompt
+		input.Prompt = firstNonEmpty(input.UserPrompt, input.UserPromptCamel)
 	}
-	input.ProjectPath = firstNonEmpty(input.ProjectPath, input.Workspace, input.CWD)
+	input.ProjectPath = firstNonEmpty(
+		input.ProjectPath,
+		input.ProjectPathCamel,
+		input.ProjectID,
+		input.ProjectIDCamel,
+		input.Workspace,
+		input.CWD,
+		currentWorkingDirectory(),
+	)
 	return input
 }
 
@@ -1976,8 +2008,12 @@ func parseMirrorSessionRequest(cmd *cli.Command) (*facade.MirrorSessionRequest, 
 
 func parseCreateCapsuleRequest(cmd *cli.Command) (*facade.CreateCapsuleRequest, error) {
 	sourceID := cmd.Args().First()
-	if sourceID == "" {
+	manual := cmd.Bool("manual")
+	if sourceID == "" && !manual {
 		return nil, fmt.Errorf("source session id is required")
+	}
+	if sourceID != "" && manual {
+		return nil, fmt.Errorf("source session id cannot be used with manual capsule creation")
 	}
 	content, err := readCapsuleContentFile(cmd.String("content-file"))
 	if err != nil {
@@ -1989,7 +2025,17 @@ func parseCreateCapsuleRequest(cmd *cli.Command) (*facade.CreateCapsuleRequest, 
 		Title:           strings.TrimSpace(cmd.String("title")),
 		Summary:         strings.TrimSpace(cmd.String("summary")),
 		Content:         content,
+		Manual:          manual,
 		Local:           cmd.Bool("local"),
+	}
+	if req.Manual && req.Local {
+		return nil, fmt.Errorf("manual capsule creation cannot be used with local extraction")
+	}
+	if req.Manual && strings.TrimSpace(cmd.String("agent")) != "" {
+		return nil, fmt.Errorf("agent cannot be used with manual capsule creation")
+	}
+	if req.Manual && strings.TrimSpace(req.Content) == "" {
+		return nil, fmt.Errorf("content-file is required for manual capsule creation")
 	}
 	if req.Content != "" && req.Local {
 		return nil, fmt.Errorf("content-file cannot be used with local extraction")
@@ -2326,7 +2372,8 @@ func parseSetupRequest(cmd *cli.Command) (*facade.SetupRequest, error) {
 				model.AgentNamePi,
 				model.AgentNameKiro,
 				model.AgentNameGemini,
-				model.AgentNameOpenClaw:
+				model.AgentNameOpenClaw,
+				model.AgentNamePaxl:
 				return nil, fmt.Errorf("agent %q does not support setup", agent)
 			}
 		}

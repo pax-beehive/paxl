@@ -163,9 +163,11 @@ paxl setup
 paxl setup --agent claude --format jsonl
 ```
 
-The current setup command installs Claude Code's `UserPromptSubmit` hook and
-writes paxl-owned hook descriptors for Codex and Hermes. Conditional local
-route matching and one-time hook consumption are documented in
+The current setup command installs Claude Code's `UserPromptSubmit` hook, writes
+a Codex `UserPromptSubmit` command hook object into Codex config, and writes
+paxl-owned hook descriptors for Codex and Hermes. Codex may require trusting
+changed hooks before they run.
+Conditional local route matching and one-time hook consumption are documented in
 [doc/AUTOMATED_INJECTION_ROUTING.md](doc/AUTOMATED_INJECTION_ROUTING.md).
 
 ### Preserve a Timeline
@@ -236,6 +238,14 @@ paxl capsule create codex:<session-id> \
   --keyword "production incident" \
   --title "api timeout incident" \
   --summary "Known facts, mitigations, and next checks." \
+  --content-file handoff.md
+```
+
+If there is no useful source session, create a manual capsule:
+
+```sh
+paxl capsule create --manual \
+  --keyword "production incident" \
   --content-file handoff.md
 ```
 
@@ -509,6 +519,15 @@ paxl capsule create codex:<session-id> \
   --content-file capsule.md
 ```
 
+Create a manual capsule when the content should not be tied to a source
+session:
+
+```sh
+paxl capsule create --manual \
+  --keyword "installer hosting" \
+  --content-file capsule.md
+```
+
 List and inspect capsules:
 
 ```sh
@@ -589,6 +608,8 @@ Codex delivery:
 - Other existing sessions or app-server fallback:
   `codex exec resume --all <session-id> -`
 - New session: `codex exec -`
+- Conditional hook injection: Codex `UserPromptSubmit` hook JSON with
+  `hookSpecificOutput.additionalContext` before the current user prompt.
 
 Claude delivery:
 

@@ -25,8 +25,10 @@ Current setup slice:
 
 - Claude Code: writes a real `UserPromptSubmit` command hook into the user's
   Claude settings.
-- Codex: writes a paxl-owned hook descriptor and shim. Activation depends on a
-  Codex hook host reading that descriptor.
+- Codex: writes a real `UserPromptSubmit` command hook object into the user's
+  Codex config and also writes a paxl-owned descriptor for inspection. Codex may
+  require the user to trust newly added or changed hooks before running them,
+  and existing Codex app processes may need to reload config.
 - Hermes: writes a paxl-owned hook descriptor and shim. Activation depends on a
   Hermes hook host reading that descriptor.
 
@@ -54,8 +56,11 @@ paxl capsule inject <capsule-id> --match project --project paxl --agent codex
 This creates a local pending injection route. It uses the same local hook-time
 matching rules as accepted envelope routes, but the capsule already exists
 locally and no inbox acceptance step is involved. A matching hook atomically
-claims the route, renders the `system_handoff` context to stdout for the agent
-hook, and marks the route consumed so it cannot be injected again.
+claims the route, delivers the `system_handoff` context through the agent's
+pre-prompt hook channel, and marks the route consumed so it cannot be injected
+again. Claude-style hooks receive stdout text. Codex receives hook JSON on
+stdout with `hookSpecificOutput.additionalContext` so the current prompt turn
+gets the extra context without starting a separate app-server process.
 
 Cross-user delivery uses envelope routing conditions because the sender cannot
 know the recipient's local session IDs:
@@ -123,6 +128,11 @@ The hidden runtime hook receives a structured event from the agent integration:
 }
 ```
 
+For compatibility with current Codex hook payloads, paxl also accepts camelCase
+field names such as `sessionId`, `projectId`, `projectPath`, and `userPrompt`.
+If no project field is provided, paxl falls back to the hook process working
+directory before evaluating a project route.
+
 The hook event must be available before the agent assembles the model request
 for the current user prompt. If an agent only supports appending a later prompt
 or steering an already-started turn, paxl must not claim that it can inject into
@@ -145,6 +155,13 @@ messages, or append the knowledge after the current user prompt. If the
 integration cannot place context before the current user prompt, the route
 should remain pending or be treated as a later-turn fallback with explicit
 status.
+
+For Codex, paxl writes a `UserPromptSubmit` hook JSON response with
+`hookSpecificOutput.additionalContext`. The Codex process that is already
+handling the user prompt reads that JSON and inserts the context before the
+current user prompt. paxl must not start a separate `codex app-server` process
+for this hook path, because that targets a different runtime and can create a
+false consumed record without changing the active session context.
 
 ## Claim and Consume State
 

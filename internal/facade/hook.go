@@ -3,6 +3,7 @@ package facade
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -34,6 +35,18 @@ type CompleteAgentHookRequest struct {
 
 type CompleteAgentHookResponse struct {
 	Injection *model.KnowledgeInjection
+}
+
+type DeliverAgentHookRequest struct {
+	Agent       model.AgentName
+	SessionID   string
+	InjectionID string
+	Message     string
+}
+
+type DeliverAgentHookResponse struct {
+	DeliveryMethod string
+	Message        string
 }
 
 func NewAgentHookFacade(sessionStore *store.Store) *AgentHookFacade {
@@ -74,6 +87,42 @@ func (f *AgentHookFacade) Run(
 	return &AgentHookResponse{Injection: claimed.Injection, Message: message}, nil
 }
 
+func (f *AgentHookFacade) Deliver(
+	ctx context.Context,
+	req *DeliverAgentHookRequest,
+	opts ...func(*Option),
+) (*DeliverAgentHookResponse, error) {
+	_ = ctx
+	_ = applyOptions(opts)
+	if req == nil {
+		return nil, fmt.Errorf("deliver agent hook: request is required")
+	}
+	if strings.TrimSpace(req.Message) == "" {
+		return nil, fmt.Errorf("deliver agent hook: message is required")
+	}
+	switch req.Agent {
+	case model.AgentNameCodex:
+		message, err := renderCodexUserPromptSubmitHookOutput(req.Message)
+		if err != nil {
+			return nil, err
+		}
+		return &DeliverAgentHookResponse{
+			DeliveryMethod: "stdout",
+			Message:        message,
+		}, nil
+	case model.AgentNameUnknown,
+		model.AgentNameClaude,
+		model.AgentNamePi,
+		model.AgentNameKiro,
+		model.AgentNameGemini,
+		model.AgentNameHermes,
+		model.AgentNameOpenClaw,
+		model.AgentNamePaxl:
+		return &DeliverAgentHookResponse{DeliveryMethod: "stdout", Message: req.Message}, nil
+	}
+	return &DeliverAgentHookResponse{DeliveryMethod: "stdout", Message: req.Message}, nil
+}
+
 func (f *AgentHookFacade) Complete(
 	ctx context.Context,
 	req *CompleteAgentHookRequest,
@@ -94,4 +143,31 @@ func (f *AgentHookFacade) Complete(
 		return nil, fmt.Errorf("mark hook knowledge injection consumed: %w", err)
 	}
 	return &CompleteAgentHookResponse{Injection: consumed.Injection}, nil
+}
+
+type codexUserPromptSubmitHookOutput struct {
+	Continue           bool                              `json:"continue"`
+	SuppressOutput     bool                              `json:"suppressOutput"`
+	HookSpecificOutput codexUserPromptSubmitHookSpecific `json:"hookSpecificOutput"`
+}
+
+type codexUserPromptSubmitHookSpecific struct {
+	HookEventName     string `json:"hookEventName"`
+	AdditionalContext string `json:"additionalContext"`
+}
+
+func renderCodexUserPromptSubmitHookOutput(message string) (string, error) {
+	output := codexUserPromptSubmitHookOutput{
+		Continue:       true,
+		SuppressOutput: true,
+		HookSpecificOutput: codexUserPromptSubmitHookSpecific{
+			HookEventName:     "UserPromptSubmit",
+			AdditionalContext: message,
+		},
+	}
+	raw, err := json.Marshal(output)
+	if err != nil {
+		return "", fmt.Errorf("render codex hook output: %w", err)
+	}
+	return string(raw), nil
 }
