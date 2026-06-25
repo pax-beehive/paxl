@@ -73,6 +73,22 @@ type AcceptEnvelopeResponse struct {
 	Injection *model.KnowledgeInjection
 }
 
+type AcceptAllEnvelopesRequest struct {
+	Status          string
+	Limit           int
+	ContinueOnError bool
+}
+
+type AcceptEnvelopeFailure struct {
+	EnvelopeID string
+	Error      string
+}
+
+type AcceptAllEnvelopesResponse struct {
+	Accepted []*AcceptEnvelopeResponse
+	Failures []*AcceptEnvelopeFailure
+}
+
 type ArchiveEnvelopeRequest struct {
 	EnvelopeID string
 }
@@ -300,6 +316,50 @@ func (f *EnvelopeFacade) Accept(
 		Capsule:   created.Capsule,
 		Injection: injection,
 	}, nil
+}
+
+func (f *EnvelopeFacade) AcceptAll(
+	ctx context.Context,
+	req *AcceptAllEnvelopesRequest,
+	opts ...func(*Option),
+) (*AcceptAllEnvelopesResponse, error) {
+	_ = applyOptions(opts)
+	if req == nil {
+		req = &AcceptAllEnvelopesRequest{}
+	}
+	status := strings.TrimSpace(req.Status)
+	if status == "" {
+		status = "pending"
+	}
+	listed, err := f.ListInbox(ctx, &ListInboxRequest{
+		Status: status,
+		Limit:  req.Limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list envelopes to accept: %w", err)
+	}
+	resp := &AcceptAllEnvelopesResponse{}
+	for _, envelope := range listed.Envelopes {
+		if envelope == nil || strings.TrimSpace(envelope.EnvelopeID) == "" {
+			continue
+		}
+		accepted, err := f.Accept(ctx, &AcceptEnvelopeRequest{
+			EnvelopeID: envelope.EnvelopeID,
+		})
+		if err != nil {
+			failure := &AcceptEnvelopeFailure{
+				EnvelopeID: envelope.EnvelopeID,
+				Error:      err.Error(),
+			}
+			resp.Failures = append(resp.Failures, failure)
+			if !req.ContinueOnError {
+				return resp, err
+			}
+			continue
+		}
+		resp.Accepted = append(resp.Accepted, accepted)
+	}
+	return resp, nil
 }
 
 func (f *EnvelopeFacade) Archive(

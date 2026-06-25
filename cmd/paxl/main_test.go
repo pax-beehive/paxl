@@ -1461,7 +1461,7 @@ func (s *CommandSuite) TestSingularCapsuleCommandExposesMigratedSubcommands() {
 }
 
 func (s *CommandSuite) TestInboxCommandExposesEnvelopeSubcommands() {
-	cases := []string{"list", "get", "accept", "archive"}
+	cases := []string{"list", "get", "accept", "watch", "archive"}
 	command := findCommand(newCommand(&s.stdout, &s.stderr), "inbox")
 	s.Require().NotNil(command)
 
@@ -1783,6 +1783,199 @@ func (s *CommandSuite) TestInboxCommandsUseManagerEnvelopes() {
 	)
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), "Archived env_1")
+}
+
+func (s *CommandSuite) TestInboxAcceptAllUsesPendingManagerEnvelopes() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	payload := strings.ReplaceAll(`{
+		"schema_version":"paxl.envelope_payload.knowledge_capsule.v1",
+		"capsule":{
+			"capsule_id":"kcap_remote",
+			"source_session_id":"codex:source",
+			"source_agent":"codex",
+			"keyword":"handoff",
+			"title":"Remote handoff",
+			"summary":"summary",
+			"content":"content",
+			"status":"active",
+			"created_at":"2026-06-22T00:00:00Z"
+		}
+	}`, "\n", "")
+	restoreHTTPClient := s.stubDefaultHTTPClient(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/usr_1/envelopes":
+			s.Equal("pending", req.URL.Query().Get("status"))
+			return commandJSONResponse(`{
+				"data":{
+					"envelopes":[
+						{"envelope_id":"env_1","payload_type":"knowledge_capsule","status":"pending"},
+						{"envelope_id":"env_2","payload_type":"knowledge_capsule","status":"pending"}
+					]
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		case req.Method == http.MethodGet &&
+			(req.URL.Path == "/api/v1/user/usr_1/envelopes/env_1" ||
+				req.URL.Path == "/api/v1/user/usr_1/envelopes/env_2"):
+			envelopeID := strings.TrimPrefix(req.URL.Path, "/api/v1/user/usr_1/envelopes/")
+			return commandJSONResponse(fmt.Sprintf(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"%s",
+						"sender_email":"sender@example.com",
+						"payload_type":"knowledge_capsule",
+						"payload_json":%s,
+						"status":"pending"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`, envelopeID, payload)), nil
+		case req.Method == http.MethodPost &&
+			(req.URL.Path == "/api/v1/user/usr_1/envelopes/env_1/accept" ||
+				req.URL.Path == "/api/v1/user/usr_1/envelopes/env_2/accept"):
+			envelopeID := strings.TrimSuffix(
+				strings.TrimPrefix(req.URL.Path, "/api/v1/user/usr_1/envelopes/"),
+				"/accept",
+			)
+			return commandJSONResponse(fmt.Sprintf(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"%s",
+						"payload_type":"knowledge_capsule",
+						"payload_json":{},
+						"status":"accepted"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`, envelopeID)), nil
+		default:
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader("unexpected request")),
+				Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			}, nil
+		}
+	})
+	defer restoreHTTPClient()
+	s.seedManagerCredential(dbPath, "https://manager.example")
+
+	err := run(
+		context.Background(),
+		[]string{"--db", dbPath, "inbox", "accept", "--all"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Accepted env_1 as local capsule")
+	s.Contains(s.stdout.String(), "Accepted env_2 as local capsule")
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	defer closeStore(opened.Store)
+	listed, err := opened.Store.ListKnowledgeCapsules(
+		context.Background(),
+		&store.ListKnowledgeCapsulesRequest{},
+	)
+	s.Require().NoError(err)
+	s.Len(listed.Capsules, 2)
+}
+
+func (s *CommandSuite) TestInboxWatchAcceptsPendingEnvelopesUntilContextCanceled() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	payload := strings.ReplaceAll(`{
+		"schema_version":"paxl.envelope_payload.knowledge_capsule.v1",
+		"capsule":{
+			"capsule_id":"kcap_remote",
+			"source_session_id":"codex:source",
+			"source_agent":"codex",
+			"keyword":"handoff",
+			"title":"Remote handoff",
+			"summary":"summary",
+			"content":"content",
+			"status":"active",
+			"created_at":"2026-06-22T00:00:00Z"
+		}
+	}`, "\n", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	restoreHTTPClient := s.stubDefaultHTTPClient(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/usr_1/envelopes":
+			s.Equal("pending", req.URL.Query().Get("status"))
+			return commandJSONResponse(`{
+				"data":{
+					"envelopes":[
+						{"envelope_id":"env_1","payload_type":"knowledge_capsule","status":"pending"}
+					]
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		case req.Method == http.MethodGet &&
+			req.URL.Path == "/api/v1/user/usr_1/envelopes/env_1":
+			return commandJSONResponse(fmt.Sprintf(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"env_1",
+						"sender_email":"sender@example.com",
+						"payload_type":"knowledge_capsule",
+						"payload_json":%s,
+						"status":"pending"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`, payload)), nil
+		case req.Method == http.MethodPost &&
+			req.URL.Path == "/api/v1/user/usr_1/envelopes/env_1/accept":
+			cancel()
+			return commandJSONResponse(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"env_1",
+						"payload_type":"knowledge_capsule",
+						"payload_json":{},
+						"status":"accepted"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		default:
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader("unexpected request")),
+				Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			}, nil
+		}
+	})
+	defer restoreHTTPClient()
+	s.seedManagerCredential(dbPath, "https://manager.example")
+
+	err := run(
+		ctx,
+		[]string{"--db", dbPath, "inbox", "watch", "--interval", "1h"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Watching inbox every 1h0m0s")
+	s.Contains(s.stdout.String(), "Received 1 pending envelope(s)")
+	s.Contains(s.stdout.String(), "Accepted env_1 as local capsule")
+	s.Contains(s.stdout.String(), "Auto accepted 1 envelope(s)")
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	defer closeStore(opened.Store)
+	listed, err := opened.Store.ListKnowledgeCapsules(
+		context.Background(),
+		&store.ListKnowledgeCapsulesRequest{},
+	)
+	s.Require().NoError(err)
+	s.Len(listed.Capsules, 1)
 }
 
 func (s *CommandSuite) TestOutboxCommandsUseManagerEnvelopes() {

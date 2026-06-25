@@ -221,10 +221,15 @@ paxl capsule send <capsule-id> --to @alice --message "please review"
 paxl outbox list
 paxl inbox list
 paxl inbox accept <envelope-id>
+paxl inbox accept --all
+paxl inbox watch
 ```
 
 The sender can track sent envelopes from outbox while the recipient works from
 inbox. Accepting an inbox envelope stores the remote payload as a local capsule.
+Use `paxl inbox accept --all` to accept every pending inbox envelope in one
+shot, or run `paxl inbox watch` to keep accepting pending envelopes in the
+foreground until the process is stopped.
 Inject that capsule into a local agent session when you want work to continue
 there.
 

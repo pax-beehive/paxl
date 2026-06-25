@@ -185,11 +185,14 @@ paxl capsule send <capsule-id> --to @alice --message "please review"
 paxl outbox list
 paxl inbox list
 paxl inbox accept <envelope-id>
+paxl inbox accept --all
+paxl inbox watch
 ```
 
 发送方可以通过 outbox 跟踪已发送 envelope；接收方继续从 inbox 处理。接受 inbox envelope
-后，远端 payload 会保存成本地 capsule。需要让某个本地 agent 接手时，再把这个 capsule
-inject 到目标 session。
+后，远端 payload 会保存成本地 capsule。可以用 `paxl inbox accept --all` 一次性接受所有
+pending inbox envelope，也可以运行 `paxl inbox watch` 在前台持续接受 pending envelope，
+直到进程被停止。需要让某个本地 agent 接手时，再把这个 capsule inject 到目标 session。
 
 ### 转移人工整理好的上下文
 
