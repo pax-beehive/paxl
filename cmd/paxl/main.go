@@ -82,12 +82,14 @@ func newCommandWithDiagnostics(
 			newWhoamiCommand(stdout),
 			newLogoutCommand(stdout),
 			newNodeCommand(stdout),
+			newSetupCommand(stdout),
 			newAgentCommand(agentFacade, stdout, stderr, diagnostics),
 			newSessionCommand(stdout, stderr, diagnostics),
 			newCapsuleCommand(stdout, stderr, diagnostics),
 			newInboxCommand(stdout),
 			newOutboxCommand(stdout),
 			newFriendCommand(stdout),
+			newAgentHookCommand(stdout),
 		},
 	}
 }
@@ -209,6 +211,48 @@ func newNodeCommand(stdout io.Writer) *cli.Command {
 					},
 				},
 			},
+		},
+	}
+}
+
+func newSetupCommand(stdout io.Writer) *cli.Command {
+	return &cli.Command{
+		Name:  "setup",
+		Usage: "Install local paxl agent integrations",
+		Flags: []cli.Flag{
+			&cli.StringSliceFlag{
+				Name:  "agent",
+				Usage: "Agent to set up: codex, claude, or hermes. Repeat to select multiple agents.",
+			},
+			&cli.StringFlag{
+				Name:  "format",
+				Value: "table",
+				Usage: "Output format: table or jsonl",
+			},
+			&cli.BoolFlag{Name: "dry-run", Usage: "Show setup actions without writing files"},
+			&cli.StringFlag{
+				Name:   "paxl-command",
+				Usage:  "paxl command path to write into installed hooks",
+				Hidden: true,
+			},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			return setupCommand(ctx, cmd, stdout)
+		},
+	}
+}
+
+func newAgentHookCommand(stdout io.Writer) *cli.Command {
+	return &cli.Command{
+		Name:   "__agent-hook",
+		Usage:  "Internal paxl agent hook entrypoint",
+		Hidden: true,
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "agent", Usage: "Agent that fired the hook"},
+			&cli.StringFlag{Name: "event", Usage: "Hook event name"},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			return agentHook(ctx, cmd, stdout)
 		},
 	}
 }
@@ -558,6 +602,18 @@ func newCapsuleCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 						Value: "30s",
 						Usage: "Agent delivery timeout, for example 10s or 1m",
 					},
+					&cli.StringFlag{
+						Name:  "match",
+						Usage: "Queue hook injection route: any, project, or keyword",
+					},
+					&cli.StringFlag{
+						Name:  "project",
+						Usage: "Project basename for --match project",
+					},
+					&cli.StringFlag{
+						Name:  "keyword",
+						Usage: "Prompt substring for --match keyword",
+					},
 					&cli.BoolFlag{Name: "new", Usage: "Start a new target agent session"},
 					&cli.BoolFlag{Name: "verbose", Usage: "Print injection delivery details"},
 				},
@@ -823,6 +879,85 @@ func agentList(
 		return fmt.Errorf("render agent list: %w", err)
 	}
 	return nil
+}
+
+func setupCommand(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	req, err := parseSetupRequest(cmd)
+	if err != nil {
+		return fmt.Errorf("parse setup request: %w", err)
+	}
+	resp, err := facade.NewSetupFacade().Install(ctx, req)
+	if err != nil {
+		return fmt.Errorf("setup hooks: %w", err)
+	}
+	if err := renderSetup(stdout, resp, cmd.String("format")); err != nil {
+		return fmt.Errorf("render setup result: %w", err)
+	}
+	return nil
+}
+
+func agentHook(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	raw, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return fmt.Errorf("read hook input: %w", err)
+	}
+	agent, err := model.ParseAgentName(cmd.String("agent"))
+	if err != nil {
+		return fmt.Errorf("parse hook agent: %w", err)
+	}
+	if strings.TrimSpace(cmd.String("event")) != "user-prompt" {
+		return fmt.Errorf("unsupported hook event %q", cmd.String("event"))
+	}
+	event := parseAgentHookInput(raw)
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open hook store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	hookFacade := facade.NewAgentHookFacade(opened.Store)
+	resp, err := hookFacade.Run(ctx, &facade.AgentHookRequest{
+		Agent:       agent,
+		Event:       "user-prompt",
+		SessionID:   event.SessionID,
+		ProjectPath: event.ProjectPath,
+		Prompt:      event.Prompt,
+	})
+	if err != nil {
+		return fmt.Errorf("run agent hook: %w", err)
+	}
+	if resp == nil || strings.TrimSpace(resp.Message) == "" {
+		return nil
+	}
+	if _, err := fmt.Fprintln(stdout, resp.Message); err != nil {
+		return fmt.Errorf("write hook injection: %w", err)
+	}
+	if _, err := hookFacade.Complete(ctx, &facade.CompleteAgentHookRequest{
+		InjectionID: resp.Injection.InjectionID,
+	}); err != nil {
+		return fmt.Errorf("complete agent hook: %w", err)
+	}
+	return nil
+}
+
+type agentHookInput struct {
+	SessionID   string `json:"session_id"`
+	Prompt      string `json:"prompt"`
+	UserPrompt  string `json:"user_prompt"`
+	CWD         string `json:"cwd"`
+	Workspace   string `json:"workspace"`
+	ProjectPath string `json:"project_path"`
+}
+
+func parseAgentHookInput(raw []byte) agentHookInput {
+	var input agentHookInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return agentHookInput{Prompt: strings.TrimSpace(string(raw))}
+	}
+	if strings.TrimSpace(input.Prompt) == "" {
+		input.Prompt = input.UserPrompt
+	}
+	input.ProjectPath = firstNonEmpty(input.ProjectPath, input.Workspace, input.CWD)
+	return input
 }
 
 type versionMetadata struct {
@@ -1447,6 +1582,17 @@ func capsuleInject(
 	if err != nil {
 		return fmt.Errorf("inject capsule: %w", err)
 	}
+	if resp.Injection.Status == "pending" {
+		if _, err := fmt.Fprintf(
+			stdout,
+			"Queued %s for %s hook injection\n",
+			resp.Injection.InjectionID,
+			firstNonEmpty(string(resp.Injection.TargetAgent), "any agent"),
+		); err != nil {
+			return fmt.Errorf("write injection route result: %w", err)
+		}
+		return nil
+	}
 	if output := strings.TrimSpace(cmd.String("output")); output != "" {
 		if err := os.WriteFile(output, []byte(resp.Message+"\n"), 0o600); err != nil {
 			return fmt.Errorf("write injection message: %w", err)
@@ -1957,6 +2103,24 @@ func parseInjectCapsuleRequest(cmd *cli.Command) (*facade.InjectCapsuleRequest, 
 		}
 		req.Agent = agent
 	}
+	if rawMatch := strings.TrimSpace(cmd.String("match")); rawMatch != "" {
+		matchValue, err := parseInjectRouteMatchValue(cmd, rawMatch)
+		if err != nil {
+			return nil, err
+		}
+		if req.NewSession {
+			return nil, fmt.Errorf("--new cannot be combined with --match")
+		}
+		if req.TargetSessionID != "" {
+			return nil, fmt.Errorf("target session id must be omitted when --match is set")
+		}
+		if strings.TrimSpace(cmd.String("output")) != "" {
+			return nil, fmt.Errorf("--output cannot be combined with --match")
+		}
+		req.MatchType = rawMatch
+		req.MatchValue = matchValue
+		return req, nil
+	}
 	if req.NewSession && req.TargetSessionID != "" {
 		return nil, fmt.Errorf("target session id must be omitted when --new is set")
 	}
@@ -1967,6 +2131,27 @@ func parseInjectCapsuleRequest(cmd *cli.Command) (*facade.InjectCapsuleRequest, 
 		return nil, fmt.Errorf("target session id is required unless --new is set")
 	}
 	return req, nil
+}
+
+func parseInjectRouteMatchValue(cmd *cli.Command, matchType string) (string, error) {
+	switch matchType {
+	case "any":
+		return "", nil
+	case "project":
+		project := strings.TrimSpace(cmd.String("project"))
+		if project == "" {
+			return "", fmt.Errorf("--project is required when --match project is set")
+		}
+		return project, nil
+	case "keyword":
+		keyword := strings.TrimSpace(cmd.String("keyword"))
+		if keyword == "" {
+			return "", fmt.Errorf("--keyword is required when --match keyword is set")
+		}
+		return keyword, nil
+	default:
+		return "", fmt.Errorf("unsupported match %q", matchType)
+	}
 }
 
 func parseGetEnvelopeRequest(cmd *cli.Command) (*facade.GetEnvelopeRequest, error) {
@@ -2117,6 +2302,40 @@ func parseListAgentsRequest(cmd *cli.Command) (*facade.ListAgentsRequest, error)
 	default:
 		return nil, fmt.Errorf("unsupported format %q", cmd.String("format"))
 	}
+}
+
+func parseSetupRequest(cmd *cli.Command) (*facade.SetupRequest, error) {
+	if err := validateFormat(cmd.String("format"), "table", "jsonl"); err != nil {
+		return nil, err
+	}
+	var agents []model.AgentName
+	for _, raw := range cmd.StringSlice("agent") {
+		for _, part := range strings.Split(raw, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			agent, err := model.ParseAgentName(part)
+			if err != nil {
+				return nil, fmt.Errorf("parse agent: %w", err)
+			}
+			switch agent {
+			case model.AgentNameCodex, model.AgentNameClaude, model.AgentNameHermes:
+				agents = append(agents, agent)
+			case model.AgentNameUnknown,
+				model.AgentNamePi,
+				model.AgentNameKiro,
+				model.AgentNameGemini,
+				model.AgentNameOpenClaw:
+				return nil, fmt.Errorf("agent %q does not support setup", agent)
+			}
+		}
+	}
+	return &facade.SetupRequest{
+		Agents:      agents,
+		PaxlCommand: firstNonEmpty(strings.TrimSpace(cmd.String("paxl-command")), "paxl"),
+		DryRun:      cmd.Bool("dry-run"),
+	}, nil
 }
 
 func parseCheckUpdateRequest(cmd *cli.Command) (*facade.CheckUpdateRequest, error) {
@@ -2325,7 +2544,11 @@ func renderInjectionList(
 				"deliveryMethod":      injection.DeliveryMethod,
 				"deliveryMessageType": injection.DeliveryMessageType,
 				"status":              injection.Status,
+				"routeMatchType":      injection.RouteMatchType,
+				"routeMatchValue":     injection.RouteMatchValue,
 				"createdAt":           injection.CreatedAt,
+				"claimedAt":           injection.ClaimedAt,
+				"consumedAt":          injection.ConsumedAt,
 			}); err != nil {
 				return fmt.Errorf("encode injection: %w", err)
 			}
@@ -2847,6 +3070,45 @@ func renderAgentList(stdout io.Writer, resp *facade.ListAgentsResponse, format s
 		for _, agent := range resp.Agents {
 			if err := encoder.Encode(agent); err != nil {
 				return fmt.Errorf("encode agent: %w", err)
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func renderSetup(stdout io.Writer, resp *facade.SetupResponse, format string) error {
+	switch format {
+	case "table":
+		writer := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		if _, err := fmt.Fprintln(writer, "AGENT\tSTATUS\tPATH\tMESSAGE"); err != nil {
+			return fmt.Errorf("write setup header: %w", err)
+		}
+		for _, adapter := range resp.Adapters {
+			if _, err := fmt.Fprintf(
+				writer,
+				"%s\t%s\t%s\t%s\n",
+				adapter.Agent,
+				adapter.Status,
+				firstNonEmpty(adapter.Path, "-"),
+				adapter.Message,
+			); err != nil {
+				return fmt.Errorf("write setup row: %w", err)
+			}
+		}
+		return writer.Flush()
+	case "jsonl":
+		encoder := json.NewEncoder(stdout)
+		for _, adapter := range resp.Adapters {
+			if err := encoder.Encode(map[string]any{
+				"schemaVersion": "paxl.setup.adapter.v1",
+				"agent":         adapter.Agent,
+				"status":        adapter.Status,
+				"path":          adapter.Path,
+				"message":       adapter.Message,
+			}); err != nil {
+				return fmt.Errorf("encode setup adapter: %w", err)
 			}
 		}
 		return nil

@@ -249,6 +249,116 @@ func (s *CommandSuite) TestAgentCommandDoesNotExposeSetup() {
 	s.NotContains(s.stdout.String(), "setup")
 }
 
+func (s *CommandSuite) TestSetupInstallsClaudeHook() {
+	claudeHome := filepath.Join(s.T().TempDir(), ".claude")
+	s.T().Setenv("CLAUDE_HOME", claudeHome)
+
+	err := run(
+		context.Background(),
+		[]string{"setup", "--agent", "claude", "--format", "jsonl"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"agent":"claude"`)
+	s.Contains(s.stdout.String(), `"status":"installed"`)
+	raw, err := os.ReadFile(filepath.Join(claudeHome, "settings.json"))
+	s.Require().NoError(err)
+	s.Contains(string(raw), "UserPromptSubmit")
+	s.Contains(string(raw), "paxl __agent-hook --agent claude --event user-prompt")
+}
+
+func (s *CommandSuite) TestHiddenAgentHookConsumesMatchingInjectionOnce() {
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+	capsuleID := s.createLocalCapsule(dbPath, "bridge")
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"capsule", "inject", capsuleID,
+			"--match", "keyword",
+			"--keyword", "handoff",
+			"--agent", "claude",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Queued")
+
+	s.stdout.Reset()
+	s.stderr.Reset()
+	s.withStdinJSON(map[string]string{
+		"session_id": "claude-session-1",
+		"prompt":     "please use the handoff context",
+		"cwd":        "/tmp/paxl",
+	}, func() {
+		err = run(
+			context.Background(),
+			[]string{"--db", dbPath, "__agent-hook", "--agent", "claude", "--event", "user-prompt"},
+			&s.stdout,
+			&s.stderr,
+		)
+	})
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "system_handoff")
+	s.Contains(s.stdout.String(), "Bridge context")
+	s.Empty(s.stderr.String())
+
+	s.stdout.Reset()
+	s.stderr.Reset()
+	s.withStdinJSON(map[string]string{
+		"session_id": "claude-session-1",
+		"prompt":     "please use the handoff context again",
+		"cwd":        "/tmp/paxl",
+	}, func() {
+		err = run(
+			context.Background(),
+			[]string{"--db", dbPath, "__agent-hook", "--agent", "claude", "--event", "user-prompt"},
+			&s.stdout,
+			&s.stderr,
+		)
+	})
+
+	s.Require().NoError(err)
+	s.Empty(s.stdout.String())
+	s.Empty(s.stderr.String())
+
+	s.stdout.Reset()
+	err = run(
+		context.Background(),
+		[]string{"--db", dbPath, "capsule", "injection", "--format", "jsonl"},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"status":"consumed"`)
+	s.Contains(s.stdout.String(), `"targetSessionId":"claude:claude-session-1"`)
+	s.Contains(s.stdout.String(), `"routeMatchType":"keyword"`)
+	s.Contains(s.stdout.String(), `"routeMatchValue":"handoff"`)
+}
+
+func (s *CommandSuite) TestHiddenAgentHookNoopsWhenNoInjectionMatchesAndIsHiddenFromHelp() {
+	err := run(context.Background(), []string{"--help"}, &s.stdout, &s.stderr)
+	s.Require().NoError(err)
+	s.NotContains(s.stdout.String(), "__agent-hook")
+
+	s.stdout.Reset()
+	s.stderr.Reset()
+	err = run(
+		context.Background(),
+		[]string{"__agent-hook", "--agent", "claude", "--event", "user-prompt"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Empty(s.stdout.String())
+	s.Empty(s.stderr.String())
+}
+
 func (s *CommandSuite) TestSessionListWithCleanHomeReturnsEmptyList() {
 	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
 
@@ -2277,6 +2387,22 @@ func (s *CommandSuite) TestCapsuleInjectRejectsMissingArguments() {
 				"capsule", "inject", "kcap_1", "target", "--new", "--agent", "codex",
 			},
 		},
+		{
+			name: "match with target",
+			args: []string{"capsule", "inject", "kcap_1", "target", "--match", "any"},
+		},
+		{
+			name: "match project missing value",
+			args: []string{"capsule", "inject", "kcap_1", "--match", "project"},
+		},
+		{
+			name: "match keyword missing value",
+			args: []string{"capsule", "inject", "kcap_1", "--match", "keyword"},
+		},
+		{
+			name: "match unsupported",
+			args: []string{"capsule", "inject", "kcap_1", "--match", "session"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -2604,6 +2730,34 @@ func (s *CommandSuite) TestRenderInjectionListRejectsUnknownFormat() {
 	s.Error(err)
 }
 
+func (s *CommandSuite) TestRenderSetupSupportsFormats() {
+	resp := &facade.SetupResponse{
+		Adapters: []*facade.SetupAdapterResult{
+			{
+				Agent:   model.AgentNameClaude,
+				Status:  facade.SetupStatusInstalled,
+				Path:    "/tmp/settings.json",
+				Message: "Installed Claude Code UserPromptSubmit hook.",
+			},
+		},
+	}
+
+	s.Require().NoError(renderSetup(&s.stdout, resp, "table"))
+	s.Contains(s.stdout.String(), "claude")
+	s.Contains(s.stdout.String(), "installed")
+
+	s.SetupTest()
+	s.Require().NoError(renderSetup(&s.stdout, resp, "jsonl"))
+	s.Contains(s.stdout.String(), `"schemaVersion":"paxl.setup.adapter.v1"`)
+	s.Contains(s.stdout.String(), `"agent":"claude"`)
+}
+
+func (s *CommandSuite) TestRenderSetupRejectsUnknownFormat() {
+	err := renderSetup(&s.stdout, &facade.SetupResponse{}, "xml")
+
+	s.Error(err)
+}
+
 func (s *CommandSuite) TestRenderMirrorResultRejectsUnknownFormat() {
 	err := renderMirrorResult(&s.stdout, &facade.MirrorSessionResponse{
 		Capsule:   &model.KnowledgeCapsule{CapsuleID: "kcap_1"},
@@ -2663,6 +2817,20 @@ func (s *CommandSuite) createLocalCapsule(dbPath string, keyword string) string 
 	s.Require().True(ok)
 	s.SetupTest()
 	return capsuleID
+}
+
+func (s *CommandSuite) withStdinJSON(payload any, fn func()) {
+	reader, writer, err := os.Pipe()
+	s.Require().NoError(err)
+	s.Require().NoError(json.NewEncoder(writer).Encode(payload))
+	s.Require().NoError(writer.Close())
+	original := os.Stdin
+	os.Stdin = reader
+	defer func() {
+		os.Stdin = original
+		s.Require().NoError(reader.Close())
+	}()
+	fn()
 }
 
 func (s *CommandSuite) seedManagerCredential(dbPath string, managerURL string) {

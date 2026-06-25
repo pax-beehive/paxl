@@ -238,6 +238,99 @@ func (s *CapsuleFacadeSuite) TestInjectDeliversHandoffAndStoresInjection() {
 	s.Equal(injected.Injection.InjectionID, listed.Injections[0].InjectionID)
 }
 
+func (s *CapsuleFacadeSuite) TestQueueHookInjectionAndConsumeFromMatchingPrompt() {
+	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
+	created, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
+		SourceSessionID: "codex:sess",
+		Keyword:         "bridge",
+		Local:           true,
+	})
+	s.Require().NoError(err)
+	queued, err := capsuleFacade.Inject(s.ctx, &facade.InjectCapsuleRequest{
+		CapsuleID:  created.Capsule.CapsuleID,
+		Agent:      model.AgentNameClaude,
+		MatchType:  "keyword",
+		MatchValue: "handoff",
+	})
+	s.Require().NoError(err)
+	s.Equal("pending", queued.Injection.Status)
+	s.Equal("hook", queued.Injection.DeliveryMethod)
+
+	hookFacade := facade.NewAgentHookFacade(s.store)
+	noop, err := hookFacade.Run(s.ctx, &facade.AgentHookRequest{
+		Agent:     model.AgentNameClaude,
+		Event:     "user-prompt",
+		SessionID: "claude-session",
+		Prompt:    "unrelated prompt",
+	})
+	s.Require().NoError(err)
+	s.Empty(noop.Message)
+
+	consumed, err := hookFacade.Run(s.ctx, &facade.AgentHookRequest{
+		Agent:     model.AgentNameClaude,
+		Event:     "user-prompt",
+		SessionID: "claude-session",
+		Prompt:    "please use the handoff",
+	})
+	s.Require().NoError(err)
+	s.Contains(consumed.Message, "system_handoff")
+	s.Contains(consumed.Message, "Bridge content")
+	s.Equal("claimed", consumed.Injection.Status)
+	s.Equal("claude:claude-session", consumed.Injection.TargetSessionID)
+
+	completed, err := hookFacade.Complete(s.ctx, &facade.CompleteAgentHookRequest{
+		InjectionID: consumed.Injection.InjectionID,
+	})
+	s.Require().NoError(err)
+	s.Equal("consumed", completed.Injection.Status)
+
+	again, err := hookFacade.Run(s.ctx, &facade.AgentHookRequest{
+		Agent:     model.AgentNameClaude,
+		Event:     "user-prompt",
+		SessionID: "claude-session",
+		Prompt:    "please use the handoff",
+	})
+	s.Require().NoError(err)
+	s.Empty(again.Message)
+}
+
+func (s *CapsuleFacadeSuite) TestAgentHookFacadeHandlesNoMatchAndInvalidRequests() {
+	hookFacade := facade.NewAgentHookFacade(s.store)
+
+	_, err := hookFacade.Run(s.ctx, nil)
+	s.Error(err)
+
+	_, err = facade.NewAgentHookFacade(nil).Run(s.ctx, &facade.AgentHookRequest{
+		Agent: model.AgentNameClaude,
+		Event: "user-prompt",
+	})
+	s.Error(err)
+
+	_, err = hookFacade.Run(s.ctx, &facade.AgentHookRequest{
+		Agent: model.AgentNameClaude,
+		Event: "post-prompt",
+	})
+	s.Error(err)
+
+	resp, err := hookFacade.Run(s.ctx, &facade.AgentHookRequest{
+		Agent:     model.AgentNameClaude,
+		Event:     "user-prompt",
+		SessionID: "claude-session",
+		Prompt:    "nothing matches",
+	})
+	s.Require().NoError(err)
+	s.Empty(resp.Message)
+
+	_, err = hookFacade.Complete(s.ctx, nil)
+	s.Error(err)
+
+	_, err = facade.NewAgentHookFacade(nil).Complete(
+		s.ctx,
+		&facade.CompleteAgentHookRequest{InjectionID: "kci_missing"},
+	)
+	s.Error(err)
+}
+
 func (s *CapsuleFacadeSuite) TestInjectStartsNewTargetSession() {
 	if runtime.GOOS == "windows" {
 		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
