@@ -14,6 +14,9 @@ Chinese documentation: [doc/README_cn.md](doc/README_cn.md)
 
 Architecture documentation: [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md)
 
+Planned automated injection routing:
+[doc/AUTOMATED_INJECTION_ROUTING.md](doc/AUTOMATED_INJECTION_ROUTING.md)
+
 ## Quick Install
 
 Install the latest stable hosted build:
@@ -150,6 +153,20 @@ Current built-in agents:
   your local OpenClaw ACP entrypoint is different.
 
 ## Advanced Workflows
+
+### Install Agent Hooks
+
+Install local hook adapters for supported agents:
+
+```sh
+paxl setup
+paxl setup --agent claude --format jsonl
+```
+
+The current setup command installs Claude Code's `UserPromptSubmit` hook and
+writes paxl-owned hook descriptors for Codex and Hermes. Conditional local
+route matching and one-time hook consumption are documented in
+[doc/AUTOMATED_INJECTION_ROUTING.md](doc/AUTOMATED_INJECTION_ROUTING.md).
 
 ### Preserve a Timeline
 
@@ -503,6 +520,14 @@ Inject a capsule into a target session:
 
 ```sh
 paxl capsule inject <capsule-id> codex:<target-session-id>
+```
+
+Queue a capsule for the next matching pre-user hook:
+
+```sh
+paxl capsule inject <capsule-id> --match any
+paxl capsule inject <capsule-id> --match project --project paxl --agent claude
+paxl capsule inject <capsule-id> --match keyword --keyword "release plan"
 ```
 
 Start a new target agent session with a capsule:

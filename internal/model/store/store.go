@@ -119,6 +119,26 @@ type ListKnowledgeInjectionsResponse struct {
 	Injections []*model.KnowledgeInjection
 }
 
+type ClaimHookKnowledgeInjectionRequest struct {
+	Agent       model.AgentName
+	SessionID   string
+	ProjectPath string
+	Prompt      string
+}
+
+type ClaimHookKnowledgeInjectionResponse struct {
+	Injection *model.KnowledgeInjection
+	Capsule   *model.KnowledgeCapsule
+}
+
+type MarkKnowledgeInjectionConsumedRequest struct {
+	InjectionID string
+}
+
+type MarkKnowledgeInjectionConsumedResponse struct {
+	Injection *model.KnowledgeInjection
+}
+
 type SaveAuthCredentialRequest struct {
 	Credential *model.AuthCredential
 }
@@ -523,8 +543,9 @@ func (s *Store) CreateKnowledgeInjection(
 		INSERT INTO session_knowledge_injections (
 			injection_id, capsule_id, source_node_id, source_agent, source_session_id,
 			target_node_id, target_session_id, target_agent, delivery_method,
-			delivery_message_type, status, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			delivery_message_type, status, route_match_type, route_match_value,
+			created_at, claimed_at, consumed_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		injection.InjectionID,
 		injection.CapsuleID,
@@ -537,7 +558,11 @@ func (s *Store) CreateKnowledgeInjection(
 		injection.DeliveryMethod,
 		injection.DeliveryMessageType,
 		injection.Status,
+		injection.RouteMatchType,
+		injection.RouteMatchValue,
 		injection.CreatedAt,
+		nullString(injection.ClaimedAt),
+		nullString(injection.ConsumedAt),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert knowledge injection %q: %w", injection.InjectionID, err)
@@ -563,6 +588,101 @@ func (s *Store) ListKnowledgeInjections(
 		return nil, fmt.Errorf("scan knowledge injections: %w", err)
 	}
 	return &ListKnowledgeInjectionsResponse{Injections: injections}, nil
+}
+
+func (s *Store) ClaimHookKnowledgeInjection(
+	ctx context.Context,
+	req *ClaimHookKnowledgeInjectionRequest,
+) (*ClaimHookKnowledgeInjectionResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("claim hook knowledge injection: request is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin hook injection claim: %w", err)
+	}
+	defer rollbackTx(tx)
+	rows, err := tx.QueryContext(ctx, `
+		SELECT injection_id, capsule_id, COALESCE(source_node_id, ''), COALESCE(source_agent, ''),
+			COALESCE(source_session_id, ''), COALESCE(target_node_id, ''), target_session_id,
+			COALESCE(target_agent, ''), delivery_method, delivery_message_type, status,
+			COALESCE(route_match_type, ''), COALESCE(route_match_value, ''), created_at,
+			COALESCE(claimed_at, ''), COALESCE(consumed_at, '')
+		FROM session_knowledge_injections
+		WHERE status = 'pending'
+		ORDER BY created_at ASC, injection_id ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query pending hook injections: %w", err)
+	}
+	defer closeRows(rows)
+	for rows.Next() {
+		injection, err := scanHookInjectionRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		if !hookInjectionMatches(req, injection) {
+			continue
+		}
+		claimed, err := claimHookInjectionRow(ctx, tx, req, injection)
+		if err != nil {
+			return nil, err
+		}
+		if !claimed {
+			continue
+		}
+		if err := rows.Close(); err != nil {
+			return nil, fmt.Errorf("close claimed hook injection rows: %w", err)
+		}
+		capsule, err := getKnowledgeCapsuleTx(ctx, tx, injection.CapsuleID)
+		if err != nil {
+			return nil, fmt.Errorf("load claimed capsule %q: %w", injection.CapsuleID, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("commit hook injection claim: %w", err)
+		}
+		return &ClaimHookKnowledgeInjectionResponse{
+			Injection: injection,
+			Capsule:   capsule,
+		}, nil
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending hook injections: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit empty hook injection claim: %w", err)
+	}
+	return nil, sql.ErrNoRows
+}
+
+func (s *Store) MarkKnowledgeInjectionConsumed(
+	ctx context.Context,
+	req *MarkKnowledgeInjectionConsumedRequest,
+) (*MarkKnowledgeInjectionConsumedResponse, error) {
+	if req == nil || strings.TrimSpace(req.InjectionID) == "" {
+		return nil, fmt.Errorf("mark knowledge injection consumed: injection id is required")
+	}
+	consumedAt := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE session_knowledge_injections
+		SET status = 'consumed', consumed_at = ?
+		WHERE injection_id = ? AND status = 'claimed'
+	`, consumedAt, req.InjectionID)
+	if err != nil {
+		return nil, fmt.Errorf("mark knowledge injection %q consumed: %w", req.InjectionID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("read consumed injection rows affected: %w", err)
+	}
+	if affected == 0 {
+		return nil, sql.ErrNoRows
+	}
+	injection, err := s.getKnowledgeInjection(ctx, req.InjectionID)
+	if err != nil {
+		return nil, fmt.Errorf("load consumed injection %q: %w", req.InjectionID, err)
+	}
+	return &MarkKnowledgeInjectionConsumedResponse{Injection: injection}, nil
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {
@@ -631,7 +751,11 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		delivery_method TEXT NOT NULL,
 		delivery_message_type TEXT NOT NULL,
 		status TEXT NOT NULL,
-		created_at TEXT NOT NULL
+		route_match_type TEXT,
+		route_match_value TEXT,
+		created_at TEXT NOT NULL,
+		claimed_at TEXT,
+		consumed_at TEXT
 	);
 
 	CREATE TABLE IF NOT EXISTS auth_credentials (
@@ -677,6 +801,26 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			table:      "session_knowledge_injections",
 			column:     "target_node_id",
 			definition: "target_node_id TEXT",
+		},
+		{
+			table:      "session_knowledge_injections",
+			column:     "route_match_type",
+			definition: "route_match_type TEXT",
+		},
+		{
+			table:      "session_knowledge_injections",
+			column:     "route_match_value",
+			definition: "route_match_value TEXT",
+		},
+		{
+			table:      "session_knowledge_injections",
+			column:     "claimed_at",
+			definition: "claimed_at TEXT",
+		},
+		{
+			table:      "session_knowledge_injections",
+			column:     "consumed_at",
+			definition: "consumed_at TEXT",
 		},
 	}
 	for _, column := range columns {
@@ -878,6 +1022,79 @@ func (s *Store) getKnowledgeCapsule(
 	return capsule, nil
 }
 
+func (s *Store) getKnowledgeInjection(
+	ctx context.Context,
+	injectionID string,
+) (*model.KnowledgeInjection, error) {
+	row := s.db.QueryRowContext(
+		ctx,
+		`SELECT injection_id, capsule_id, COALESCE(source_node_id, ''), COALESCE(source_agent, ''),
+		COALESCE(source_session_id, ''), COALESCE(target_node_id, ''), target_session_id,
+		COALESCE(target_agent, ''), delivery_method, delivery_message_type, status,
+		COALESCE(route_match_type, ''), COALESCE(route_match_value, ''), created_at,
+		COALESCE(claimed_at, ''), COALESCE(consumed_at, '')
+		FROM session_knowledge_injections WHERE injection_id = ?`,
+		injectionID,
+	)
+	return scanHookInjectionRow(row)
+}
+
+func getKnowledgeCapsuleTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	capsuleID string,
+) (*model.KnowledgeCapsule, error) {
+	row := tx.QueryRowContext(
+		ctx,
+		`SELECT capsule_id, COALESCE(source_node_id, ''), source_session_id, source_agent, keyword, title, summary,
+		content, status, truncated, original_estimated_chars, created_at, COALESCE(archived_at, '')
+		FROM knowledge_capsules WHERE capsule_id = ?`,
+		capsuleID,
+	)
+	capsule, err := scanKnowledgeCapsule(row)
+	if err != nil {
+		return nil, fmt.Errorf("scan knowledge capsule %q: %w", capsuleID, err)
+	}
+	return capsule, nil
+}
+
+func scanHookInjectionRow(scanner capsuleScanner) (*model.KnowledgeInjection, error) {
+	injection := &model.KnowledgeInjection{}
+	var targetAgent string
+	var sourceAgent string
+	if err := scanner.Scan(
+		&injection.InjectionID,
+		&injection.CapsuleID,
+		&injection.SourceNodeID,
+		&sourceAgent,
+		&injection.SourceSessionID,
+		&injection.TargetNodeID,
+		&injection.TargetSessionID,
+		&targetAgent,
+		&injection.DeliveryMethod,
+		&injection.DeliveryMessageType,
+		&injection.Status,
+		&injection.RouteMatchType,
+		&injection.RouteMatchValue,
+		&injection.CreatedAt,
+		&injection.ClaimedAt,
+		&injection.ConsumedAt,
+	); err != nil {
+		return nil, fmt.Errorf("scan injection row: %w", err)
+	}
+	source, err := parseOptionalAgentName(sourceAgent)
+	if err != nil {
+		return nil, fmt.Errorf("parse injection source agent: %w", err)
+	}
+	agent, err := parseOptionalAgentName(targetAgent)
+	if err != nil {
+		return nil, fmt.Errorf("parse injection target agent: %w", err)
+	}
+	injection.SourceAgent = source
+	injection.TargetAgent = agent
+	return injection, nil
+}
+
 type capsuleScanner interface {
 	Scan(dest ...any) error
 }
@@ -956,8 +1173,10 @@ func scanKnowledgeCapsules(rows *sql.Rows) ([]*model.KnowledgeCapsule, error) {
 func listKnowledgeInjectionsQuery(req *ListKnowledgeInjectionsRequest) (string, []any) {
 	args := []any{}
 	query := `SELECT injection_id, capsule_id, COALESCE(source_node_id, ''), COALESCE(source_agent, ''),
-		COALESCE(source_session_id, ''), COALESCE(target_node_id, ''), target_session_id, target_agent, delivery_method,
-		delivery_message_type, status, created_at FROM session_knowledge_injections`
+		COALESCE(source_session_id, ''), COALESCE(target_node_id, ''), target_session_id,
+		COALESCE(target_agent, ''), delivery_method, delivery_message_type, status,
+		COALESCE(route_match_type, ''), COALESCE(route_match_value, ''), created_at,
+		COALESCE(claimed_at, ''), COALESCE(consumed_at, '') FROM session_knowledge_injections`
 	if req.TargetSessionID != "" {
 		query += " WHERE target_session_id = ?"
 		args = append(args, req.TargetSessionID)
@@ -973,38 +1192,73 @@ func listKnowledgeInjectionsQuery(req *ListKnowledgeInjectionsRequest) (string, 
 func scanKnowledgeInjections(rows *sql.Rows) ([]*model.KnowledgeInjection, error) {
 	var injections []*model.KnowledgeInjection
 	for rows.Next() {
-		injection := &model.KnowledgeInjection{}
-		var targetAgent string
-		var sourceAgent string
-		if err := rows.Scan(
-			&injection.InjectionID,
-			&injection.CapsuleID,
-			&injection.SourceNodeID,
-			&sourceAgent,
-			&injection.SourceSessionID,
-			&injection.TargetNodeID,
-			&injection.TargetSessionID,
-			&targetAgent,
-			&injection.DeliveryMethod,
-			&injection.DeliveryMessageType,
-			&injection.Status,
-			&injection.CreatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan injection row: %w", err)
-		}
-		source, err := parseOptionalAgentName(sourceAgent)
+		injection, err := scanHookInjectionRow(rows)
 		if err != nil {
-			return nil, fmt.Errorf("parse injection source agent: %w", err)
+			return nil, err
 		}
-		agent, err := model.ParseAgentName(targetAgent)
-		if err != nil {
-			return nil, fmt.Errorf("parse injection target agent: %w", err)
-		}
-		injection.SourceAgent = source
-		injection.TargetAgent = agent
 		injections = append(injections, injection)
 	}
 	return injections, rows.Err()
+}
+
+func claimHookInjectionRow(
+	ctx context.Context,
+	tx *sql.Tx,
+	req *ClaimHookKnowledgeInjectionRequest,
+	injection *model.KnowledgeInjection,
+) (bool, error) {
+	claimedAt := time.Now().UTC().Format(time.RFC3339)
+	targetSessionID := hookTargetSessionID(req.Agent, req.SessionID, injection.TargetSessionID)
+	result, err := tx.ExecContext(ctx, `
+		UPDATE session_knowledge_injections
+		SET status = 'claimed', target_session_id = ?, claimed_at = ?
+		WHERE injection_id = ? AND status = 'pending'
+	`, targetSessionID, claimedAt, injection.InjectionID)
+	if err != nil {
+		return false, fmt.Errorf("claim hook injection %q: %w", injection.InjectionID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read claimed injection rows affected: %w", err)
+	}
+	if affected == 0 {
+		return false, nil
+	}
+	injection.Status = "claimed"
+	injection.TargetSessionID = targetSessionID
+	injection.ClaimedAt = claimedAt
+	return true, nil
+}
+
+func hookInjectionMatches(
+	req *ClaimHookKnowledgeInjectionRequest,
+	injection *model.KnowledgeInjection,
+) bool {
+	if injection.TargetAgent != "" && injection.TargetAgent != req.Agent {
+		return false
+	}
+	switch strings.TrimSpace(injection.RouteMatchType) {
+	case "any":
+		return true
+	case "project":
+		return filepath.Base(req.ProjectPath) == strings.TrimSpace(injection.RouteMatchValue)
+	case "keyword":
+		return strings.Contains(req.Prompt, strings.TrimSpace(injection.RouteMatchValue))
+	default:
+		return false
+	}
+}
+
+func hookTargetSessionID(agent model.AgentName, sessionID string, fallback string) string {
+	trimmed := strings.TrimSpace(sessionID)
+	if trimmed == "" {
+		return fallback
+	}
+	prefix := string(agent) + ":"
+	if strings.HasPrefix(trimmed, prefix) {
+		return trimmed
+	}
+	return prefix + trimmed
 }
 
 func defaultCapsuleFields(capsule *model.KnowledgeCapsule) {
@@ -1085,7 +1339,11 @@ func knownMigrationColumn(table string, column string) bool {
 		"session_knowledge_injections.source_node_id",
 		"session_knowledge_injections.source_agent",
 		"session_knowledge_injections.source_session_id",
-		"session_knowledge_injections.target_node_id":
+		"session_knowledge_injections.target_node_id",
+		"session_knowledge_injections.route_match_type",
+		"session_knowledge_injections.route_match_value",
+		"session_knowledge_injections.claimed_at",
+		"session_knowledge_injections.consumed_at":
 		return true
 	default:
 		return false

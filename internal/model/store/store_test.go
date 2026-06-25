@@ -411,3 +411,141 @@ func (s *StoreSuite) TestCapsuleLifecycleAndInjectionList() {
 	s.Equal("system_handoff", injections.Injections[0].DeliveryMessageType)
 	s.Equal("rendered", injections.Injections[0].Status)
 }
+
+func (s *StoreSuite) TestClaimHookKnowledgeInjectionMatchesAndConsumesOnce() {
+	_, err := s.store.CreateKnowledgeCapsule(s.ctx, &store.CreateKnowledgeCapsuleRequest{
+		Capsule: &model.KnowledgeCapsule{
+			CapsuleID:       "kcap_hook",
+			SourceNodeID:    "source-node",
+			SourceSessionID: "codex:sess-1",
+			SourceAgent:     model.AgentNameCodex,
+			Keyword:         "bridge",
+			Title:           "Bridge",
+			Summary:         "Summary",
+			Content:         "Content",
+		},
+	})
+	s.Require().NoError(err)
+	_, err = s.store.CreateKnowledgeInjection(s.ctx, &store.CreateKnowledgeInjectionRequest{
+		Injection: &model.KnowledgeInjection{
+			InjectionID:         "kci_hook",
+			CapsuleID:           "kcap_hook",
+			SourceNodeID:        "source-node",
+			SourceAgent:         model.AgentNameCodex,
+			SourceSessionID:     "codex:sess-1",
+			TargetNodeID:        "target-node",
+			TargetAgent:         model.AgentNameClaude,
+			DeliveryMethod:      "hook",
+			DeliveryMessageType: "system_handoff",
+			Status:              "pending",
+			RouteMatchType:      "project",
+			RouteMatchValue:     "paxl",
+		},
+	})
+	s.Require().NoError(err)
+
+	claimed, err := s.store.ClaimHookKnowledgeInjection(
+		s.ctx,
+		&store.ClaimHookKnowledgeInjectionRequest{
+			Agent:       model.AgentNameClaude,
+			SessionID:   "claude-session",
+			ProjectPath: "/tmp/paxl",
+			Prompt:      "hello",
+		},
+	)
+	s.Require().NoError(err)
+	s.Equal("kci_hook", claimed.Injection.InjectionID)
+	s.Equal("claude:claude-session", claimed.Injection.TargetSessionID)
+	s.Equal("claimed", claimed.Injection.Status)
+	s.Equal("Bridge", claimed.Capsule.Title)
+
+	consumed, err := s.store.MarkKnowledgeInjectionConsumed(
+		s.ctx,
+		&store.MarkKnowledgeInjectionConsumedRequest{InjectionID: "kci_hook"},
+	)
+	s.Require().NoError(err)
+	s.Equal("consumed", consumed.Injection.Status)
+
+	_, err = s.store.ClaimHookKnowledgeInjection(
+		s.ctx,
+		&store.ClaimHookKnowledgeInjectionRequest{
+			Agent:       model.AgentNameClaude,
+			SessionID:   "claude-session",
+			ProjectPath: "/tmp/paxl",
+			Prompt:      "hello",
+		},
+	)
+	s.ErrorIs(err, sql.ErrNoRows)
+}
+
+func (s *StoreSuite) TestClaimHookKnowledgeInjectionSupportsAnyAgentAndKeywordRoutes() {
+	_, err := s.store.CreateKnowledgeCapsule(s.ctx, &store.CreateKnowledgeCapsuleRequest{
+		Capsule: &model.KnowledgeCapsule{
+			CapsuleID:       "kcap_routes",
+			SourceNodeID:    "source-node",
+			SourceSessionID: "codex:sess-1",
+			SourceAgent:     model.AgentNameCodex,
+			Keyword:         "bridge",
+			Title:           "Bridge",
+			Summary:         "Summary",
+			Content:         "Content",
+		},
+	})
+	s.Require().NoError(err)
+	_, err = s.store.CreateKnowledgeInjection(s.ctx, &store.CreateKnowledgeInjectionRequest{
+		Injection: &model.KnowledgeInjection{
+			InjectionID:         "kci_any",
+			CapsuleID:           "kcap_routes",
+			SourceNodeID:        "source-node",
+			SourceAgent:         model.AgentNameCodex,
+			SourceSessionID:     "codex:sess-1",
+			TargetNodeID:        "target-node",
+			DeliveryMethod:      "hook",
+			DeliveryMessageType: "system_handoff",
+			Status:              "pending",
+			RouteMatchType:      "any",
+		},
+	})
+	s.Require().NoError(err)
+	_, err = s.store.CreateKnowledgeInjection(s.ctx, &store.CreateKnowledgeInjectionRequest{
+		Injection: &model.KnowledgeInjection{
+			InjectionID:         "kci_keyword",
+			CapsuleID:           "kcap_routes",
+			SourceNodeID:        "source-node",
+			SourceAgent:         model.AgentNameCodex,
+			SourceSessionID:     "codex:sess-1",
+			TargetNodeID:        "target-node",
+			TargetAgent:         model.AgentNameClaude,
+			DeliveryMethod:      "hook",
+			DeliveryMessageType: "system_handoff",
+			Status:              "pending",
+			RouteMatchType:      "keyword",
+			RouteMatchValue:     "handoff",
+		},
+	})
+	s.Require().NoError(err)
+
+	claimedAny, err := s.store.ClaimHookKnowledgeInjection(
+		s.ctx,
+		&store.ClaimHookKnowledgeInjectionRequest{
+			Agent:     model.AgentNameHermes,
+			SessionID: "hermes:prefixed-session",
+			Prompt:    "anything",
+		},
+	)
+	s.Require().NoError(err)
+	s.Equal("kci_any", claimedAny.Injection.InjectionID)
+	s.Equal("hermes:prefixed-session", claimedAny.Injection.TargetSessionID)
+
+	claimedKeyword, err := s.store.ClaimHookKnowledgeInjection(
+		s.ctx,
+		&store.ClaimHookKnowledgeInjectionRequest{
+			Agent:     model.AgentNameClaude,
+			SessionID: "claude-session",
+			Prompt:    "please load the handoff",
+		},
+	)
+	s.Require().NoError(err)
+	s.Equal("kci_keyword", claimedKeyword.Injection.InjectionID)
+	s.Equal("claude:claude-session", claimedKeyword.Injection.TargetSessionID)
+}

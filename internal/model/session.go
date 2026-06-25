@@ -63,7 +63,11 @@ type KnowledgeInjection struct {
 	DeliveryMethod      string
 	DeliveryMessageType string
 	Status              string
+	RouteMatchType      string
+	RouteMatchValue     string
 	CreatedAt           string
+	ClaimedAt           string
+	ConsumedAt          string
 }
 
 type Envelope struct {

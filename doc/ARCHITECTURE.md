@@ -230,6 +230,12 @@ capsule inject
 Use capsules when the goal is reusable knowledge transfer. Use mirror when the
 goal is live session continuity.
 
+The automated injection routing design is documented separately in
+[AUTOMATED_INJECTION_ROUTING.md](AUTOMATED_INJECTION_ROUTING.md). The current
+implementation keeps hook installation behind `paxl setup`, routes local
+conditional capsule injections at hook-trigger time, and places injected context
+before the current user prompt instead of rewriting existing transcripts.
+
 Node IDs are local identity hints, not pax-manager node records. `paxl` uses
 `PAXL_NODE_ID` when it is set, otherwise it falls back to the local hostname and
 then `local`. This keeps local transfers self-describing without requiring

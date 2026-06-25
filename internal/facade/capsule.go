@@ -75,6 +75,8 @@ type InjectCapsuleRequest struct {
 	TargetSessionID string
 	Agent           model.AgentName
 	NewSession      bool
+	MatchType       string
+	MatchValue      string
 }
 
 type InjectCapsuleResponse struct {
@@ -222,6 +224,9 @@ func (f *CapsuleFacade) Inject(
 		return nil, fmt.Errorf("inject capsule: store is required")
 	}
 	option := applyOptions(opts)
+	if strings.TrimSpace(req.MatchType) != "" {
+		return f.queueHookInjection(ctx, req)
+	}
 	capsule, target, err := f.loadInjectionInputs(ctx, req)
 	if err != nil {
 		return nil, err
@@ -295,6 +300,43 @@ func (f *CapsuleFacade) ListInjections(
 		return nil, fmt.Errorf("list knowledge injections: %w", err)
 	}
 	return &ListInjectionsResponse{Injections: list.Injections}, nil
+}
+
+func (f *CapsuleFacade) queueHookInjection(
+	ctx context.Context,
+	req *InjectCapsuleRequest,
+) (*InjectCapsuleResponse, error) {
+	capsule, err := f.loadActiveCapsule(ctx, req.CapsuleID)
+	if err != nil {
+		return nil, fmt.Errorf("get capsule %q: %w", req.CapsuleID, err)
+	}
+	injectionID, err := newLocalID("kci")
+	if err != nil {
+		return nil, fmt.Errorf("create injection id: %w", err)
+	}
+	injection := &model.KnowledgeInjection{
+		InjectionID:         injectionID,
+		CapsuleID:           capsule.CapsuleID,
+		SourceNodeID:        capsule.SourceNodeID,
+		SourceAgent:         capsule.SourceAgent,
+		SourceSessionID:     capsule.SourceSessionID,
+		TargetNodeID:        localNodeID(),
+		TargetSessionID:     "",
+		TargetAgent:         req.Agent,
+		DeliveryMethod:      "hook",
+		DeliveryMessageType: "system_handoff",
+		Status:              "pending",
+		RouteMatchType:      strings.TrimSpace(req.MatchType),
+		RouteMatchValue:     strings.TrimSpace(req.MatchValue),
+	}
+	created, err := f.store.CreateKnowledgeInjection(
+		ctx,
+		&store.CreateKnowledgeInjectionRequest{Injection: injection},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store hook knowledge injection: %w", err)
+	}
+	return &InjectCapsuleResponse{Injection: created.Injection}, nil
 }
 
 func (f *CapsuleFacade) buildSourceGeneratedCapsule(
