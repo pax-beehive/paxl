@@ -2,6 +2,7 @@ package facade
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -80,6 +81,116 @@ func (s *EnvelopeFacadeSuite) TestSendPostsLocalCapsuleAsEnvelope() {
 	s.Equal("pending", resp.Envelope.Status)
 }
 
+func (s *EnvelopeFacadeSuite) TestSendPostsRoutedCapsuleEnvelope() {
+	s.seedCapsule("kcap_local")
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		s.Equal(http.MethodPost, req.Method)
+		s.Equal("/api/v1/user/usr_1/envelopes", req.URL.Path)
+		body, err := io.ReadAll(req.Body)
+		s.Require().NoError(err)
+		var posted struct {
+			PayloadJSON json.RawMessage `json:"payload_json"`
+		}
+		s.Require().NoError(json.Unmarshal(body, &posted))
+		var payload struct {
+			SchemaVersion string `json:"schema_version"`
+			Capsule       struct {
+				CapsuleID       string          `json:"capsule_id"`
+				SourceSessionID string          `json:"source_session_id"`
+				SourceAgent     model.AgentName `json:"source_agent"`
+				Status          string          `json:"status"`
+			} `json:"capsule"`
+			Route struct {
+				MatchType   string          `json:"match_type"`
+				MatchValue  string          `json:"match_value"`
+				TargetAgent model.AgentName `json:"target_agent"`
+			} `json:"route"`
+		}
+		s.Require().NoError(json.Unmarshal(posted.PayloadJSON, &payload))
+		s.Equal("paxl.envelope_payload.knowledge_capsule.v2", payload.SchemaVersion)
+		s.Equal("kcap_local", payload.Capsule.CapsuleID)
+		s.Equal("codex:source", payload.Capsule.SourceSessionID)
+		s.Equal(model.AgentNameCodex, payload.Capsule.SourceAgent)
+		s.Equal("active", payload.Capsule.Status)
+		s.Equal("project", payload.Route.MatchType)
+		s.Equal("pax-manager", payload.Route.MatchValue)
+		s.Equal(model.AgentNameCodex, payload.Route.TargetAgent)
+		return jsonResponse(`{
+			"data":{
+				"envelope":{
+					"envelope_id":"env_1",
+					"payload_type":"knowledge_capsule",
+					"payload_json":{},
+					"status":"pending"
+				}
+			},
+			"code":200,
+			"message":"ok"
+		}`), nil
+	})
+	envelopeFacade := NewEnvelopeFacade(client, s.store)
+
+	resp, err := envelopeFacade.Send(s.ctx, &SendEnvelopeRequest{
+		CapsuleID:      "kcap_local",
+		RecipientEmail: "other@example.com",
+		MatchType:      "project",
+		MatchValue:     "pax-manager",
+		TargetAgent:    model.AgentNameCodex,
+	})
+
+	s.Require().NoError(err)
+	s.Equal("env_1", resp.Envelope.EnvelopeID)
+}
+
+func (s *EnvelopeFacadeSuite) TestSendRejectsInvalidRouteRequests() {
+	s.seedCapsule("kcap_local")
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("unexpected manager request: %s %s", req.Method, req.URL.Path)
+	})
+	envelopeFacade := NewEnvelopeFacade(client, s.store)
+	cases := []struct {
+		name string
+		req  SendEnvelopeRequest
+		want string
+	}{
+		{
+			name: "agent without match",
+			req: SendEnvelopeRequest{
+				CapsuleID:      "kcap_local",
+				RecipientEmail: "other@example.com",
+				TargetAgent:    model.AgentNameCodex,
+			},
+			want: "requires --match",
+		},
+		{
+			name: "project without value",
+			req: SendEnvelopeRequest{
+				CapsuleID:      "kcap_local",
+				RecipientEmail: "other@example.com",
+				MatchType:      "project",
+			},
+			want: "route match value is required",
+		},
+		{
+			name: "any with value",
+			req: SendEnvelopeRequest{
+				CapsuleID:      "kcap_local",
+				RecipientEmail: "other@example.com",
+				MatchType:      "any",
+				MatchValue:     "paxl",
+			},
+			want: "must be empty",
+		},
+	}
+	for _, tc := range cases {
+		s.Run(tc.name, func() {
+			_, err := envelopeFacade.Send(s.ctx, &tc.req)
+			s.Require().Error(err)
+			s.Contains(err.Error(), tc.want)
+		})
+	}
+}
+
 func (s *EnvelopeFacadeSuite) TestAcceptStoresEnvelopePayloadAsLocalCapsule() {
 	payload := strings.ReplaceAll(`{
 		"schema_version":"paxl.envelope_payload.knowledge_capsule.v1",
@@ -149,6 +260,83 @@ func (s *EnvelopeFacadeSuite) TestAcceptStoresEnvelopePayloadAsLocalCapsule() {
 	)
 	s.Require().NoError(err)
 	s.Equal("content", got.Capsule.Content)
+}
+
+func (s *EnvelopeFacadeSuite) TestAcceptStoresRoutedEnvelopeAsPendingHookInjection() {
+	payload := strings.ReplaceAll(`{
+		"schema_version":"paxl.envelope_payload.knowledge_capsule.v2",
+		"capsule":{
+			"capsule_id":"kcap_remote",
+			"source_node_id":"remote-node",
+			"source_session_id":"codex:source",
+			"source_agent":"codex",
+			"keyword":"handoff",
+			"title":"Remote handoff",
+			"summary":"summary",
+			"content":"content",
+			"status":"active",
+			"created_at":"2026-06-22T00:00:00Z"
+		},
+		"route":{
+			"match_type":"keyword",
+			"match_value":"pax-manager capsule test",
+			"target_agent":"codex"
+		}
+	}`, "\n", "")
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/usr_1/envelopes/env_1":
+			return jsonResponse(fmt.Sprintf(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"env_1",
+						"sender_user_id":"usr_sender",
+						"sender_email":"sender@example.com",
+						"recipient_user_id":"usr_1",
+						"recipient_email":"cli@example.com",
+						"payload_type":"knowledge_capsule",
+						"payload_json":%s,
+						"status":"pending"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`, payload)), nil
+		case req.Method == http.MethodPost &&
+			req.URL.Path == "/api/v1/user/usr_1/envelopes/env_1/accept":
+			return jsonResponse(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"env_1",
+						"payload_type":"knowledge_capsule",
+						"payload_json":{},
+						"status":"accepted"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected manager request: %s %s", req.Method, req.URL.Path)
+		}
+	})
+	envelopeFacade := NewEnvelopeFacade(client, s.store)
+
+	resp, err := envelopeFacade.Accept(s.ctx, &AcceptEnvelopeRequest{EnvelopeID: "env_1"})
+
+	s.Require().NoError(err)
+	s.Equal("accepted", resp.Envelope.Status)
+	s.Require().NotNil(resp.Injection)
+	s.Equal(resp.Capsule.CapsuleID, resp.Injection.CapsuleID)
+	s.Equal("pending", resp.Injection.Status)
+	s.Equal("hook", resp.Injection.DeliveryMethod)
+	s.Equal(model.AgentNameCodex, resp.Injection.TargetAgent)
+	s.Equal("keyword", resp.Injection.RouteMatchType)
+	s.Equal("pax-manager capsule test", resp.Injection.RouteMatchValue)
+	listed, err := s.store.ListKnowledgeInjections(s.ctx, &store.ListKnowledgeInjectionsRequest{})
+	s.Require().NoError(err)
+	s.Require().Len(listed.Injections, 1)
+	s.Equal(resp.Injection.InjectionID, listed.Injections[0].InjectionID)
 }
 
 func (s *EnvelopeFacadeSuite) TestListInboxBuildsStatusAndLimitQuery() {

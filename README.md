@@ -567,10 +567,14 @@ Send a capsule to an accepted friend:
 paxl friend request alice@example.com --alias alice
 # after Alice accepts the friend request
 paxl capsule send <capsule-id> --to @alice
+paxl capsule send <capsule-id> --to @alice --match project --project pax-manager --agent codex
+paxl capsule send <capsule-id> --to @alice --match keyword --keyword "capsule routing"
 ```
 
 `capsule send` requires an accepted friend alias. The manager also enforces this
 boundary, so direct email delivery is rejected even if a client bypasses the CLI.
+Conditional sends store a route in the envelope. The recipient chooses when to
+accept it, and the target session is selected later by the local agent hook.
 
 Read received envelopes:
 

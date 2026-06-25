@@ -13,7 +13,11 @@ import (
 	"github.com/pax-oss/paxl/internal/model/store"
 )
 
-const knowledgeCapsuleEnvelopePayloadVersion = "paxl.envelope_payload.knowledge_capsule.v1"
+const (
+	knowledgeCapsuleEnvelopePayloadVersionV1 = "paxl.envelope_payload.knowledge_capsule.v1"
+	knowledgeCapsuleEnvelopePayloadVersionV2 = "paxl.envelope_payload.knowledge_capsule.v2"
+	envelopeRouteValueLimit                  = 256
+)
 
 type EnvelopeFacade struct {
 	auth  *AuthFacade
@@ -24,6 +28,9 @@ type SendEnvelopeRequest struct {
 	CapsuleID      string
 	RecipientEmail string
 	Message        string
+	MatchType      string
+	MatchValue     string
+	TargetAgent    model.AgentName
 }
 
 type SendEnvelopeResponse struct {
@@ -61,8 +68,9 @@ type AcceptEnvelopeRequest struct {
 }
 
 type AcceptEnvelopeResponse struct {
-	Envelope *model.Envelope
-	Capsule  *model.KnowledgeCapsule
+	Envelope  *model.Envelope
+	Capsule   *model.KnowledgeCapsule
+	Injection *model.KnowledgeInjection
 }
 
 type ArchiveEnvelopeRequest struct {
@@ -76,6 +84,17 @@ type ArchiveEnvelopeResponse struct {
 type envelopePayload struct {
 	SchemaVersion string                 `json:"schema_version"`
 	Capsule       envelopePayloadCapsule `json:"capsule"`
+	Route         *envelopePayloadRoute  `json:"route,omitempty"`
+}
+
+type envelopePayloadRoute struct {
+	MatchType   string          `json:"match_type"`
+	MatchValue  string          `json:"match_value,omitempty"`
+	TargetAgent model.AgentName `json:"target_agent,omitempty"`
+}
+
+type envelopeRouteResult struct {
+	Route *envelopePayloadRoute
 }
 
 type envelopePayloadCapsule struct {
@@ -121,7 +140,11 @@ func (f *EnvelopeFacade) Send(
 	if err != nil {
 		return nil, err
 	}
-	payload, err := encodeEnvelopePayload(capsule)
+	routeResult, err := envelopeRouteFromSendRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	payload, err := encodeEnvelopePayload(capsule, routeResult.Route)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +273,7 @@ func (f *EnvelopeFacade) Accept(
 	if err != nil {
 		return nil, err
 	}
-	capsule, err := capsuleFromEnvelope(envelope)
+	capsule, route, err := capsuleFromEnvelope(envelope)
 	if err != nil {
 		return nil, err
 	}
@@ -265,7 +288,18 @@ func (f *EnvelopeFacade) Accept(
 	if err != nil {
 		return nil, err
 	}
-	return &AcceptEnvelopeResponse{Envelope: accepted, Capsule: created.Capsule}, nil
+	var injection *model.KnowledgeInjection
+	if route != nil {
+		injection, err = f.storeAcceptedEnvelopeRoute(ctx, created.Capsule, route)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &AcceptEnvelopeResponse{
+		Envelope:  accepted,
+		Capsule:   created.Capsule,
+		Injection: injection,
+	}, nil
 }
 
 func (f *EnvelopeFacade) Archive(
@@ -366,11 +400,41 @@ func userEnvelopePath(userID string, envelopeID string) string {
 	return path
 }
 
-func encodeEnvelopePayload(capsule *model.KnowledgeCapsule) ([]byte, error) {
+func encodeEnvelopePayload(
+	capsule *model.KnowledgeCapsule,
+	route *envelopePayloadRoute,
+) ([]byte, error) {
+	schemaVersion := knowledgeCapsuleEnvelopePayloadVersionV1
+	if route != nil {
+		schemaVersion = knowledgeCapsuleEnvelopePayloadVersionV2
+	}
 	return json.Marshal(envelopePayload{
-		SchemaVersion: knowledgeCapsuleEnvelopePayloadVersion,
+		SchemaVersion: schemaVersion,
 		Capsule:       envelopePayloadCapsuleFromModel(capsule),
+		Route:         route,
 	})
+}
+
+func envelopeRouteFromSendRequest(req *SendEnvelopeRequest) (envelopeRouteResult, error) {
+	matchType := strings.TrimSpace(req.MatchType)
+	matchValue := strings.TrimSpace(req.MatchValue)
+	if matchType == "" {
+		if matchValue != "" || req.TargetAgent != "" {
+			return envelopeRouteResult{}, fmt.Errorf(
+				"send envelope: --agent, --project, or --keyword requires --match",
+			)
+		}
+		return envelopeRouteResult{}, nil
+	}
+	route := &envelopePayloadRoute{
+		MatchType:   matchType,
+		MatchValue:  matchValue,
+		TargetAgent: req.TargetAgent,
+	}
+	if err := validateEnvelopeRoute(route); err != nil {
+		return envelopeRouteResult{}, fmt.Errorf("send envelope: %w", err)
+	}
+	return envelopeRouteResult{Route: route}, nil
 }
 
 func envelopePayloadCapsuleFromModel(capsule *model.KnowledgeCapsule) envelopePayloadCapsule {
@@ -391,23 +455,37 @@ func envelopePayloadCapsuleFromModel(capsule *model.KnowledgeCapsule) envelopePa
 	}
 }
 
-func capsuleFromEnvelope(envelope *model.Envelope) (*model.KnowledgeCapsule, error) {
+func capsuleFromEnvelope(
+	envelope *model.Envelope,
+) (*model.KnowledgeCapsule, *envelopePayloadRoute, error) {
 	if envelope.PayloadType != "knowledge_capsule" {
-		return nil, fmt.Errorf("accept envelope: unsupported payload type %q", envelope.PayloadType)
+		return nil, nil, fmt.Errorf(
+			"accept envelope: unsupported payload type %q",
+			envelope.PayloadType,
+		)
 	}
 	var payload envelopePayload
 	if err := json.Unmarshal(envelope.PayloadJSON, &payload); err != nil {
-		return nil, fmt.Errorf("decode envelope payload: %w", err)
+		return nil, nil, fmt.Errorf("decode envelope payload: %w", err)
 	}
-	if payload.SchemaVersion != knowledgeCapsuleEnvelopePayloadVersion {
-		return nil, fmt.Errorf(
+	switch payload.SchemaVersion {
+	case knowledgeCapsuleEnvelopePayloadVersionV1:
+		if payload.Route != nil {
+			return nil, nil, fmt.Errorf("accept envelope: route requires payload schema v2")
+		}
+	case knowledgeCapsuleEnvelopePayloadVersionV2:
+		if err := validateEnvelopeRoute(payload.Route); err != nil {
+			return nil, nil, fmt.Errorf("accept envelope: %w", err)
+		}
+	default:
+		return nil, nil, fmt.Errorf(
 			"accept envelope: unsupported payload schema %q",
 			payload.SchemaVersion,
 		)
 	}
 	capsuleID, err := newLocalID("kcap")
 	if err != nil {
-		return nil, fmt.Errorf("create accepted capsule id: %w", err)
+		return nil, nil, fmt.Errorf("create accepted capsule id: %w", err)
 	}
 	createdAt := time.Now().UTC().Format(time.RFC3339)
 	capsule := payload.Capsule
@@ -424,5 +502,67 @@ func capsuleFromEnvelope(envelope *model.Envelope) (*model.KnowledgeCapsule, err
 		Truncated:              capsule.Truncated,
 		OriginalEstimatedChars: capsule.OriginalEstimatedChars,
 		CreatedAt:              createdAt,
-	}, nil
+	}, payload.Route, nil
+}
+
+func validateEnvelopeRoute(route *envelopePayloadRoute) error {
+	if route == nil {
+		return fmt.Errorf("route is required")
+	}
+	matchType := strings.TrimSpace(route.MatchType)
+	matchValue := strings.TrimSpace(route.MatchValue)
+	switch matchType {
+	case "any":
+		if matchValue != "" {
+			return fmt.Errorf("route match value must be empty for any")
+		}
+	case "project", "keyword":
+		if matchValue == "" {
+			return fmt.Errorf("route match value is required")
+		}
+	default:
+		return fmt.Errorf("unsupported route match type %q", route.MatchType)
+	}
+	if len(matchValue) > envelopeRouteValueLimit {
+		return fmt.Errorf("route match value is too long")
+	}
+	if route.TargetAgent == model.AgentNameUnknown {
+		return fmt.Errorf("unsupported route target agent")
+	}
+	route.MatchType = matchType
+	route.MatchValue = matchValue
+	return nil
+}
+
+func (f *EnvelopeFacade) storeAcceptedEnvelopeRoute(
+	ctx context.Context,
+	capsule *model.KnowledgeCapsule,
+	route *envelopePayloadRoute,
+) (*model.KnowledgeInjection, error) {
+	injectionID, err := newLocalID("kci")
+	if err != nil {
+		return nil, fmt.Errorf("create accepted route injection id: %w", err)
+	}
+	injection := &model.KnowledgeInjection{
+		InjectionID:         injectionID,
+		CapsuleID:           capsule.CapsuleID,
+		SourceNodeID:        capsule.SourceNodeID,
+		SourceAgent:         capsule.SourceAgent,
+		SourceSessionID:     capsule.SourceSessionID,
+		TargetNodeID:        localNodeID(),
+		TargetAgent:         route.TargetAgent,
+		DeliveryMethod:      "hook",
+		DeliveryMessageType: "system_handoff",
+		Status:              "pending",
+		RouteMatchType:      route.MatchType,
+		RouteMatchValue:     route.MatchValue,
+	}
+	created, err := f.store.CreateKnowledgeInjection(
+		ctx,
+		&store.CreateKnowledgeInjectionRequest{Injection: injection},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store accepted route injection: %w", err)
+	}
+	return created.Injection, nil
 }
