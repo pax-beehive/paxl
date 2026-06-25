@@ -493,10 +493,14 @@ paxl capsule archive <capsule-id>
 paxl friend request alice@example.com --alias alice
 # Alice 接受 friend request 后
 paxl capsule send <capsule-id> --to @alice
+paxl capsule send <capsule-id> --to @alice --match project --project pax-manager --agent codex
+paxl capsule send <capsule-id> --to @alice --match keyword --keyword "capsule routing"
 ```
 
 `capsule send` 必须使用 accepted friend alias。manager 也会强制检查这个边界，所以即使
 绕开 CLI 直接调用 API，裸邮箱投递也会被拒绝。
+条件发送会把 route 存进 envelope。收件人先自行 accept，目标 session 之后由本地
+agent hook 在真实 prompt 触发时选择。
 
 读取收到的 envelopes：
 

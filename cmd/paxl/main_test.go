@@ -1601,6 +1601,13 @@ func (s *CommandSuite) TestCapsuleSendResolvesFriendAlias() {
 			s.Require().NoError(err)
 			s.Contains(string(body), `"recipient_email":"bob@example.com"`)
 			s.Contains(string(body), `"message":"please review"`)
+			s.Contains(
+				string(body),
+				`"schema_version":"paxl.envelope_payload.knowledge_capsule.v2"`,
+			)
+			s.Contains(string(body), `"match_type":"project"`)
+			s.Contains(string(body), `"match_value":"pax-manager"`)
+			s.Contains(string(body), `"target_agent":"codex"`)
 			return commandJSONResponse(`{
 					"data":{
 						"envelope":{
@@ -1635,6 +1642,9 @@ func (s *CommandSuite) TestCapsuleSendResolvesFriendAlias() {
 			"capsule", "send", capsuleID,
 			"--to", "@bob",
 			"--message", "please review",
+			"--match", "project",
+			"--project", "pax-manager",
+			"--agent", "codex",
 		},
 		&s.stdout,
 		&s.stderr,
@@ -2754,17 +2764,26 @@ func (s *CommandSuite) TestRenderAcceptEnvelopeSupportsFormats() {
 	resp := &facade.AcceptEnvelopeResponse{
 		Envelope: &model.Envelope{EnvelopeID: "env_1", Status: "accepted"},
 		Capsule:  &model.KnowledgeCapsule{CapsuleID: "kcap_1", Title: "Bridge"},
+		Injection: &model.KnowledgeInjection{
+			InjectionID:     "kci_1",
+			Status:          "pending",
+			TargetAgent:     model.AgentNameCodex,
+			RouteMatchType:  "project",
+			RouteMatchValue: "pax-manager",
+		},
 	}
 
 	err := renderAcceptEnvelope(&s.stdout, resp, "table")
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), "Accepted env_1 as local capsule kcap_1")
+	s.Contains(s.stdout.String(), "Queued hook injection route kci_1")
 
 	s.SetupTest()
 	err = renderAcceptEnvelope(&s.stdout, resp, "jsonl")
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), `"envelopeId":"env_1"`)
 	s.Contains(s.stdout.String(), `"capsuleId":"kcap_1"`)
+	s.Contains(s.stdout.String(), `"injectionId":"kci_1"`)
 }
 
 func (s *CommandSuite) TestRenderAcceptEnvelopeRejectsUnknownFormat() {

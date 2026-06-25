@@ -579,6 +579,22 @@ func newCapsuleCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 					&cli.StringFlag{Name: "to", Usage: "Accepted friend alias, for example @alice"},
 					&cli.StringFlag{Name: "message", Usage: "Optional note for the recipient"},
 					&cli.StringFlag{
+						Name:  "match",
+						Usage: "Envelope route for recipient hook injection: any, project, or keyword",
+					},
+					&cli.StringFlag{
+						Name:  "project",
+						Usage: "Project basename for --match project",
+					},
+					&cli.StringFlag{
+						Name:  "keyword",
+						Usage: "Prompt substring for --match keyword",
+					},
+					&cli.StringFlag{
+						Name:  "agent",
+						Usage: "Optional recipient agent filter for the route",
+					},
+					&cli.StringFlag{
 						Name:  "format",
 						Value: "table",
 						Usage: "Output format: table or jsonl",
@@ -2126,11 +2142,37 @@ func parseSendEnvelopeRequest(cmd *cli.Command) (*facade.SendEnvelopeRequest, er
 	default:
 		return nil, fmt.Errorf("unsupported format %q", cmd.String("format"))
 	}
-	return &facade.SendEnvelopeRequest{
+	req := &facade.SendEnvelopeRequest{
 		CapsuleID:      capsuleID,
 		RecipientEmail: recipient,
 		Message:        cmd.String("message"),
-	}, nil
+	}
+	if rawAgent := strings.TrimSpace(cmd.String("agent")); rawAgent != "" {
+		agent, err := model.ParseAgentName(rawAgent)
+		if err != nil {
+			return nil, fmt.Errorf("parse agent: %w", err)
+		}
+		req.TargetAgent = agent
+	}
+	if rawMatch := strings.TrimSpace(cmd.String("match")); rawMatch != "" {
+		matchValue, err := parseInjectRouteMatchValue(cmd, rawMatch)
+		if err != nil {
+			return nil, err
+		}
+		req.MatchType = rawMatch
+		req.MatchValue = matchValue
+		return req, nil
+	}
+	if req.TargetAgent != "" {
+		return nil, fmt.Errorf("--agent requires --match")
+	}
+	if strings.TrimSpace(cmd.String("project")) != "" {
+		return nil, fmt.Errorf("--project requires --match project")
+	}
+	if strings.TrimSpace(cmd.String("keyword")) != "" {
+		return nil, fmt.Errorf("--keyword requires --match keyword")
+	}
+	return req, nil
 }
 
 func parseInjectCapsuleRequest(cmd *cli.Command) (*facade.InjectCapsuleRequest, error) {
@@ -2804,15 +2846,54 @@ func renderAcceptEnvelope(
 		); err != nil {
 			return fmt.Errorf("write accept result: %w", err)
 		}
+		if resp.Injection != nil {
+			if _, err := fmt.Fprintf(
+				stdout,
+				"Queued hook injection route %s for %s match %s\n",
+				resp.Injection.InjectionID,
+				firstNonEmpty(string(resp.Injection.TargetAgent), "any agent"),
+				firstNonEmpty(resp.Injection.RouteMatchType, "any"),
+			); err != nil {
+				return fmt.Errorf("write accept route result: %w", err)
+			}
+		}
 		return nil
 	case "jsonl":
 		if err := encodeEnvelopeJSONL(stdout, resp.Envelope); err != nil {
 			return err
 		}
-		return encodeCapsuleJSONL(stdout, resp.Capsule)
+		if err := encodeCapsuleJSONL(stdout, resp.Capsule); err != nil {
+			return err
+		}
+		if resp.Injection != nil {
+			return encodeInjectionJSONL(stdout, resp.Injection)
+		}
+		return nil
 	default:
 		return fmt.Errorf("unsupported format %q", format)
 	}
+}
+
+func encodeInjectionJSONL(stdout io.Writer, injection *model.KnowledgeInjection) error {
+	return json.NewEncoder(stdout).Encode(map[string]any{
+		"schemaVersion":       "paxl.knowledge_injection.v1",
+		"injectionId":         injection.InjectionID,
+		"capsuleId":           injection.CapsuleID,
+		"sourceNodeId":        injection.SourceNodeID,
+		"sourceAgent":         injection.SourceAgent,
+		"sourceSessionId":     injection.SourceSessionID,
+		"targetNodeId":        injection.TargetNodeID,
+		"targetAgent":         injection.TargetAgent,
+		"targetSessionId":     injection.TargetSessionID,
+		"deliveryMethod":      injection.DeliveryMethod,
+		"deliveryMessageType": injection.DeliveryMessageType,
+		"status":              injection.Status,
+		"routeMatchType":      injection.RouteMatchType,
+		"routeMatchValue":     injection.RouteMatchValue,
+		"createdAt":           injection.CreatedAt,
+		"claimedAt":           injection.ClaimedAt,
+		"consumedAt":          injection.ConsumedAt,
+	})
 }
 
 func encodeEnvelopeJSONL(stdout io.Writer, envelope *model.Envelope) error {
