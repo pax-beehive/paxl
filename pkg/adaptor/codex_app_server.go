@@ -120,40 +120,10 @@ type codexAppServerClient struct {
 }
 
 func (c *codexAppServerClient) deliver(threadID string, text string) (string, error) {
-	if err := c.send(&codexAppServerRequest{
-		JSONRPC: "2.0",
-		ID:      1,
-		Method:  "initialize",
-		Params: map[string]interface{}{
-			"clientInfo": map[string]string{
-				"name":    "paxl",
-				"title":   "paxl",
-				"version": "0.1.0",
-			},
-			"capabilities": map[string]bool{"experimentalApi": true},
-		},
-	}); err != nil {
+	if err := c.initialize(); err != nil {
 		return "", err
 	}
-	if err := c.waitForResponse(1); err != nil {
-		return "", err
-	}
-	if err := c.send(&codexAppServerRequest{
-		JSONRPC: "2.0",
-		Method:  "initialized",
-		Params:  map[string]interface{}{},
-	}); err != nil {
-		return "", err
-	}
-	if err := c.send(&codexAppServerRequest{
-		JSONRPC: "2.0",
-		ID:      2,
-		Method:  "thread/resume",
-		Params:  map[string]string{"threadId": threadID},
-	}); err != nil {
-		return "", err
-	}
-	resumeResult, err := c.waitForResponseResult(2)
+	resumeResult, err := c.resumeThread(threadID, 2)
 	if err != nil {
 		return "", err
 	}
@@ -180,6 +150,47 @@ func (c *codexAppServerClient) deliver(threadID string, text string) (string, er
 		return c.startTurn(threadID, text, 4)
 	}
 	return c.startTurn(threadID, text, 3)
+}
+
+func (c *codexAppServerClient) initialize() error {
+	if err := c.send(&codexAppServerRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "initialize",
+		Params: map[string]interface{}{
+			"clientInfo": map[string]string{
+				"name":    "paxl",
+				"title":   "paxl",
+				"version": "0.1.0",
+			},
+			"capabilities": map[string]bool{"experimentalApi": true},
+		},
+	}); err != nil {
+		return err
+	}
+	if err := c.waitForResponse(1); err != nil {
+		return err
+	}
+	return c.send(&codexAppServerRequest{
+		JSONRPC: "2.0",
+		Method:  "initialized",
+		Params:  map[string]interface{}{},
+	})
+}
+
+func (c *codexAppServerClient) resumeThread(
+	threadID string,
+	requestID int,
+) (json.RawMessage, error) {
+	if err := c.send(&codexAppServerRequest{
+		JSONRPC: "2.0",
+		ID:      requestID,
+		Method:  "thread/resume",
+		Params:  map[string]string{"threadId": threadID},
+	}); err != nil {
+		return nil, err
+	}
+	return c.waitForResponseResult(requestID)
 }
 
 func (c *codexAppServerClient) startTurn(

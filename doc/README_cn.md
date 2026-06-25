@@ -454,6 +454,14 @@ paxl capsule create codex:<session-id> \
   --content-file capsule.md
 ```
 
+如果这条内容不需要绑定某个 source session，可以创建 manual capsule：
+
+```sh
+paxl capsule create --manual \
+  --keyword "installer hosting" \
+  --content-file capsule.md
+```
+
 列出和查看 capsules：
 
 ```sh
@@ -524,6 +532,9 @@ Codex 投递：
   `turn/steer`；没有可 steer 的 active turn 时回退到 `turn/start`
 - 其他已有 session 或 app-server 失败回退：`codex exec resume --all <session-id> -`
 - 新 session：`codex exec -`
+- 条件 hook 注入：通过 Codex `UserPromptSubmit` hook JSON 的
+  `hookSpecificOutput.additionalContext` 注入到当前用户 prompt 之前。Codex
+  可能需要用户先 trust 新增或变更的 hook。
 
 Claude 投递：
 

@@ -107,6 +107,15 @@ paxl capsule create codex:<source-session-id> \
   --content-file /path/to/content.md
 ```
 
+Create a manual capsule from prepared content when there is no useful source
+session:
+
+```sh
+paxl capsule create --manual \
+  --keyword "topic" \
+  --content-file /path/to/content.md
+```
+
 Use local transcript extraction only when the user explicitly wants local
 matching instead of source-agent generation:
 

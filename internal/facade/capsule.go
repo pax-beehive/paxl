@@ -36,6 +36,7 @@ type CreateCapsuleRequest struct {
 	Title           string
 	Summary         string
 	Content         string
+	Manual          bool
 	Local           bool
 }
 
@@ -128,6 +129,11 @@ func (f *CapsuleFacade) Create(
 	var capsule *model.KnowledgeCapsule
 	var err error
 	switch {
+	case req.Manual:
+		capsule, err = f.buildManualCapsule(req)
+		if err != nil {
+			return nil, fmt.Errorf("build manual capsule: %w", err)
+		}
 	case strings.TrimSpace(req.Content) != "":
 		capsule, err = f.buildProvidedCapsule(ctx, req, option)
 		if err != nil {
@@ -526,6 +532,21 @@ func (f *CapsuleFacade) buildLocalCapsule(
 	}, nil
 }
 
+func (f *CapsuleFacade) buildManualCapsule(
+	req *CreateCapsuleRequest,
+) (*model.KnowledgeCapsule, error) {
+	if strings.TrimSpace(req.SourceSessionID) != "" {
+		return nil, fmt.Errorf("source session id cannot be used with manual capsule creation")
+	}
+	if req.Agent != "" && req.Agent != model.AgentNameUnknown {
+		return nil, fmt.Errorf("agent cannot be used with manual capsule creation")
+	}
+	if req.Local {
+		return nil, fmt.Errorf("manual capsule creation cannot be used with local extraction")
+	}
+	return buildProvidedKnowledgeCapsule(req, "manual", model.AgentNamePaxl)
+}
+
 func (f *CapsuleFacade) buildProvidedCapsule(
 	ctx context.Context,
 	req *CreateCapsuleRequest,
@@ -547,6 +568,21 @@ func (f *CapsuleFacade) buildProvidedCapsule(
 	if err != nil {
 		return nil, fmt.Errorf("load source session: %w", err)
 	}
+	return buildProvidedKnowledgeCapsule(req, session.Session.ID, session.Session.Agent)
+}
+
+func buildProvidedKnowledgeCapsule(
+	req *CreateCapsuleRequest,
+	sourceSessionID string,
+	sourceAgent model.AgentName,
+) (*model.KnowledgeCapsule, error) {
+	if strings.TrimSpace(req.Keyword) == "" {
+		return nil, fmt.Errorf("keyword is required")
+	}
+	content := strings.TrimSpace(req.Content)
+	if content == "" {
+		return nil, fmt.Errorf("content is required")
+	}
 	capsuleID, err := newLocalID("kcap")
 	if err != nil {
 		return nil, fmt.Errorf("create capsule id: %w", err)
@@ -555,8 +591,8 @@ func (f *CapsuleFacade) buildProvidedCapsule(
 	return &model.KnowledgeCapsule{
 		CapsuleID:       capsuleID,
 		SourceNodeID:    localNodeID(),
-		SourceSessionID: session.Session.ID,
-		SourceAgent:     session.Session.Agent,
+		SourceSessionID: sourceSessionID,
+		SourceAgent:     sourceAgent,
 		Keyword:         req.Keyword,
 		Title: truncateString(
 			firstNonEmpty(strings.TrimSpace(req.Title), "Knowledge capsule: "+req.Keyword),

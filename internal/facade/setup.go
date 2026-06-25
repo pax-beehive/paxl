@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -91,16 +92,21 @@ func (f *SetupFacade) installAgentHook(
 ) (*SetupAdapterResult, error) {
 	switch agent {
 	case model.AgentNameCodex:
-		return installDescriptorHook(agent, codexHookDescriptorPath(), command, dryRun)
+		return installCodexHook(command, dryRun)
 	case model.AgentNameClaude:
 		return installClaudeHook(command, dryRun)
 	case model.AgentNameHermes:
-		return installDescriptorHook(agent, hermesHookDescriptorPath(), command, dryRun)
+		dbPath, err := defaultStorePath()
+		if err != nil {
+			return nil, err
+		}
+		return installDescriptorHook(agent, hermesHookDescriptorPath(), command, dbPath, dryRun)
 	case model.AgentNameUnknown,
 		model.AgentNamePi,
 		model.AgentNameKiro,
 		model.AgentNameGemini,
-		model.AgentNameOpenClaw:
+		model.AgentNameOpenClaw,
+		model.AgentNamePaxl:
 		return &SetupAdapterResult{
 			Agent:   agent,
 			Status:  SetupStatusSkipped,
@@ -144,9 +150,10 @@ func installDescriptorHook(
 	agent model.AgentName,
 	path string,
 	command string,
+	dbPath string,
 	dryRun bool,
 ) (*SetupAdapterResult, error) {
-	hookCommand := setupHookCommand(command, agent)
+	hookCommand := setupHookCommand(command, agent, dbPath)
 	result := &SetupAdapterResult{
 		Agent:   agent,
 		Status:  SetupStatusInstalled,
@@ -177,6 +184,44 @@ func installDescriptorHook(
 	return result, nil
 }
 
+func installCodexHook(command string, dryRun bool) (*SetupAdapterResult, error) {
+	dbPath, err := defaultStorePath()
+	if err != nil {
+		return nil, err
+	}
+	descriptor, err := installDescriptorHook(
+		model.AgentNameCodex,
+		codexHookDescriptorPath(),
+		command,
+		dbPath,
+		dryRun,
+	)
+	if err != nil {
+		return nil, err
+	}
+	result := &SetupAdapterResult{
+		Agent:   model.AgentNameCodex,
+		Status:  SetupStatusInstalled,
+		Path:    codexConfigPath(),
+		Message: "Installed Codex UserPromptSubmit hook.",
+	}
+	if dryRun {
+		result.Status = SetupStatusPending
+		result.Message = "Would install Codex UserPromptSubmit hook."
+		return result, nil
+	}
+	if err := upsertCodexConfigHook(
+		codexConfigPath(),
+		setupHookCommand(command, model.AgentNameCodex, dbPath),
+	); err != nil {
+		return nil, err
+	}
+	if descriptor != nil {
+		result.Path = descriptor.Path
+	}
+	return result, nil
+}
+
 func installClaudeHook(command string, dryRun bool) (*SetupAdapterResult, error) {
 	path := claudeSettingsPath()
 	result := &SetupAdapterResult{
@@ -200,7 +245,7 @@ func installClaudeHook(command string, dryRun bool) (*SetupAdapterResult, error)
 		"hooks": []any{
 			map[string]any{
 				"type":    "command",
-				"command": setupHookCommand(command, model.AgentNameClaude),
+				"command": setupHookCommand(command, model.AgentNameClaude, ""),
 				"async":   false,
 			},
 		},
@@ -217,8 +262,12 @@ func installClaudeHook(command string, dryRun bool) (*SetupAdapterResult, error)
 	return result, nil
 }
 
-func setupHookCommand(command string, agent model.AgentName) string {
-	return strings.TrimSpace(command) +
+func setupHookCommand(command string, agent model.AgentName, dbPath string) string {
+	out := shellCommandToken(strings.TrimSpace(command))
+	if strings.TrimSpace(dbPath) != "" {
+		out += " --db " + shellQuote(dbPath)
+	}
+	return out +
 		" __agent-hook --agent " +
 		string(agent) +
 		" --event user-prompt"
@@ -248,6 +297,87 @@ func upsertPaxlHook(groups []any, agent model.AgentName, next map[string]any) []
 		}
 	}
 	return append(groups, next)
+}
+
+func upsertCodexConfigHook(path string, command string) error {
+	raw, err := os.ReadFile(path) // #nosec G304
+	if os.IsNotExist(err) {
+		raw = nil
+	} else if err != nil {
+		return fmt.Errorf("read Codex config: %w", err)
+	}
+	next := upsertTOMLMultilineEntry(
+		string(raw),
+		"hooks",
+		[]string{"UserPromptSubmit", "userPromptSubmit"},
+		codexHookTOMLEntry(command),
+	)
+	if err := writeFile(path, []byte(next), 0o600); err != nil {
+		return fmt.Errorf("write Codex config: %w", err)
+	}
+	return nil
+}
+
+func codexHookTOMLEntry(command string) string {
+	return "UserPromptSubmit = [{ hooks = [{ type = \"command\", command = " +
+		strconv.Quote(command) +
+		", async = false }] }]"
+}
+
+func upsertTOMLMultilineEntry(
+	content string,
+	section string,
+	keys []string,
+	entry string,
+) string {
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	header := "[" + section + "]"
+	inSection := false
+	replaced := false
+	out := make([]string, 0, len(lines)+2)
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == header {
+			inSection = true
+			out = append(out, line)
+			continue
+		}
+		if inSection && strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			if !replaced {
+				out = append(out, entry, "")
+			}
+			out = append(out, lines[index:]...)
+			return strings.TrimRight(strings.Join(out, "\n"), "\n") + "\n"
+		}
+		if inSection && tomlLineStartsWithAnyKey(trimmed, keys) {
+			if !replaced {
+				out = append(out, entry)
+				replaced = true
+			}
+			continue
+		}
+		out = append(out, line)
+	}
+	if inSection {
+		if !replaced {
+			out = append(out, entry)
+		}
+		return strings.TrimRight(strings.Join(out, "\n"), "\n") + "\n"
+	}
+	trimmedContent := strings.TrimRight(content, "\n")
+	if strings.TrimSpace(trimmedContent) == "" {
+		return header + "\n" + entry + "\n"
+	}
+	return trimmedContent + "\n\n" + header + "\n" + entry + "\n"
+}
+
+func tomlLineStartsWithAnyKey(line string, keys []string) bool {
+	for _, key := range keys {
+		if strings.HasPrefix(line, key+" ") {
+			return true
+		}
+	}
+	return false
 }
 
 func readJSONMap(path string) (map[string]any, error) {
@@ -295,7 +425,7 @@ func writeFile(path string, content []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create parent directory: %w", err)
 	}
-	if err := os.WriteFile(path, content, mode); err != nil {
+	if err := os.WriteFile(path, content, mode); err != nil { // #nosec G304,G703
 		return fmt.Errorf("write file: %w", err)
 	}
 	return nil
@@ -312,6 +442,11 @@ func hookShimPath() (string, error) {
 func codexHookDescriptorPath() string {
 	root := firstNonEmpty(os.Getenv("CODEX_HOME"), homePath(".codex"))
 	return filepath.Join(root, "paxl", "hooks", "user-prompt.json")
+}
+
+func codexConfigPath() string {
+	root := firstNonEmpty(os.Getenv("CODEX_HOME"), homePath(".codex"))
+	return filepath.Join(root, "config.toml")
 }
 
 func claudeSettingsPath() string {
@@ -338,4 +473,25 @@ func shellQuote(value string) string {
 		return "''"
 	}
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+func shellCommandToken(value string) string {
+	if value == "" {
+		return "paxl"
+	}
+	if strings.ContainsAny(value, " \t\n'\"\\$`") {
+		return shellQuote(value)
+	}
+	return value
+}
+
+func defaultStorePath() (string, error) {
+	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+		return filepath.Join(xdg, "paxl", "paxl.sqlite"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home: %w", err)
+	}
+	return filepath.Join(home, ".local", "share", "paxl", "paxl.sqlite"), nil
 }
