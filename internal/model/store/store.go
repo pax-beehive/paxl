@@ -544,8 +544,8 @@ func (s *Store) CreateKnowledgeInjection(
 			injection_id, capsule_id, source_node_id, source_agent, source_session_id,
 			target_node_id, target_session_id, target_agent, delivery_method,
 			delivery_message_type, status, route_match_type, route_match_value,
-			created_at, claimed_at, consumed_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			action_items_json, created_at, claimed_at, consumed_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		injection.InjectionID,
 		injection.CapsuleID,
@@ -560,6 +560,7 @@ func (s *Store) CreateKnowledgeInjection(
 		injection.Status,
 		injection.RouteMatchType,
 		injection.RouteMatchValue,
+		nullString(injection.ActionItemsJSON),
 		injection.CreatedAt,
 		nullString(injection.ClaimedAt),
 		nullString(injection.ConsumedAt),
@@ -607,7 +608,7 @@ func (s *Store) ClaimHookKnowledgeInjection(
 			COALESCE(source_session_id, ''), COALESCE(target_node_id, ''), target_session_id,
 			COALESCE(target_agent, ''), delivery_method, delivery_message_type, status,
 			COALESCE(route_match_type, ''), COALESCE(route_match_value, ''), created_at,
-			COALESCE(claimed_at, ''), COALESCE(consumed_at, '')
+			COALESCE(action_items_json, ''), COALESCE(claimed_at, ''), COALESCE(consumed_at, '')
 		FROM session_knowledge_injections
 		WHERE status = 'pending'
 		ORDER BY created_at ASC, injection_id ASC
@@ -753,6 +754,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		status TEXT NOT NULL,
 		route_match_type TEXT,
 		route_match_value TEXT,
+		action_items_json TEXT,
 		created_at TEXT NOT NULL,
 		claimed_at TEXT,
 		consumed_at TEXT
@@ -811,6 +813,11 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			table:      "session_knowledge_injections",
 			column:     "route_match_value",
 			definition: "route_match_value TEXT",
+		},
+		{
+			table:      "session_knowledge_injections",
+			column:     "action_items_json",
+			definition: "action_items_json TEXT",
 		},
 		{
 			table:      "session_knowledge_injections",
@@ -1032,7 +1039,7 @@ func (s *Store) getKnowledgeInjection(
 		COALESCE(source_session_id, ''), COALESCE(target_node_id, ''), target_session_id,
 		COALESCE(target_agent, ''), delivery_method, delivery_message_type, status,
 		COALESCE(route_match_type, ''), COALESCE(route_match_value, ''), created_at,
-		COALESCE(claimed_at, ''), COALESCE(consumed_at, '')
+		COALESCE(action_items_json, ''), COALESCE(claimed_at, ''), COALESCE(consumed_at, '')
 		FROM session_knowledge_injections WHERE injection_id = ?`,
 		injectionID,
 	)
@@ -1077,6 +1084,7 @@ func scanHookInjectionRow(scanner capsuleScanner) (*model.KnowledgeInjection, er
 		&injection.RouteMatchType,
 		&injection.RouteMatchValue,
 		&injection.CreatedAt,
+		&injection.ActionItemsJSON,
 		&injection.ClaimedAt,
 		&injection.ConsumedAt,
 	); err != nil {
@@ -1176,7 +1184,7 @@ func listKnowledgeInjectionsQuery(req *ListKnowledgeInjectionsRequest) (string, 
 		COALESCE(source_session_id, ''), COALESCE(target_node_id, ''), target_session_id,
 		COALESCE(target_agent, ''), delivery_method, delivery_message_type, status,
 		COALESCE(route_match_type, ''), COALESCE(route_match_value, ''), created_at,
-		COALESCE(claimed_at, ''), COALESCE(consumed_at, '') FROM session_knowledge_injections`
+		COALESCE(action_items_json, ''), COALESCE(claimed_at, ''), COALESCE(consumed_at, '') FROM session_knowledge_injections`
 	if req.TargetSessionID != "" {
 		query += " WHERE target_session_id = ?"
 		args = append(args, req.TargetSessionID)
@@ -1342,6 +1350,7 @@ func knownMigrationColumn(table string, column string) bool {
 		"session_knowledge_injections.target_node_id",
 		"session_knowledge_injections.route_match_type",
 		"session_knowledge_injections.route_match_value",
+		"session_knowledge_injections.action_items_json",
 		"session_knowledge_injections.claimed_at",
 		"session_knowledge_injections.consumed_at":
 		return true

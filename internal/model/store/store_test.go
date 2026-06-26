@@ -394,6 +394,7 @@ func (s *StoreSuite) TestCapsuleLifecycleAndInjectionList() {
 			TargetSessionID: "claude:target",
 			TargetAgent:     model.AgentNameClaude,
 			DeliveryMethod:  "cli_resume",
+			ActionItemsJSON: `["run tests","open PR"]`,
 		},
 	})
 	s.Require().NoError(err)
@@ -409,6 +410,7 @@ func (s *StoreSuite) TestCapsuleLifecycleAndInjectionList() {
 	s.Equal("codex:sess-1", injections.Injections[0].SourceSessionID)
 	s.Equal("target-node", injections.Injections[0].TargetNodeID)
 	s.Equal("system_handoff", injections.Injections[0].DeliveryMessageType)
+	s.Equal(`["run tests","open PR"]`, injections.Injections[0].ActionItemsJSON)
 	s.Equal("rendered", injections.Injections[0].Status)
 }
 
@@ -440,6 +442,7 @@ func (s *StoreSuite) TestClaimHookKnowledgeInjectionMatchesAndConsumesOnce() {
 			Status:              "pending",
 			RouteMatchType:      "project",
 			RouteMatchValue:     "paxl",
+			ActionItemsJSON:     `["run hook tests"]`,
 		},
 	})
 	s.Require().NoError(err)
@@ -456,6 +459,7 @@ func (s *StoreSuite) TestClaimHookKnowledgeInjectionMatchesAndConsumesOnce() {
 	s.Require().NoError(err)
 	s.Equal("kci_hook", claimed.Injection.InjectionID)
 	s.Equal("claude:claude-session", claimed.Injection.TargetSessionID)
+	s.Equal(`["run hook tests"]`, claimed.Injection.ActionItemsJSON)
 	s.Equal("claimed", claimed.Injection.Status)
 	s.Equal("Bridge", claimed.Capsule.Title)
 

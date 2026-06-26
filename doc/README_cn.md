@@ -185,11 +185,14 @@ paxl capsule send <capsule-id> --to @alice --message "please review"
 paxl outbox list
 paxl inbox list
 paxl inbox accept <envelope-id>
+paxl inbox accept --all
+paxl inbox watch
 ```
 
 发送方可以通过 outbox 跟踪已发送 envelope；接收方继续从 inbox 处理。接受 inbox envelope
-后，远端 payload 会保存成本地 capsule。需要让某个本地 agent 接手时，再把这个 capsule
-inject 到目标 session。
+后，远端 payload 会保存成本地 capsule。可以用 `paxl inbox accept --all` 一次性接受所有
+pending inbox envelope，也可以运行 `paxl inbox watch` 在前台持续接受 pending envelope，
+直到进程被停止。需要让某个本地 agent 接手时，再把这个 capsule inject 到目标 session。
 
 ### 转移人工整理好的上下文
 
@@ -473,7 +476,15 @@ paxl capsule get <capsule-id>
 
 ```sh
 paxl capsule inject <capsule-id> codex:<target-session-id>
+paxl capsule inject <capsule-id> codex:<target-session-id> \
+  --action-items "run go test ./..." \
+  --action-items "open a PR"
 ```
+
+Capsule handoff 默认只做知识转移，不让目标 agent 直接行动。重复传 `--action-items`
+可以把明确的可执行待办交给目标 agent。这里的 action item 指具体下一步，例如规划、
+编辑文件、运行工具，或基于 capsule 继续推进任务。直接 inject 和 `--match` 排队 hook
+inject 都可以使用 action items。
 
 用 capsule 直接启动一个新的目标 agent session：
 

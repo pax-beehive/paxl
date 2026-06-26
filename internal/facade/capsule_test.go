@@ -108,6 +108,7 @@ func (s *CapsuleFacadeSuite) TestCreateUsesSourceAgentGenerationByDefault() {
 	s.Require().NoError(err)
 	s.Equal("Generated bridge", resp.Capsule.Title)
 	s.Contains(resp.Capsule.Content, "Generated bridge content")
+	s.Contains(resp.Capsule.Content, "Action items:\n1. Run generated tests")
 }
 
 func (s *CapsuleFacadeSuite) TestCreateSourceGenerationMarksTruncatedContent() {
@@ -138,6 +139,7 @@ func (s *CapsuleFacadeSuite) TestCreateSourceGenerationAcceptsModelRole() {
 	s.Require().NoError(err)
 	s.Equal("Generated bridge", resp.Capsule.Title)
 	s.Contains(resp.Capsule.Content, "Generated bridge content")
+	s.Contains(resp.Capsule.Content, "Action items:\n1. Run generated tests")
 }
 
 func (s *CapsuleFacadeSuite) TestCreateSourceGenerationUsesLatestAgentResult() {
@@ -253,6 +255,7 @@ func (s *CapsuleFacadeSuite) TestInjectDeliversHandoffAndStoresInjection() {
 	s.Equal("codex:sess", injected.Injection.SourceSessionID)
 	s.Equal("local-node", injected.Injection.TargetNodeID)
 	s.Contains(injected.Message, "system_handoff")
+	s.Contains(injected.Message, "NO ACTIONABLE ITEMS")
 	s.Contains(injected.Message, "From:\nNode: local-node\nAgent: codex\nSession: codex:sess")
 	s.Contains(injected.Message, "To:\nNode: local-node\nAgent: codex\nSession: codex:target")
 	s.Contains(injected.Message, "Bridge content")
@@ -268,6 +271,40 @@ func (s *CapsuleFacadeSuite) TestInjectDeliversHandoffAndStoresInjection() {
 	s.Equal(injected.Injection.InjectionID, listed.Injections[0].InjectionID)
 }
 
+func (s *CapsuleFacadeSuite) TestInjectCanIncludeActionItemsInHandoff() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
+	created, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
+		SourceSessionID: "codex:sess",
+		Keyword:         "bridge",
+		Local:           true,
+	})
+	s.Require().NoError(err)
+	s.seedTargetSession()
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	s.installFakeCodex(capturePath)
+
+	injected, err := capsuleFacade.Inject(s.ctx, &facade.InjectCapsuleRequest{
+		CapsuleID:       created.Capsule.CapsuleID,
+		TargetSessionID: "codex:target",
+		ActionItems: []string{
+			"run go test ./...",
+			"open a PR",
+		},
+	})
+
+	s.Require().NoError(err)
+	s.Contains(injected.Message, "ACTION ITEMS")
+	s.Contains(injected.Message, "1. run go test ./...")
+	s.Contains(injected.Message, "2. open a PR")
+	s.NotContains(injected.Message, "NO ACTIONABLE ITEMS")
+	rawPrompt, err := os.ReadFile(capturePath)
+	s.Require().NoError(err)
+	s.Equal(injected.Message, string(rawPrompt))
+}
+
 func (s *CapsuleFacadeSuite) TestQueueHookInjectionAndConsumeFromMatchingPrompt() {
 	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
 	created, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
@@ -281,10 +318,15 @@ func (s *CapsuleFacadeSuite) TestQueueHookInjectionAndConsumeFromMatchingPrompt(
 		Agent:      model.AgentNameClaude,
 		MatchType:  "keyword",
 		MatchValue: "handoff",
+		ActionItems: []string{
+			"run hook tests",
+			"open the hook PR",
+		},
 	})
 	s.Require().NoError(err)
 	s.Equal("pending", queued.Injection.Status)
 	s.Equal("hook", queued.Injection.DeliveryMethod)
+	s.JSONEq(`["run hook tests","open the hook PR"]`, queued.Injection.ActionItemsJSON)
 
 	hookFacade := facade.NewAgentHookFacade(s.store)
 	noop, err := hookFacade.Run(s.ctx, &facade.AgentHookRequest{
@@ -305,6 +347,8 @@ func (s *CapsuleFacadeSuite) TestQueueHookInjectionAndConsumeFromMatchingPrompt(
 	s.Require().NoError(err)
 	s.Contains(consumed.Message, "system_handoff")
 	s.Contains(consumed.Message, "Bridge content")
+	s.Contains(consumed.Message, "1. run hook tests")
+	s.Contains(consumed.Message, "2. open the hook PR")
 	s.Equal("claimed", consumed.Injection.Status)
 	s.Equal("claude:claude-session", consumed.Injection.TargetSessionID)
 
@@ -741,7 +785,7 @@ func (s *CapsuleFacadeSuite) installFakeCodexRoleCapsuleGenerator(rolloutPath st
 	script := "#!/bin/sh\n" +
 		"prompt=$(cat)\n" +
 		"capsule_id=$(printf '%s\\n' \"$prompt\" | sed -n 's/^Capsule id: //p' | head -n 1)\n" +
-		"printf '%s\\n' \"{\\\"timestamp\\\":\\\"2026-06-20T01:03:00Z\\\",\\\"type\\\":\\\"response_item\\\",\\\"payload\\\":{\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"" + role + "\\\",\\\"content\\\":[{\\\"type\\\":\\\"output_text\\\",\\\"text\\\":\\\"PAX_KNOWLEDGE_CAPSULE_START ${capsule_id}\\\\n{\\\\\\\"title\\\\\\\":\\\\\\\"Generated bridge\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Generated summary\\\\\\\",\\\\\\\"content\\\\\\\":\\\\\\\"Generated bridge content\\\\\\\"}\\\\nPAX_KNOWLEDGE_CAPSULE_END ${capsule_id}\\\"}]}}\" >> \"" + rolloutPath + "\"\n"
+		"printf '%s\\n' \"{\\\"timestamp\\\":\\\"2026-06-20T01:03:00Z\\\",\\\"type\\\":\\\"response_item\\\",\\\"payload\\\":{\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"" + role + "\\\",\\\"content\\\":[{\\\"type\\\":\\\"output_text\\\",\\\"text\\\":\\\"PAX_KNOWLEDGE_CAPSULE_START ${capsule_id}\\\\n{\\\\\\\"title\\\\\\\":\\\\\\\"Generated bridge\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Generated summary\\\\\\\",\\\\\\\"content\\\\\\\":\\\\\\\"Generated bridge content\\\\\\\",\\\\\\\"action_items\\\\\\\":[\\\\\\\"Run generated tests\\\\\\\"]}\\\\nPAX_KNOWLEDGE_CAPSULE_END ${capsule_id}\\\"}]}}\" >> \"" + rolloutPath + "\"\n"
 	s.Require().NoError(os.WriteFile(fakePath, []byte(script), 0o700))
 	s.T().Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }

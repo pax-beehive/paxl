@@ -635,6 +635,11 @@ func newCapsuleCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 						Usage: "Prompt substring for --match keyword",
 					},
 					&cli.BoolFlag{Name: "new", Usage: "Start a new target agent session"},
+					&cli.StringSliceFlag{
+						Name: "action-items",
+						Usage: "Action item to include in the handoff. " +
+							"Repeat to include multiple items.",
+					},
 					&cli.BoolFlag{Name: "verbose", Usage: "Print injection delivery details"},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -704,8 +709,16 @@ func newInboxCommand(stdout io.Writer) *cli.Command {
 			{
 				Name:      "accept",
 				Usage:     "Accept an envelope and store its capsule locally",
-				ArgsUsage: "<envelope-id>",
+				ArgsUsage: "[<envelope-id>]",
 				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:  "all",
+						Usage: "Accept all pending envelopes",
+					},
+					&cli.IntFlag{
+						Name:  "limit",
+						Usage: "Maximum envelopes to accept with --all",
+					},
 					&cli.StringFlag{
 						Name:  "format",
 						Value: "table",
@@ -714,6 +727,29 @@ func newInboxCommand(stdout io.Writer) *cli.Command {
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					return inboxAccept(ctx, cmd, stdout)
+				},
+			},
+			{
+				Name:  "watch",
+				Usage: "Continuously accept pending inbox envelopes",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "interval",
+						Value: "30s",
+						Usage: "Polling interval",
+					},
+					&cli.IntFlag{
+						Name:  "limit",
+						Usage: "Maximum envelopes to accept per poll",
+					},
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "table",
+						Usage: "Output format: table or jsonl",
+					},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return inboxWatch(ctx, cmd, stdout)
 				},
 			},
 			{
@@ -1750,6 +1786,9 @@ func inboxGet(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
 }
 
 func inboxAccept(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	if cmd.Bool("all") {
+		return inboxAcceptAll(ctx, cmd, stdout)
+	}
 	req, err := parseAcceptEnvelopeRequest(cmd)
 	if err != nil {
 		return fmt.Errorf("parse inbox accept request: %w", err)
@@ -1768,6 +1807,164 @@ func inboxAccept(ctx context.Context, cmd *cli.Command, stdout io.Writer) error 
 		return fmt.Errorf("render accepted envelope: %w", err)
 	}
 	return nil
+}
+
+func inboxAcceptAll(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	switch cmd.String("format") {
+	case "table", "jsonl":
+	default:
+		return fmt.Errorf("unsupported format %q", cmd.String("format"))
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open envelope store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	envelopeFacade := facade.NewEnvelopeFacade(nil, opened.Store)
+	resp, err := envelopeFacade.AcceptAll(ctx, &facade.AcceptAllEnvelopesRequest{
+		Status:          "pending",
+		Limit:           cmd.Int("limit"),
+		ContinueOnError: true,
+	})
+	if err != nil {
+		return fmt.Errorf("accept all envelopes: %w", err)
+	}
+	if err := renderAcceptAllEnvelopes(stdout, resp, cmd.String("format")); err != nil {
+		return fmt.Errorf("render accepted envelopes: %w", err)
+	}
+	if len(resp.Failures) > 0 {
+		return fmt.Errorf("accept all envelopes: %d failed", len(resp.Failures))
+	}
+	return nil
+}
+
+func inboxWatch(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	switch cmd.String("format") {
+	case "table", "jsonl":
+	default:
+		return fmt.Errorf("unsupported format %q", cmd.String("format"))
+	}
+	interval, err := parseWatchInterval(cmd.String("interval"))
+	if err != nil {
+		return err
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open envelope store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	envelopeFacade := facade.NewEnvelopeFacade(nil, opened.Store)
+	return watchInbox(ctx, &watchInboxRequest{
+		Facade:   envelopeFacade,
+		Stdout:   stdout,
+		Format:   cmd.String("format"),
+		Interval: interval,
+		Limit:    cmd.Int("limit"),
+	})
+}
+
+type watchInboxRequest struct {
+	Facade   *facade.EnvelopeFacade
+	Stdout   io.Writer
+	Format   string
+	Interval time.Duration
+	Limit    int
+}
+
+func watchInbox(ctx context.Context, req *watchInboxRequest) error {
+	if req == nil || req.Facade == nil {
+		return fmt.Errorf("watch inbox: envelope facade is required")
+	}
+	interval := req.Interval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	if err := renderInboxWatchEvent(
+		req.Stdout,
+		req.Format,
+		"started",
+		interval.String(),
+		0,
+	); err != nil {
+		return err
+	}
+	if err := acceptInboxWatchCycle(ctx, req); err != nil {
+		return err
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if err := acceptInboxWatchCycle(ctx, req); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func acceptInboxWatchCycle(ctx context.Context, req *watchInboxRequest) error {
+	resp, err := req.Facade.AcceptAll(ctx, &facade.AcceptAllEnvelopesRequest{
+		Status:          "pending",
+		Limit:           req.Limit,
+		ContinueOnError: true,
+	})
+	if err != nil {
+		return fmt.Errorf("accept pending envelopes: %w", err)
+	}
+	if len(resp.Accepted) == 0 && len(resp.Failures) == 0 {
+		return nil
+	}
+	total := len(resp.Accepted) + len(resp.Failures)
+	if err := renderInboxWatchEvent(
+		req.Stdout,
+		req.Format,
+		"received",
+		"",
+		total,
+	); err != nil {
+		return err
+	}
+	if err := renderAcceptAllEnvelopes(req.Stdout, resp, req.Format); err != nil {
+		return err
+	}
+	if len(resp.Accepted) > 0 {
+		if err := renderInboxWatchEvent(
+			req.Stdout,
+			req.Format,
+			"auto_accepted",
+			"",
+			len(resp.Accepted),
+		); err != nil {
+			return err
+		}
+	}
+	if len(resp.Failures) > 0 {
+		if err := renderInboxWatchEvent(
+			req.Stdout,
+			req.Format,
+			"failed",
+			"",
+			len(resp.Failures),
+		); err != nil {
+			return err
+		}
+		return fmt.Errorf("accept pending envelopes: %d failed", len(resp.Failures))
+	}
+	return nil
+}
+
+func parseWatchInterval(raw string) (time.Duration, error) {
+	interval, err := time.ParseDuration(strings.TrimSpace(raw))
+	if err != nil {
+		return 0, fmt.Errorf("parse watch interval: %w", err)
+	}
+	if interval <= 0 {
+		return 0, fmt.Errorf("watch interval must be positive")
+	}
+	return interval, nil
 }
 
 func inboxArchive(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
@@ -2183,6 +2380,7 @@ func parseInjectCapsuleRequest(cmd *cli.Command) (*facade.InjectCapsuleRequest, 
 		CapsuleID:       cmd.Args().Get(0),
 		TargetSessionID: cmd.Args().Get(1),
 		NewSession:      cmd.Bool("new"),
+		ActionItems:     cmd.StringSlice("action-items"),
 	}
 	if rawAgent := strings.TrimSpace(cmd.String("agent")); rawAgent != "" {
 		agent, err := model.ParseAgentName(rawAgent)
@@ -2635,6 +2833,7 @@ func renderInjectionList(
 				"status":              injection.Status,
 				"routeMatchType":      injection.RouteMatchType,
 				"routeMatchValue":     injection.RouteMatchValue,
+				"actionItems":         injectionActionItems(injection),
 				"createdAt":           injection.CreatedAt,
 				"claimedAt":           injection.ClaimedAt,
 				"consumedAt":          injection.ConsumedAt,
@@ -2874,6 +3073,105 @@ func renderAcceptEnvelope(
 	}
 }
 
+func renderAcceptAllEnvelopes(
+	stdout io.Writer,
+	resp *facade.AcceptAllEnvelopesResponse,
+	format string,
+) error {
+	switch format {
+	case "table":
+		if len(resp.Accepted) == 0 && len(resp.Failures) == 0 {
+			if _, err := fmt.Fprintln(stdout, "No pending envelopes to accept"); err != nil {
+				return fmt.Errorf("write accept all empty result: %w", err)
+			}
+			return nil
+		}
+		for _, accepted := range resp.Accepted {
+			if err := renderAcceptEnvelope(stdout, accepted, format); err != nil {
+				return err
+			}
+		}
+		for _, failure := range resp.Failures {
+			if _, err := fmt.Fprintf(
+				stdout,
+				"Failed %s: %s\n",
+				failure.EnvelopeID,
+				failure.Error,
+			); err != nil {
+				return fmt.Errorf("write accept all failure: %w", err)
+			}
+		}
+		return nil
+	case "jsonl":
+		for _, accepted := range resp.Accepted {
+			if err := renderAcceptEnvelope(stdout, accepted, format); err != nil {
+				return err
+			}
+		}
+		encoder := json.NewEncoder(stdout)
+		for _, failure := range resp.Failures {
+			if err := encoder.Encode(map[string]any{
+				"schemaVersion": "paxl.accept_failure.v1",
+				"envelopeId":    failure.EnvelopeID,
+				"error":         failure.Error,
+			}); err != nil {
+				return fmt.Errorf("encode accept all failure: %w", err)
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func renderInboxWatchEvent(
+	stdout io.Writer,
+	format string,
+	event string,
+	detail string,
+	count int,
+) error {
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	switch format {
+	case "table":
+		var message string
+		switch event {
+		case "started":
+			message = fmt.Sprintf("Watching inbox every %s; press Ctrl-C to stop", detail)
+		case "received":
+			message = fmt.Sprintf("Received %d pending envelope(s)", count)
+		case "auto_accepted":
+			message = fmt.Sprintf("Auto accepted %d envelope(s)", count)
+		case "failed":
+			message = fmt.Sprintf("Failed to accept %d envelope(s)", count)
+		default:
+			message = event
+		}
+		if _, err := fmt.Fprintf(stdout, "[%s] %s\n", timestamp, message); err != nil {
+			return fmt.Errorf("write inbox watch event: %w", err)
+		}
+		return nil
+	case "jsonl":
+		payload := map[string]any{
+			"schemaVersion": "paxl.inbox_watch_event.v1",
+			"event":         event,
+			"timestamp":     timestamp,
+		}
+		if detail != "" {
+			payload["detail"] = detail
+		}
+		if count > 0 {
+			payload["count"] = count
+		}
+		if err := json.NewEncoder(stdout).Encode(payload); err != nil {
+			return fmt.Errorf("encode inbox watch event: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
 func encodeInjectionJSONL(stdout io.Writer, injection *model.KnowledgeInjection) error {
 	return json.NewEncoder(stdout).Encode(map[string]any{
 		"schemaVersion":       "paxl.knowledge_injection.v1",
@@ -2890,10 +3188,29 @@ func encodeInjectionJSONL(stdout io.Writer, injection *model.KnowledgeInjection)
 		"status":              injection.Status,
 		"routeMatchType":      injection.RouteMatchType,
 		"routeMatchValue":     injection.RouteMatchValue,
+		"actionItems":         injectionActionItems(injection),
 		"createdAt":           injection.CreatedAt,
 		"claimedAt":           injection.ClaimedAt,
 		"consumedAt":          injection.ConsumedAt,
 	})
+}
+
+func injectionActionItems(injection *model.KnowledgeInjection) []string {
+	if injection == nil || strings.TrimSpace(injection.ActionItemsJSON) == "" {
+		return nil
+	}
+	var items []string
+	if err := json.Unmarshal([]byte(injection.ActionItemsJSON), &items); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		trimmed := strings.TrimSpace(item)
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 func encodeEnvelopeJSONL(stdout io.Writer, envelope *model.Envelope) error {

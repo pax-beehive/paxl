@@ -574,6 +574,31 @@ func (s *CommandSuite) TestNodeAgentListUsesManagerNodeAgents() {
 	s.Contains(s.stdout.String(), "online")
 }
 
+func (s *CommandSuite) TestRenderNodeAgentListSupportsJSONLAndRejectsUnknownFormat() {
+	resp := &facade.ListNodeAgentsResponse{
+		NodeID: "node_1",
+		Agents: []*model.NodeAgent{
+			{
+				AgentID:      "agent_1",
+				NodeID:       "node_1",
+				Name:         "codex",
+				AgentType:    "codex",
+				Status:       "online",
+				RegisteredAt: "2026-06-24T00:00:00Z",
+			},
+		},
+	}
+
+	err := renderNodeAgentList(&s.stdout, resp, "jsonl")
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"schemaVersion":"paxl.node_agent.v1"`)
+	s.Contains(s.stdout.String(), `"agentId":"agent_1"`)
+
+	s.SetupTest()
+	err = renderNodeAgentList(&s.stdout, resp, "xml")
+	s.Error(err)
+}
+
 func (s *CommandSuite) TestNodeSessionListUsesManagerNodeSessions() {
 	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
 	s.seedManagerCredential(dbPath, "https://manager.example")
@@ -1461,7 +1486,7 @@ func (s *CommandSuite) TestSingularCapsuleCommandExposesMigratedSubcommands() {
 }
 
 func (s *CommandSuite) TestInboxCommandExposesEnvelopeSubcommands() {
-	cases := []string{"list", "get", "accept", "archive"}
+	cases := []string{"list", "get", "accept", "watch", "archive"}
 	command := findCommand(newCommand(&s.stdout, &s.stderr), "inbox")
 	s.Require().NotNil(command)
 
@@ -1783,6 +1808,199 @@ func (s *CommandSuite) TestInboxCommandsUseManagerEnvelopes() {
 	)
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), "Archived env_1")
+}
+
+func (s *CommandSuite) TestInboxAcceptAllUsesPendingManagerEnvelopes() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	payload := strings.ReplaceAll(`{
+		"schema_version":"paxl.envelope_payload.knowledge_capsule.v1",
+		"capsule":{
+			"capsule_id":"kcap_remote",
+			"source_session_id":"codex:source",
+			"source_agent":"codex",
+			"keyword":"handoff",
+			"title":"Remote handoff",
+			"summary":"summary",
+			"content":"content",
+			"status":"active",
+			"created_at":"2026-06-22T00:00:00Z"
+		}
+	}`, "\n", "")
+	restoreHTTPClient := s.stubDefaultHTTPClient(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/usr_1/envelopes":
+			s.Equal("pending", req.URL.Query().Get("status"))
+			return commandJSONResponse(`{
+				"data":{
+					"envelopes":[
+						{"envelope_id":"env_1","payload_type":"knowledge_capsule","status":"pending"},
+						{"envelope_id":"env_2","payload_type":"knowledge_capsule","status":"pending"}
+					]
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		case req.Method == http.MethodGet &&
+			(req.URL.Path == "/api/v1/user/usr_1/envelopes/env_1" ||
+				req.URL.Path == "/api/v1/user/usr_1/envelopes/env_2"):
+			envelopeID := strings.TrimPrefix(req.URL.Path, "/api/v1/user/usr_1/envelopes/")
+			return commandJSONResponse(fmt.Sprintf(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"%s",
+						"sender_email":"sender@example.com",
+						"payload_type":"knowledge_capsule",
+						"payload_json":%s,
+						"status":"pending"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`, envelopeID, payload)), nil
+		case req.Method == http.MethodPost &&
+			(req.URL.Path == "/api/v1/user/usr_1/envelopes/env_1/accept" ||
+				req.URL.Path == "/api/v1/user/usr_1/envelopes/env_2/accept"):
+			envelopeID := strings.TrimSuffix(
+				strings.TrimPrefix(req.URL.Path, "/api/v1/user/usr_1/envelopes/"),
+				"/accept",
+			)
+			return commandJSONResponse(fmt.Sprintf(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"%s",
+						"payload_type":"knowledge_capsule",
+						"payload_json":{},
+						"status":"accepted"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`, envelopeID)), nil
+		default:
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader("unexpected request")),
+				Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			}, nil
+		}
+	})
+	defer restoreHTTPClient()
+	s.seedManagerCredential(dbPath, "https://manager.example")
+
+	err := run(
+		context.Background(),
+		[]string{"--db", dbPath, "inbox", "accept", "--all"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Accepted env_1 as local capsule")
+	s.Contains(s.stdout.String(), "Accepted env_2 as local capsule")
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	defer closeStore(opened.Store)
+	listed, err := opened.Store.ListKnowledgeCapsules(
+		context.Background(),
+		&store.ListKnowledgeCapsulesRequest{},
+	)
+	s.Require().NoError(err)
+	s.Len(listed.Capsules, 2)
+}
+
+func (s *CommandSuite) TestInboxWatchAcceptsPendingEnvelopesUntilContextCanceled() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	payload := strings.ReplaceAll(`{
+		"schema_version":"paxl.envelope_payload.knowledge_capsule.v1",
+		"capsule":{
+			"capsule_id":"kcap_remote",
+			"source_session_id":"codex:source",
+			"source_agent":"codex",
+			"keyword":"handoff",
+			"title":"Remote handoff",
+			"summary":"summary",
+			"content":"content",
+			"status":"active",
+			"created_at":"2026-06-22T00:00:00Z"
+		}
+	}`, "\n", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	restoreHTTPClient := s.stubDefaultHTTPClient(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/usr_1/envelopes":
+			s.Equal("pending", req.URL.Query().Get("status"))
+			return commandJSONResponse(`{
+				"data":{
+					"envelopes":[
+						{"envelope_id":"env_1","payload_type":"knowledge_capsule","status":"pending"}
+					]
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		case req.Method == http.MethodGet &&
+			req.URL.Path == "/api/v1/user/usr_1/envelopes/env_1":
+			return commandJSONResponse(fmt.Sprintf(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"env_1",
+						"sender_email":"sender@example.com",
+						"payload_type":"knowledge_capsule",
+						"payload_json":%s,
+						"status":"pending"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`, payload)), nil
+		case req.Method == http.MethodPost &&
+			req.URL.Path == "/api/v1/user/usr_1/envelopes/env_1/accept":
+			cancel()
+			return commandJSONResponse(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"env_1",
+						"payload_type":"knowledge_capsule",
+						"payload_json":{},
+						"status":"accepted"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		default:
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader("unexpected request")),
+				Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			}, nil
+		}
+	})
+	defer restoreHTTPClient()
+	s.seedManagerCredential(dbPath, "https://manager.example")
+
+	err := run(
+		ctx,
+		[]string{"--db", dbPath, "inbox", "watch", "--interval", "1h"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Watching inbox every 1h0m0s")
+	s.Contains(s.stdout.String(), "Received 1 pending envelope(s)")
+	s.Contains(s.stdout.String(), "Accepted env_1 as local capsule")
+	s.Contains(s.stdout.String(), "Auto accepted 1 envelope(s)")
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	defer closeStore(opened.Store)
+	listed, err := opened.Store.ListKnowledgeCapsules(
+		context.Background(),
+		&store.ListKnowledgeCapsulesRequest{},
+	)
+	s.Require().NoError(err)
+	s.Len(listed.Capsules, 1)
 }
 
 func (s *CommandSuite) TestOutboxCommandsUseManagerEnvelopes() {
@@ -2275,6 +2493,70 @@ func (s *CommandSuite) TestCapsuleInjectDeliversHandoffAndListsInjection() {
 	s.Contains(s.stdout.String(), `"targetNodeId":"local-node"`)
 	s.Contains(s.stdout.String(), `"sourceSessionId":"codex:sess-1"`)
 	s.Contains(s.stdout.String(), `"capsuleId":"`+capsuleID+`"`)
+	s.Contains(s.stdout.String(), `"actionItems":null`)
+}
+
+func (s *CommandSuite) TestCapsuleInjectIncludesActionItemsFlag() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+	capsuleID := s.createLocalCapsule(dbPath, "bridge")
+	s.seedCodexTargetSession(dbPath)
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	s.installFakeCodex(capturePath)
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"capsule", "inject", capsuleID, "codex:target",
+			"--action-items", "run go test ./...",
+			"--action-items", "open a PR",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	rawPrompt, err := os.ReadFile(capturePath)
+	s.Require().NoError(err)
+	s.Contains(string(rawPrompt), "ACTION ITEMS")
+	s.Contains(string(rawPrompt), "1. run go test ./...")
+	s.Contains(string(rawPrompt), "2. open a PR")
+	s.NotContains(string(rawPrompt), "NO ACTIONABLE ITEMS")
+}
+
+func (s *CommandSuite) TestCapsuleInjectQueuesMatchedActionItems() {
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+	capsuleID := s.createLocalCapsule(dbPath, "bridge")
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"capsule", "inject", capsuleID,
+			"--match", "any",
+			"--action-items", "run hook tests",
+			"--action-items", "open the hook PR",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Queued")
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	defer closeStore(opened.Store)
+	listed, err := opened.Store.ListKnowledgeInjections(
+		context.Background(),
+		&store.ListKnowledgeInjectionsRequest{},
+	)
+	s.Require().NoError(err)
+	s.Require().Len(listed.Injections, 1)
+	s.Equal("hook", listed.Injections[0].DeliveryMethod)
+	s.JSONEq(`["run hook tests","open the hook PR"]`, listed.Injections[0].ActionItemsJSON)
 }
 
 func (s *CommandSuite) TestCapsuleInjectStartsNewTargetSession() {
@@ -2793,6 +3075,120 @@ func (s *CommandSuite) TestRenderAcceptEnvelopeRejectsUnknownFormat() {
 	}, "xml")
 
 	s.Error(err)
+}
+
+func (s *CommandSuite) TestRenderAcceptAllEnvelopesSupportsFormats() {
+	resp := &facade.AcceptAllEnvelopesResponse{
+		Accepted: []*facade.AcceptEnvelopeResponse{
+			{
+				Envelope: &model.Envelope{EnvelopeID: "env_1", Status: "accepted"},
+				Capsule:  &model.KnowledgeCapsule{CapsuleID: "kcap_1", Title: "Bridge"},
+			},
+		},
+		Failures: []*facade.AcceptEnvelopeFailure{
+			{EnvelopeID: "env_2", Error: "network unavailable"},
+		},
+	}
+
+	err := renderAcceptAllEnvelopes(&s.stdout, resp, "table")
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Accepted env_1 as local capsule kcap_1")
+	s.Contains(s.stdout.String(), "Failed env_2: network unavailable")
+
+	s.SetupTest()
+	err = renderAcceptAllEnvelopes(&s.stdout, resp, "jsonl")
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"envelopeId":"env_1"`)
+	s.Contains(s.stdout.String(), `"schemaVersion":"paxl.accept_failure.v1"`)
+	s.Contains(s.stdout.String(), `"error":"network unavailable"`)
+}
+
+func (s *CommandSuite) TestRenderAcceptAllEnvelopesHandlesEmptyTable() {
+	err := renderAcceptAllEnvelopes(
+		&s.stdout,
+		&facade.AcceptAllEnvelopesResponse{},
+		"table",
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "No pending envelopes to accept")
+}
+
+func (s *CommandSuite) TestRenderAcceptAllEnvelopesRejectsUnknownFormat() {
+	err := renderAcceptAllEnvelopes(
+		&s.stdout,
+		&facade.AcceptAllEnvelopesResponse{},
+		"xml",
+	)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestRenderInboxWatchEventSupportsFormats() {
+	err := renderInboxWatchEvent(&s.stdout, "table", "started", "30s", 0)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Watching inbox every 30s")
+
+	s.SetupTest()
+	err = renderInboxWatchEvent(&s.stdout, "table", "received", "", 3)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Received 3 pending envelope(s)")
+
+	s.SetupTest()
+	err = renderInboxWatchEvent(&s.stdout, "table", "auto_accepted", "", 2)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Auto accepted 2 envelope(s)")
+
+	s.SetupTest()
+	err = renderInboxWatchEvent(&s.stdout, "table", "failed", "", 1)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Failed to accept 1 envelope(s)")
+
+	s.SetupTest()
+	err = renderInboxWatchEvent(&s.stdout, "table", "custom_event", "", 0)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "custom_event")
+
+	s.SetupTest()
+	err = renderInboxWatchEvent(&s.stdout, "jsonl", "started", "30s", 0)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"schemaVersion":"paxl.inbox_watch_event.v1"`)
+	s.Contains(s.stdout.String(), `"event":"started"`)
+	s.Contains(s.stdout.String(), `"detail":"30s"`)
+
+	s.SetupTest()
+	err = renderInboxWatchEvent(&s.stdout, "jsonl", "received", "", 4)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"count":4`)
+}
+
+func (s *CommandSuite) TestRenderInboxWatchEventRejectsUnknownFormat() {
+	err := renderInboxWatchEvent(&s.stdout, "xml", "started", "30s", 0)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestParseWatchIntervalRejectsInvalidValues() {
+	interval, err := parseWatchInterval(" 250ms ")
+	s.Require().NoError(err)
+	s.Equal(250*time.Millisecond, interval)
+
+	_, err = parseWatchInterval("0s")
+	s.Error(err)
+
+	_, err = parseWatchInterval("not-a-duration")
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestInjectionActionItemsCleansJSON() {
+	items := injectionActionItems(&model.KnowledgeInjection{
+		ActionItemsJSON: `[" ship it ","","write tests"]`,
+	})
+
+	s.Equal([]string{"ship it", "write tests"}, items)
+	s.Nil(injectionActionItems(nil))
+	s.Nil(injectionActionItems(&model.KnowledgeInjection{}))
+	s.Nil(injectionActionItems(&model.KnowledgeInjection{ActionItemsJSON: `{"bad":true}`}))
 }
 
 func (s *CommandSuite) TestRenderFriendListSupportsFormats() {

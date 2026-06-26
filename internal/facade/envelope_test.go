@@ -262,6 +262,89 @@ func (s *EnvelopeFacadeSuite) TestAcceptStoresEnvelopePayloadAsLocalCapsule() {
 	s.Equal("content", got.Capsule.Content)
 }
 
+func (s *EnvelopeFacadeSuite) TestAcceptAllStoresPendingEnvelopesAsLocalCapsules() {
+	payload := strings.ReplaceAll(`{
+		"schema_version":"paxl.envelope_payload.knowledge_capsule.v1",
+		"capsule":{
+			"capsule_id":"kcap_remote",
+			"source_session_id":"codex:source",
+			"source_agent":"codex",
+			"keyword":"handoff",
+			"title":"Remote handoff",
+			"summary":"summary",
+			"content":"content",
+			"status":"active",
+			"created_at":"2026-06-22T00:00:00Z"
+		}
+	}`, "\n", "")
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet &&
+			req.URL.Path == "/api/v1/user/usr_1/envelopes":
+			s.Equal("pending", req.URL.Query().Get("status"))
+			return jsonResponse(`{
+				"data":{
+					"envelopes":[
+						{"envelope_id":"env_1","payload_type":"knowledge_capsule","status":"pending"},
+						{"envelope_id":"env_2","payload_type":"knowledge_capsule","status":"pending"}
+					]
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		case req.Method == http.MethodGet &&
+			(req.URL.Path == "/api/v1/user/usr_1/envelopes/env_1" ||
+				req.URL.Path == "/api/v1/user/usr_1/envelopes/env_2"):
+			envelopeID := strings.TrimPrefix(req.URL.Path, "/api/v1/user/usr_1/envelopes/")
+			return jsonResponse(fmt.Sprintf(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"%s",
+						"sender_user_id":"usr_sender",
+						"recipient_user_id":"usr_1",
+						"payload_type":"knowledge_capsule",
+						"payload_json":%s,
+						"status":"pending"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`, envelopeID, payload)), nil
+		case req.Method == http.MethodPost &&
+			(req.URL.Path == "/api/v1/user/usr_1/envelopes/env_1/accept" ||
+				req.URL.Path == "/api/v1/user/usr_1/envelopes/env_2/accept"):
+			envelopeID := strings.TrimSuffix(
+				strings.TrimPrefix(req.URL.Path, "/api/v1/user/usr_1/envelopes/"),
+				"/accept",
+			)
+			return jsonResponse(fmt.Sprintf(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"%s",
+						"payload_type":"knowledge_capsule",
+						"payload_json":{},
+						"status":"accepted"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`, envelopeID)), nil
+		default:
+			return nil, fmt.Errorf("unexpected manager request: %s %s", req.Method, req.URL.Path)
+		}
+	})
+	envelopeFacade := NewEnvelopeFacade(client, s.store)
+
+	resp, err := envelopeFacade.AcceptAll(s.ctx, &AcceptAllEnvelopesRequest{})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Accepted, 2)
+	s.Empty(resp.Failures)
+	listed, err := s.store.ListKnowledgeCapsules(s.ctx, &store.ListKnowledgeCapsulesRequest{})
+	s.Require().NoError(err)
+	s.Len(listed.Capsules, 2)
+}
+
 func (s *EnvelopeFacadeSuite) TestAcceptStoresRoutedEnvelopeAsPendingHookInjection() {
 	payload := strings.ReplaceAll(`{
 		"schema_version":"paxl.envelope_payload.knowledge_capsule.v2",

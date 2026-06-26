@@ -221,10 +221,15 @@ paxl capsule send <capsule-id> --to @alice --message "please review"
 paxl outbox list
 paxl inbox list
 paxl inbox accept <envelope-id>
+paxl inbox accept --all
+paxl inbox watch
 ```
 
 The sender can track sent envelopes from outbox while the recipient works from
 inbox. Accepting an inbox envelope stores the remote payload as a local capsule.
+Use `paxl inbox accept --all` to accept every pending inbox envelope in one
+shot, or run `paxl inbox watch` to keep accepting pending envelopes in the
+foreground until the process is stopped.
 Inject that capsule into a local agent session when you want work to continue
 there.
 
@@ -539,7 +544,16 @@ Inject a capsule into a target session:
 
 ```sh
 paxl capsule inject <capsule-id> codex:<target-session-id>
+paxl capsule inject <capsule-id> codex:<target-session-id> \
+  --action-items "run go test ./..." \
+  --action-items "open a PR"
 ```
+
+Capsule handoffs are knowledge-only by default. Repeat `--action-items` to pass
+explicit actionable work to the target agent. Action items are concrete next
+steps such as planning, editing files, running tools, or otherwise continuing
+from the capsule. They can be used with direct injection or queued `--match`
+hook injection.
 
 Queue a capsule for the next matching pre-user hook:
 
