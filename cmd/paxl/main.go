@@ -1918,7 +1918,13 @@ func acceptInboxWatchCycle(ctx context.Context, req *watchInboxRequest) error {
 		return nil
 	}
 	total := len(resp.Accepted) + len(resp.Failures)
-	if err := renderInboxWatchEvent(req.Stdout, req.Format, "received", "", total); err != nil {
+	if err := renderInboxWatchEvent(
+		req.Stdout,
+		req.Format,
+		"received",
+		"",
+		total,
+	); err != nil {
 		return err
 	}
 	if err := renderAcceptAllEnvelopes(req.Stdout, resp, req.Format); err != nil {
@@ -1936,7 +1942,13 @@ func acceptInboxWatchCycle(ctx context.Context, req *watchInboxRequest) error {
 		}
 	}
 	if len(resp.Failures) > 0 {
-		if err := renderInboxWatchEvent(req.Stdout, req.Format, "failed", "", len(resp.Failures)); err != nil {
+		if err := renderInboxWatchEvent(
+			req.Stdout,
+			req.Format,
+			"failed",
+			"",
+			len(resp.Failures),
+		); err != nil {
 			return err
 		}
 		return fmt.Errorf("accept pending envelopes: %d failed", len(resp.Failures))
