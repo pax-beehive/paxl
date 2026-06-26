@@ -987,7 +987,7 @@ func numberedLines(items []string) string {
 		if index > 0 {
 			builder.WriteByte('\n')
 		}
-		builder.WriteString(fmt.Sprintf("%d. %s", index+1, item))
+		_, _ = fmt.Fprintf(&builder, "%d. %s", index+1, item)
 	}
 	return builder.String()
 }

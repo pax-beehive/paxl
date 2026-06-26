@@ -1879,7 +1879,13 @@ func watchInbox(ctx context.Context, req *watchInboxRequest) error {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
-	if err := renderInboxWatchEvent(req.Stdout, req.Format, "started", interval.String(), 0); err != nil {
+	if err := renderInboxWatchEvent(
+		req.Stdout,
+		req.Format,
+		"started",
+		interval.String(),
+		0,
+	); err != nil {
 		return err
 	}
 	if err := acceptInboxWatchCycle(ctx, req); err != nil {
