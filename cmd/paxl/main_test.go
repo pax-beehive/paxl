@@ -574,6 +574,31 @@ func (s *CommandSuite) TestNodeAgentListUsesManagerNodeAgents() {
 	s.Contains(s.stdout.String(), "online")
 }
 
+func (s *CommandSuite) TestRenderNodeAgentListSupportsJSONLAndRejectsUnknownFormat() {
+	resp := &facade.ListNodeAgentsResponse{
+		NodeID: "node_1",
+		Agents: []*model.NodeAgent{
+			{
+				AgentID:      "agent_1",
+				NodeID:       "node_1",
+				Name:         "codex",
+				AgentType:    "codex",
+				Status:       "online",
+				RegisteredAt: "2026-06-24T00:00:00Z",
+			},
+		},
+	}
+
+	err := renderNodeAgentList(&s.stdout, resp, "jsonl")
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"schemaVersion":"paxl.node_agent.v1"`)
+	s.Contains(s.stdout.String(), `"agentId":"agent_1"`)
+
+	s.SetupTest()
+	err = renderNodeAgentList(&s.stdout, resp, "xml")
+	s.Error(err)
+}
+
 func (s *CommandSuite) TestNodeSessionListUsesManagerNodeSessions() {
 	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
 	s.seedManagerCredential(dbPath, "https://manager.example")
@@ -3050,6 +3075,120 @@ func (s *CommandSuite) TestRenderAcceptEnvelopeRejectsUnknownFormat() {
 	}, "xml")
 
 	s.Error(err)
+}
+
+func (s *CommandSuite) TestRenderAcceptAllEnvelopesSupportsFormats() {
+	resp := &facade.AcceptAllEnvelopesResponse{
+		Accepted: []*facade.AcceptEnvelopeResponse{
+			{
+				Envelope: &model.Envelope{EnvelopeID: "env_1", Status: "accepted"},
+				Capsule:  &model.KnowledgeCapsule{CapsuleID: "kcap_1", Title: "Bridge"},
+			},
+		},
+		Failures: []*facade.AcceptEnvelopeFailure{
+			{EnvelopeID: "env_2", Error: "network unavailable"},
+		},
+	}
+
+	err := renderAcceptAllEnvelopes(&s.stdout, resp, "table")
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Accepted env_1 as local capsule kcap_1")
+	s.Contains(s.stdout.String(), "Failed env_2: network unavailable")
+
+	s.SetupTest()
+	err = renderAcceptAllEnvelopes(&s.stdout, resp, "jsonl")
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"envelopeId":"env_1"`)
+	s.Contains(s.stdout.String(), `"schemaVersion":"paxl.accept_failure.v1"`)
+	s.Contains(s.stdout.String(), `"error":"network unavailable"`)
+}
+
+func (s *CommandSuite) TestRenderAcceptAllEnvelopesHandlesEmptyTable() {
+	err := renderAcceptAllEnvelopes(
+		&s.stdout,
+		&facade.AcceptAllEnvelopesResponse{},
+		"table",
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "No pending envelopes to accept")
+}
+
+func (s *CommandSuite) TestRenderAcceptAllEnvelopesRejectsUnknownFormat() {
+	err := renderAcceptAllEnvelopes(
+		&s.stdout,
+		&facade.AcceptAllEnvelopesResponse{},
+		"xml",
+	)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestRenderInboxWatchEventSupportsFormats() {
+	err := renderInboxWatchEvent(&s.stdout, "table", "started", "30s", 0)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Watching inbox every 30s")
+
+	s.SetupTest()
+	err = renderInboxWatchEvent(&s.stdout, "table", "received", "", 3)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Received 3 pending envelope(s)")
+
+	s.SetupTest()
+	err = renderInboxWatchEvent(&s.stdout, "table", "auto_accepted", "", 2)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Auto accepted 2 envelope(s)")
+
+	s.SetupTest()
+	err = renderInboxWatchEvent(&s.stdout, "table", "failed", "", 1)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Failed to accept 1 envelope(s)")
+
+	s.SetupTest()
+	err = renderInboxWatchEvent(&s.stdout, "table", "custom_event", "", 0)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "custom_event")
+
+	s.SetupTest()
+	err = renderInboxWatchEvent(&s.stdout, "jsonl", "started", "30s", 0)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"schemaVersion":"paxl.inbox_watch_event.v1"`)
+	s.Contains(s.stdout.String(), `"event":"started"`)
+	s.Contains(s.stdout.String(), `"detail":"30s"`)
+
+	s.SetupTest()
+	err = renderInboxWatchEvent(&s.stdout, "jsonl", "received", "", 4)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"count":4`)
+}
+
+func (s *CommandSuite) TestRenderInboxWatchEventRejectsUnknownFormat() {
+	err := renderInboxWatchEvent(&s.stdout, "xml", "started", "30s", 0)
+
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestParseWatchIntervalRejectsInvalidValues() {
+	interval, err := parseWatchInterval(" 250ms ")
+	s.Require().NoError(err)
+	s.Equal(250*time.Millisecond, interval)
+
+	_, err = parseWatchInterval("0s")
+	s.Error(err)
+
+	_, err = parseWatchInterval("not-a-duration")
+	s.Error(err)
+}
+
+func (s *CommandSuite) TestInjectionActionItemsCleansJSON() {
+	items := injectionActionItems(&model.KnowledgeInjection{
+		ActionItemsJSON: `[" ship it ","","write tests"]`,
+	})
+
+	s.Equal([]string{"ship it", "write tests"}, items)
+	s.Nil(injectionActionItems(nil))
+	s.Nil(injectionActionItems(&model.KnowledgeInjection{}))
+	s.Nil(injectionActionItems(&model.KnowledgeInjection{ActionItemsJSON: `{"bad":true}`}))
 }
 
 func (s *CommandSuite) TestRenderFriendListSupportsFormats() {
