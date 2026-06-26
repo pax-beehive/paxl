@@ -635,6 +635,11 @@ func newCapsuleCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 						Usage: "Prompt substring for --match keyword",
 					},
 					&cli.BoolFlag{Name: "new", Usage: "Start a new target agent session"},
+					&cli.StringSliceFlag{
+						Name: "action-items",
+						Usage: "Action item to include in the handoff. " +
+							"Repeat to include multiple items.",
+					},
 					&cli.BoolFlag{Name: "verbose", Usage: "Print injection delivery details"},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -2357,6 +2362,7 @@ func parseInjectCapsuleRequest(cmd *cli.Command) (*facade.InjectCapsuleRequest, 
 		CapsuleID:       cmd.Args().Get(0),
 		TargetSessionID: cmd.Args().Get(1),
 		NewSession:      cmd.Bool("new"),
+		ActionItems:     cmd.StringSlice("action-items"),
 	}
 	if rawAgent := strings.TrimSpace(cmd.String("agent")); rawAgent != "" {
 		agent, err := model.ParseAgentName(rawAgent)
@@ -2809,6 +2815,7 @@ func renderInjectionList(
 				"status":              injection.Status,
 				"routeMatchType":      injection.RouteMatchType,
 				"routeMatchValue":     injection.RouteMatchValue,
+				"actionItems":         injectionActionItems(injection),
 				"createdAt":           injection.CreatedAt,
 				"claimedAt":           injection.ClaimedAt,
 				"consumedAt":          injection.ConsumedAt,
@@ -3163,10 +3170,29 @@ func encodeInjectionJSONL(stdout io.Writer, injection *model.KnowledgeInjection)
 		"status":              injection.Status,
 		"routeMatchType":      injection.RouteMatchType,
 		"routeMatchValue":     injection.RouteMatchValue,
+		"actionItems":         injectionActionItems(injection),
 		"createdAt":           injection.CreatedAt,
 		"claimedAt":           injection.ClaimedAt,
 		"consumedAt":          injection.ConsumedAt,
 	})
+}
+
+func injectionActionItems(injection *model.KnowledgeInjection) []string {
+	if injection == nil || strings.TrimSpace(injection.ActionItemsJSON) == "" {
+		return nil
+	}
+	var items []string
+	if err := json.Unmarshal([]byte(injection.ActionItemsJSON), &items); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		trimmed := strings.TrimSpace(item)
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 func encodeEnvelopeJSONL(stdout io.Writer, envelope *model.Envelope) error {

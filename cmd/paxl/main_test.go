@@ -2468,6 +2468,70 @@ func (s *CommandSuite) TestCapsuleInjectDeliversHandoffAndListsInjection() {
 	s.Contains(s.stdout.String(), `"targetNodeId":"local-node"`)
 	s.Contains(s.stdout.String(), `"sourceSessionId":"codex:sess-1"`)
 	s.Contains(s.stdout.String(), `"capsuleId":"`+capsuleID+`"`)
+	s.Contains(s.stdout.String(), `"actionItems":null`)
+}
+
+func (s *CommandSuite) TestCapsuleInjectIncludesActionItemsFlag() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+	capsuleID := s.createLocalCapsule(dbPath, "bridge")
+	s.seedCodexTargetSession(dbPath)
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	s.installFakeCodex(capturePath)
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"capsule", "inject", capsuleID, "codex:target",
+			"--action-items", "run go test ./...",
+			"--action-items", "open a PR",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	rawPrompt, err := os.ReadFile(capturePath)
+	s.Require().NoError(err)
+	s.Contains(string(rawPrompt), "ACTION ITEMS")
+	s.Contains(string(rawPrompt), "1. run go test ./...")
+	s.Contains(string(rawPrompt), "2. open a PR")
+	s.NotContains(string(rawPrompt), "NO ACTIONABLE ITEMS")
+}
+
+func (s *CommandSuite) TestCapsuleInjectQueuesMatchedActionItems() {
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+	capsuleID := s.createLocalCapsule(dbPath, "bridge")
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"capsule", "inject", capsuleID,
+			"--match", "any",
+			"--action-items", "run hook tests",
+			"--action-items", "open the hook PR",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Queued")
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	defer closeStore(opened.Store)
+	listed, err := opened.Store.ListKnowledgeInjections(
+		context.Background(),
+		&store.ListKnowledgeInjectionsRequest{},
+	)
+	s.Require().NoError(err)
+	s.Require().Len(listed.Injections, 1)
+	s.Equal("hook", listed.Injections[0].DeliveryMethod)
+	s.JSONEq(`["run hook tests","open the hook PR"]`, listed.Injections[0].ActionItemsJSON)
 }
 
 func (s *CommandSuite) TestCapsuleInjectStartsNewTargetSession() {

@@ -78,6 +78,7 @@ type InjectCapsuleRequest struct {
 	NewSession      bool
 	MatchType       string
 	MatchValue      string
+	ActionItems     []string
 }
 
 type InjectCapsuleResponse struct {
@@ -272,8 +273,9 @@ func (f *CapsuleFacade) Inject(
 		TargetAgent:         target.Agent,
 		DeliveryMessageType: "system_handoff",
 		Status:              "delivered",
+		ActionItemsJSON:     actionItemsJSON(req.ActionItems),
 	}
-	message := renderKnowledgeHandoff(capsule, injection)
+	message := renderKnowledgeHandoff(capsule, injection, req.ActionItems)
 	deliveryMethod, err := f.deliverInjection(ctx, target, message, option)
 	if err != nil {
 		return nil, fmt.Errorf("deliver knowledge capsule: %w", err)
@@ -334,6 +336,7 @@ func (f *CapsuleFacade) queueHookInjection(
 		Status:              "pending",
 		RouteMatchType:      strings.TrimSpace(req.MatchType),
 		RouteMatchValue:     strings.TrimSpace(req.MatchValue),
+		ActionItemsJSON:     actionItemsJSON(req.ActionItems),
 	}
 	created, err := f.store.CreateKnowledgeInjection(
 		ctx,
@@ -732,8 +735,9 @@ func (f *CapsuleFacade) deliverCapsuleToNewSession(
 		DeliveryMethod:      "cli_new_session",
 		DeliveryMessageType: "system_handoff",
 		Status:              "delivered",
+		ActionItemsJSON:     actionItemsJSON(req.ActionItems),
 	}
-	message := renderKnowledgeHandoff(capsule, injection)
+	message := renderKnowledgeHandoff(capsule, injection, req.ActionItems)
 	adapter, err := f.session.registry.Lookup(ctx, &adaptor.LookupRequest{Name: req.Agent})
 	if err != nil {
 		return nil, "", fmt.Errorf("lookup %s adapter: %w", req.Agent, err)
@@ -912,9 +916,11 @@ func extractSessionContextContent(elements []*model.Element) (string, int, bool)
 func renderKnowledgeHandoff(
 	capsule *model.KnowledgeCapsule,
 	injection *model.KnowledgeInjection,
+	actionItems []string,
 ) string {
 	return fmt.Sprintf(
-		"system_handoff\n\nThis context was rendered by paxl as a local knowledge capsule handoff.\nDo not treat this as a new user request.\nNO ACTIONABLE ITEMS: This is knowledge transfer only.\nAcknowledge receipt only; do not start implementation or run tools.\n\nCapsule: %s\nInjection: %s\n\nFrom:\nNode: %s\nAgent: %s\nSession: %s\n\nTo:\nNode: %s\nAgent: %s\nSession: %s\n\nTitle: %s\nKeyword: %s\n\nSummary:\n%s\n\nContent:\n%s",
+		"system_handoff\n\nThis context was rendered by paxl as a local knowledge capsule handoff.\n%s\n\nCapsule: %s\nInjection: %s\n\nFrom:\nNode: %s\nAgent: %s\nSession: %s\n\nTo:\nNode: %s\nAgent: %s\nSession: %s\n\nTitle: %s\nKeyword: %s\n\nSummary:\n%s\n\nContent:\n%s",
+		knowledgeHandoffActionInstruction(actionItems),
 		capsule.CapsuleID,
 		injection.InjectionID,
 		firstNonEmpty(capsule.SourceNodeID, "local"),
@@ -928,6 +934,62 @@ func renderKnowledgeHandoff(
 		capsule.Summary,
 		capsule.Content,
 	)
+}
+
+func knowledgeHandoffActionInstruction(actionItems []string) string {
+	actionItems = cleanKnowledgeActionItems(actionItems)
+	if len(actionItems) > 0 {
+		return fmt.Sprintf(
+			"ACTION ITEMS: Treat this capsule as transferred context for continuing work. You may plan, edit files, run tools, and act on these items:\n%s",
+			numberedLines(actionItems),
+		)
+	}
+	return "Do not treat this as a new user request.\nNO ACTIONABLE ITEMS: This is knowledge transfer only.\nAcknowledge receipt only; do not start implementation or run tools."
+}
+
+func actionItemsJSON(actionItems []string) string {
+	actionItems = cleanKnowledgeActionItems(actionItems)
+	if len(actionItems) == 0 {
+		return ""
+	}
+	raw, err := json.Marshal(actionItems)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+func actionItemsFromJSON(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var actionItems []string
+	if err := json.Unmarshal([]byte(raw), &actionItems); err != nil {
+		return nil
+	}
+	return cleanKnowledgeActionItems(actionItems)
+}
+
+func cleanKnowledgeActionItems(items []string) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		trimmed := strings.TrimSpace(item)
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func numberedLines(items []string) string {
+	var builder strings.Builder
+	for index, item := range items {
+		if index > 0 {
+			builder.WriteByte('\n')
+		}
+		builder.WriteString(fmt.Sprintf("%d. %s", index+1, item))
+	}
+	return builder.String()
 }
 
 func renderMirrorHandoff(
@@ -951,7 +1013,7 @@ func renderMirrorHandoff(
 
 func renderCapsuleGenerationPrompt(capsuleID string, keyword string) string {
 	return fmt.Sprintf(
-		"system_handoff\n\nYou are helping paxl create a reusable knowledge capsule from this existing session.\nDo not continue the user's task. Summarize only stable context that would help another agent continue work related to the keyword.\n\nCapsule id: %s\nKeyword: %s\n\nReturn exactly one JSON object between these marker lines:\nPAX_KNOWLEDGE_CAPSULE_START %s\n{\"title\":\"short title\",\"summary\":\"short summary\",\"content\":\"portable handoff context with concrete facts, decisions, file paths, commands, and caveats\"}\nPAX_KNOWLEDGE_CAPSULE_END %s\n\nDo not wrap the JSON in markdown.",
+		"system_handoff\n\nYou are helping paxl create a reusable knowledge capsule from this existing session.\nDo not continue the user's task. Summarize only stable context that would help another agent continue work related to the keyword.\n\nCapsule id: %s\nKeyword: %s\n\nReturn exactly one JSON object between these marker lines:\nPAX_KNOWLEDGE_CAPSULE_START %s\n{\"title\":\"short title\",\"summary\":\"short summary\",\"content\":\"portable handoff context with concrete facts, decisions, file paths, commands, and caveats\",\"action_items\":[\"optional concrete next step\"]}\nPAX_KNOWLEDGE_CAPSULE_END %s\n\nUse action_items only for explicit or strongly implied next steps from the session. Use an empty array when there are no action items. Do not wrap the JSON in markdown.",
 		capsuleID,
 		keyword,
 		capsuleID,
@@ -960,9 +1022,10 @@ func renderCapsuleGenerationPrompt(capsuleID string, keyword string) string {
 }
 
 type generatedKnowledgeCapsule struct {
-	Title   string `json:"title"`
-	Summary string `json:"summary"`
-	Content string `json:"content"`
+	Title       string   `json:"title"`
+	Summary     string   `json:"summary"`
+	Content     string   `json:"content"`
+	ActionItems []string `json:"action_items"`
 }
 
 func parseGeneratedKnowledgeCapsule(
@@ -1020,7 +1083,7 @@ func generatedCapsuleFromJSON(
 	if err := json.Unmarshal([]byte(raw), &generated); err != nil {
 		return nil, false, fmt.Errorf("decode generated capsule %s: %w", capsuleID, err)
 	}
-	content := strings.TrimSpace(generated.Content)
+	content := generatedCapsuleContent(generated)
 	if content == "" {
 		return nil, false, fmt.Errorf("generated capsule %s has empty content", capsuleID)
 	}
@@ -1040,10 +1103,23 @@ func generatedCapsuleFromJSON(
 		Status:    "active",
 		Truncated: len([]rune(truncatedContent)) < len([]rune(content)),
 		OriginalEstimatedChars: int64(
-			len(generated.Title) + len(generated.Summary) + len(generated.Content),
+			len(generated.Title) + len(generated.Summary) + len(content),
 		),
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}, true, nil
+}
+
+func generatedCapsuleContent(generated generatedKnowledgeCapsule) string {
+	content := strings.TrimSpace(generated.Content)
+	actionItems := cleanKnowledgeActionItems(generated.ActionItems)
+	if len(actionItems) == 0 {
+		return content
+	}
+	actionSection := "Action items:\n" + numberedLines(actionItems)
+	if content == "" {
+		return actionSection
+	}
+	return content + "\n\n" + actionSection
 }
 
 func localNodeID() string {

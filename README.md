@@ -544,7 +544,16 @@ Inject a capsule into a target session:
 
 ```sh
 paxl capsule inject <capsule-id> codex:<target-session-id>
+paxl capsule inject <capsule-id> codex:<target-session-id> \
+  --action-items "run go test ./..." \
+  --action-items "open a PR"
 ```
+
+Capsule handoffs are knowledge-only by default. Repeat `--action-items` to pass
+explicit actionable work to the target agent. Action items are concrete next
+steps such as planning, editing files, running tools, or otherwise continuing
+from the capsule. They can be used with direct injection or queued `--match`
+hook injection.
 
 Queue a capsule for the next matching pre-user hook:
 

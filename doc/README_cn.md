@@ -476,7 +476,15 @@ paxl capsule get <capsule-id>
 
 ```sh
 paxl capsule inject <capsule-id> codex:<target-session-id>
+paxl capsule inject <capsule-id> codex:<target-session-id> \
+  --action-items "run go test ./..." \
+  --action-items "open a PR"
 ```
+
+Capsule handoff 默认只做知识转移，不让目标 agent 直接行动。重复传 `--action-items`
+可以把明确的可执行待办交给目标 agent。这里的 action item 指具体下一步，例如规划、
+编辑文件、运行工具，或基于 capsule 继续推进任务。直接 inject 和 `--match` 排队 hook
+inject 都可以使用 action items。
 
 用 capsule 直接启动一个新的目标 agent session：
 

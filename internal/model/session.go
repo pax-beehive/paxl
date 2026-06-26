@@ -65,6 +65,7 @@ type KnowledgeInjection struct {
 	Status              string
 	RouteMatchType      string
 	RouteMatchValue     string
+	ActionItemsJSON     string
 	CreatedAt           string
 	ClaimedAt           string
 	ConsumedAt          string

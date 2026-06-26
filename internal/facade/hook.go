@@ -83,7 +83,11 @@ func (f *AgentHookFacade) Run(
 	if err != nil {
 		return nil, fmt.Errorf("claim hook knowledge injection: %w", err)
 	}
-	message := renderKnowledgeHandoff(claimed.Capsule, claimed.Injection)
+	message := renderKnowledgeHandoff(
+		claimed.Capsule,
+		claimed.Injection,
+		actionItemsFromJSON(claimed.Injection.ActionItemsJSON),
+	)
 	return &AgentHookResponse{Injection: claimed.Injection, Message: message}, nil
 }
 
