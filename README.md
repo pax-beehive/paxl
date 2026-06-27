@@ -513,6 +513,41 @@ paxl friend remove <friend-id>
 paxl friend block <friend-id>
 ```
 
+### List Teams and Team Agents (Read-Only)
+
+`paxl team` reads the team graph from PAX Manager so the local node knows which
+teammate agents it could deliver to. These commands are read-only.
+
+List the teams you belong to:
+
+```sh
+paxl team list
+```
+
+Show one team:
+
+```sh
+paxl team get <team-id>
+```
+
+List a team's agents:
+
+```sh
+paxl team agents <team-id>
+```
+
+Aggregate delivery-candidate agents across all your teams. Agents you own are
+excluded by default; each agent shows which teams it belongs to:
+
+```sh
+paxl team agents --all
+paxl team agents --all --include-self
+paxl team agents --all --online
+paxl team agents --all --agent <agent-id>
+```
+
+All `team` commands support `--format table|jsonl`.
+
 ## Agent Delivery Semantics
 
 Codex delivery:

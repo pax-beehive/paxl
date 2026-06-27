@@ -258,6 +258,17 @@ Node IDs are local identity hints, not pax-manager node records. `paxl` uses
 then `local`. This keeps local transfers self-describing without requiring
 cloud registration.
 
+## Team Graph
+
+`TeamFacade` (`internal/facade/team.go`) performs read-only GETs against
+`/api/v1/user/:user_id/teams[...]` on PAX Manager and never caches results in
+SQLite. `ListAllAgents` aggregates per-team agents client-side, de-duplicating
+by `agent_id` and attaching the teams each agent belongs to, while excluding the
+caller's own agents by default; this produces a ranked set of delivery candidates
+for future cross-team routing. The `paxl team` CLI commands are read-only
+(list/get/agents); team management operations such as create, invite, and remove
+are not part of the CLI.
+
 ## Verbose Output
 
 Normal output should stay machine-readable where requested. Adapter child
