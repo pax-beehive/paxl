@@ -1146,16 +1146,17 @@ func updateCommand(ctx context.Context, cmd *cli.Command, stdout io.Writer) erro
 	if err != nil {
 		return fmt.Errorf("check update: %w", err)
 	}
+	shouldApply := check.UpdateAvailable || check.Status == facade.UpdateStatusDevelopment
 	resp := &applyUpdateResponse{
 		CurrentVersion:  check.CurrentVersion,
 		LatestVersion:   check.LatestVersion,
 		Status:          check.Status,
-		UpdateAvailable: check.UpdateAvailable,
+		UpdateAvailable: shouldApply,
 		Platform:        check.Platform,
 		SHA256:          check.SHA256,
 		SizeBytes:       check.SizeBytes,
 	}
-	if !check.UpdateAvailable {
+	if !shouldApply {
 		return renderApplyUpdate(stdout, resp, cmd.String("format"))
 	}
 	binary, err := downloadUpdateBinary(
