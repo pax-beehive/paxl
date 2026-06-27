@@ -20,8 +20,8 @@ import (
 const (
 	knowledgeTitleLimit       = 120
 	knowledgeSummaryLimit     = 1200
-	knowledgeContentLimit     = 6000
-	knowledgeExtractLineLimit = 40
+	knowledgeContentLimit     = 32000
+	knowledgeExtractLineLimit = 120
 )
 
 type CapsuleFacade struct {

@@ -3,6 +3,7 @@ package facade_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -67,6 +68,34 @@ func (s *CapsuleFacadeSuite) TestLocalCapsuleLifecycle() {
 	})
 	s.Require().NoError(err)
 	s.Equal("archived", archived.Capsule.Status)
+}
+
+func (s *CapsuleFacadeSuite) TestLocalCapsuleExtractionKeepsLargerContextWindow() {
+	elements := make([]*model.Element, 0, 80)
+	for index := 1; index <= 80; index++ {
+		elements = append(elements, &model.Element{
+			Seq:         int64(index),
+			Type:        "message",
+			Role:        "assistant",
+			ContentText: fmt.Sprintf("Bridge detail %03d", index),
+		})
+	}
+	_, err := s.store.ReplaceSessionElements(s.ctx, &store.ReplaceSessionElementsRequest{
+		SessionID: "codex:sess",
+		Elements:  elements,
+	})
+	s.Require().NoError(err)
+	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
+
+	resp, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
+		SourceSessionID: "codex:sess",
+		Keyword:         "bridge",
+		Local:           true,
+	})
+
+	s.Require().NoError(err)
+	s.Contains(resp.Capsule.Content, "Bridge detail 080")
+	s.False(resp.Capsule.Truncated)
 }
 
 func (s *CapsuleFacadeSuite) TestCreateLoadsUncachedSourceSession() {
@@ -818,7 +847,7 @@ func (s *CapsuleFacadeSuite) installFakeCodexLargeCapsuleGenerator(rolloutPath s
 	script := "#!/bin/sh\n" +
 		"prompt=$(cat)\n" +
 		"capsule_id=$(printf '%s\\n' \"$prompt\" | sed -n 's/^Capsule id: //p' | head -n 1)\n" +
-		"content=$(printf 'x%.0s' $(seq 1 7000))\n" +
+		"content=$(printf 'x%.0s' $(seq 1 33000))\n" +
 		"printf '%s\\n' \"{\\\"timestamp\\\":\\\"2026-06-20T01:03:00Z\\\",\\\"type\\\":\\\"response_item\\\",\\\"payload\\\":{\\\"type\\\":\\\"message\\\",\\\"role\\\":\\\"assistant\\\",\\\"content\\\":[{\\\"type\\\":\\\"output_text\\\",\\\"text\\\":\\\"PAX_KNOWLEDGE_CAPSULE_START ${capsule_id}\\\\n{\\\\\\\"title\\\\\\\":\\\\\\\"Large bridge\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Generated summary\\\\\\\",\\\\\\\"content\\\\\\\":\\\\\\\"${content}\\\\\\\"}\\\\nPAX_KNOWLEDGE_CAPSULE_END ${capsule_id}\\\"}]}}\" >> \"" + rolloutPath + "\"\n"
 	s.Require().NoError(os.WriteFile(fakePath, []byte(script), 0o700))
 	s.T().Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
