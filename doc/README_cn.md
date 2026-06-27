@@ -541,6 +541,11 @@ paxl friend block <friend-id>
 
 ## Agent 投递语义
 
+`paxl setup` 默认会安装当前支持的 agent hook plumbing：Codex、Claude、Pi、
+Kiro、Gemini、Hermes 和 OpenClaw。Codex 和 Claude 会写入原生
+`UserPromptSubmit` hook；其他 agent 会写入 paxl-owned descriptor，供对应
+host/gateway 调用同一个隐藏入口。
+
 Codex 投递：
 
 - Codex App/Desktop 已有 session：`codex app-server` 的 `thread/resume` 后优先

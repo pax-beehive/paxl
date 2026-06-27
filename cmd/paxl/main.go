@@ -222,7 +222,7 @@ func newSetupCommand(stdout io.Writer) *cli.Command {
 		Flags: []cli.Flag{
 			&cli.StringSliceFlag{
 				Name:  "agent",
-				Usage: "Agent to set up: codex, claude, or hermes. Repeat to select multiple agents.",
+				Usage: "Agent to set up: codex, claude, pi, kiro, gemini, hermes, or openclaw. Repeat to select multiple agents.",
 			},
 			&cli.StringFlag{
 				Name:  "format",
@@ -961,9 +961,6 @@ func agentHook(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("parse hook agent: %w", err)
 	}
-	if strings.TrimSpace(cmd.String("event")) != "user-prompt" {
-		return fmt.Errorf("unsupported hook event %q", cmd.String("event"))
-	}
 	event := parseAgentHookInput(raw)
 	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
 	if err != nil {
@@ -973,7 +970,7 @@ func agentHook(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
 	hookFacade := facade.NewAgentHookFacade(opened.Store)
 	resp, err := hookFacade.Run(ctx, &facade.AgentHookRequest{
 		Agent:       agent,
-		Event:       "user-prompt",
+		Event:       cmd.String("event"),
 		SessionID:   event.SessionID,
 		ProjectPath: event.ProjectPath,
 		Prompt:      event.Prompt,
@@ -2606,13 +2603,15 @@ func parseSetupRequest(cmd *cli.Command) (*facade.SetupRequest, error) {
 				return nil, fmt.Errorf("parse agent: %w", err)
 			}
 			switch agent {
-			case model.AgentNameCodex, model.AgentNameClaude, model.AgentNameHermes:
-				agents = append(agents, agent)
-			case model.AgentNameUnknown,
+			case model.AgentNameCodex,
+				model.AgentNameClaude,
 				model.AgentNamePi,
 				model.AgentNameKiro,
 				model.AgentNameGemini,
-				model.AgentNameOpenClaw,
+				model.AgentNameHermes,
+				model.AgentNameOpenClaw:
+				agents = append(agents, agent)
+			case model.AgentNameUnknown,
 				model.AgentNamePaxl:
 				return nil, fmt.Errorf("agent %q does not support setup", agent)
 			}

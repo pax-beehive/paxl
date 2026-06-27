@@ -101,11 +101,22 @@ func (f *SetupFacade) installAgentHook(
 			return nil, err
 		}
 		return installDescriptorHook(agent, hermesHookDescriptorPath(), command, dbPath, dryRun)
-	case model.AgentNameUnknown,
-		model.AgentNamePi,
+	case model.AgentNamePi,
 		model.AgentNameKiro,
 		model.AgentNameGemini,
-		model.AgentNameOpenClaw,
+		model.AgentNameOpenClaw:
+		dbPath, err := defaultStorePath()
+		if err != nil {
+			return nil, err
+		}
+		return installDescriptorHook(
+			agent,
+			genericHookDescriptorPath(agent),
+			command,
+			dbPath,
+			dryRun,
+		)
+	case model.AgentNameUnknown,
 		model.AgentNamePaxl:
 		return &SetupAdapterResult{
 			Agent:   agent,
@@ -125,7 +136,11 @@ func setupAgents(agents []model.AgentName) []model.AgentName {
 		return []model.AgentName{
 			model.AgentNameCodex,
 			model.AgentNameClaude,
+			model.AgentNamePi,
+			model.AgentNameKiro,
+			model.AgentNameGemini,
 			model.AgentNameHermes,
+			model.AgentNameOpenClaw,
 		}
 	}
 	return agents
@@ -455,8 +470,38 @@ func claudeSettingsPath() string {
 }
 
 func hermesHookDescriptorPath() string {
-	root := firstNonEmpty(os.Getenv("HERMES_HOME"), homePath(".hermes"))
+	root := firstNonEmpty(
+		os.Getenv("PAXL_HERMES_HOME"),
+		os.Getenv("HERMES_HOME"),
+		homePath(".hermes"),
+	)
 	return filepath.Join(root, "paxl", "hooks", "user-prompt.json")
+}
+
+func genericHookDescriptorPath(agent model.AgentName) string {
+	root := genericAgentRoot(agent)
+	return filepath.Join(root, "paxl", "hooks", "user-prompt.json")
+}
+
+func genericAgentRoot(agent model.AgentName) string {
+	switch agent {
+	case model.AgentNamePi:
+		return firstNonEmpty(os.Getenv("PI_HOME"), homePath(".pi"))
+	case model.AgentNameKiro:
+		return firstNonEmpty(os.Getenv("KIRO_HOME"), homePath(".kiro"))
+	case model.AgentNameGemini:
+		return firstNonEmpty(os.Getenv("GEMINI_HOME"), homePath(".gemini"))
+	case model.AgentNameOpenClaw:
+		return firstNonEmpty(os.Getenv("OPENCLAW_HOME"), homePath(".openclaw"))
+	case model.AgentNameUnknown,
+		model.AgentNameCodex,
+		model.AgentNameClaude,
+		model.AgentNameHermes,
+		model.AgentNamePaxl:
+		return homePath("." + string(agent))
+	default:
+		return homePath("." + string(agent))
+	}
 }
 
 func homePath(parts ...string) string {

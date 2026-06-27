@@ -31,6 +31,18 @@ Current setup slice:
   and existing Codex app processes may need to reload config.
 - Hermes: writes a paxl-owned hook descriptor and shim. Activation depends on a
   Hermes hook host reading that descriptor.
+- Pi, Kiro, Gemini, and OpenClaw: write paxl-owned hook descriptors and the
+  shared shim. Activation depends on an agent-specific host or gateway reading
+  the descriptor and calling the hidden paxl hook entrypoint.
+
+All supported agent hooks converge on the same hidden entrypoint:
+
+```sh
+paxl __agent-hook --agent <agent> --event user-prompt
+```
+
+The entrypoint also accepts the normalized event name `user_prompt`; descriptors
+keep `user-prompt` for compatibility with existing hook command strings.
 
 Local injection can either deliver immediately to a known target session, start
 a new target session, or create a conditional hook route.
@@ -128,7 +140,7 @@ The hidden runtime hook receives a structured event from the agent integration:
 }
 ```
 
-For compatibility with current Codex hook payloads, paxl also accepts camelCase
+For compatibility with current agent hook payloads, paxl also accepts camelCase
 field names such as `sessionId`, `projectId`, `projectPath`, and `userPrompt`.
 If no project field is provided, paxl falls back to the hook process working
 directory before evaluating a project route.

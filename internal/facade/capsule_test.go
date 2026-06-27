@@ -340,7 +340,7 @@ func (s *CapsuleFacadeSuite) TestQueueHookInjectionAndConsumeFromMatchingPrompt(
 
 	consumed, err := hookFacade.Run(s.ctx, &facade.AgentHookRequest{
 		Agent:     model.AgentNameClaude,
-		Event:     "user-prompt",
+		Event:     "user_prompt",
 		SessionID: "claude-session",
 		Prompt:    "please use the handoff",
 	})

@@ -269,6 +269,26 @@ func (s *CommandSuite) TestSetupInstallsClaudeHook() {
 	s.Contains(string(raw), "paxl __agent-hook --agent claude --event user-prompt")
 }
 
+func (s *CommandSuite) TestSetupInstallsDescriptorForGenericAgentHook() {
+	piHome := filepath.Join(s.T().TempDir(), ".pi")
+	s.T().Setenv("PI_HOME", piHome)
+
+	err := run(
+		context.Background(),
+		[]string{"setup", "--agent", "pi", "--format", "jsonl"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"agent":"pi"`)
+	s.Contains(s.stdout.String(), `"status":"installed"`)
+	raw, err := os.ReadFile(filepath.Join(piHome, "paxl", "hooks", "user-prompt.json"))
+	s.Require().NoError(err)
+	s.Contains(string(raw), `"agent": "pi"`)
+	s.Contains(string(raw), "__agent-hook --agent pi --event user-prompt")
+}
+
 func (s *CommandSuite) TestHiddenAgentHookConsumesMatchingInjectionOnce() {
 	dbPath := s.seedCodexSessionWithKeyword("bridge")
 	capsuleID := s.createLocalCapsule(dbPath, "bridge")
@@ -296,7 +316,7 @@ func (s *CommandSuite) TestHiddenAgentHookConsumesMatchingInjectionOnce() {
 	}, func() {
 		err = run(
 			context.Background(),
-			[]string{"--db", dbPath, "__agent-hook", "--agent", "claude", "--event", "user-prompt"},
+			[]string{"--db", dbPath, "__agent-hook", "--agent", "claude", "--event", "user_prompt"},
 			&s.stdout,
 			&s.stderr,
 		)

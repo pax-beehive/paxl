@@ -28,10 +28,14 @@ func (s *SetupFacadeSuite) SetupTest() {
 	s.T().Setenv("HOME", s.home)
 }
 
-func (s *SetupFacadeSuite) TestInstallSetsUpCodexClaudeAndHermesHooks() {
+func (s *SetupFacadeSuite) TestInstallSetsUpAllSupportedAgentHooks() {
 	s.T().Setenv("CODEX_HOME", filepath.Join(s.home, ".codex"))
 	s.T().Setenv("CLAUDE_HOME", filepath.Join(s.home, ".claude"))
 	s.T().Setenv("HERMES_HOME", filepath.Join(s.home, ".hermes"))
+	s.T().Setenv("PI_HOME", filepath.Join(s.home, ".pi"))
+	s.T().Setenv("KIRO_HOME", filepath.Join(s.home, ".kiro"))
+	s.T().Setenv("GEMINI_HOME", filepath.Join(s.home, ".gemini"))
+	s.T().Setenv("OPENCLAW_HOME", filepath.Join(s.home, ".openclaw"))
 	s.Require().NoError(os.MkdirAll(filepath.Join(s.home, ".claude"), 0o700))
 	s.Require().NoError(os.WriteFile(
 		filepath.Join(s.home, ".claude", "settings.json"),
@@ -39,22 +43,17 @@ func (s *SetupFacadeSuite) TestInstallSetsUpCodexClaudeAndHermesHooks() {
 		0o600,
 	))
 
-	resp, err := facade.NewSetupFacade().Install(s.ctx, &facade.SetupRequest{
-		Agents: []model.AgentName{
-			model.AgentNameCodex,
-			model.AgentNameClaude,
-			model.AgentNameHermes,
-		},
-	})
+	resp, err := facade.NewSetupFacade().Install(s.ctx, &facade.SetupRequest{})
 
 	s.Require().NoError(err)
-	s.Require().Len(resp.Adapters, 3)
+	s.Require().Len(resp.Adapters, 7)
 	s.Equal(model.AgentNameCodex, resp.Adapters[0].Agent)
 	s.Equal(facade.SetupStatusInstalled, resp.Adapters[0].Status)
 	s.Equal(model.AgentNameClaude, resp.Adapters[1].Agent)
 	s.Equal(facade.SetupStatusInstalled, resp.Adapters[1].Status)
-	s.Equal(model.AgentNameHermes, resp.Adapters[2].Agent)
-	s.Equal(facade.SetupStatusInstalled, resp.Adapters[2].Status)
+	for _, result := range resp.Adapters[2:] {
+		s.Equal(facade.SetupStatusInstalled, result.Status)
+	}
 
 	s.FileExists(filepath.Join(s.home, ".pax", "paxl", "hooks", "agent-hook"))
 	s.FileExists(filepath.Join(s.home, ".codex", "paxl", "hooks", "user-prompt.json"))
@@ -64,6 +63,10 @@ func (s *SetupFacadeSuite) TestInstallSetsUpCodexClaudeAndHermesHooks() {
 	s.codexConfigContains("paxl --db ")
 	s.codexConfigContains("__agent-hook --agent codex --event user-prompt")
 	s.FileExists(filepath.Join(s.home, ".hermes", "paxl", "hooks", "user-prompt.json"))
+	s.FileExists(filepath.Join(s.home, ".pi", "paxl", "hooks", "user-prompt.json"))
+	s.FileExists(filepath.Join(s.home, ".kiro", "paxl", "hooks", "user-prompt.json"))
+	s.FileExists(filepath.Join(s.home, ".gemini", "paxl", "hooks", "user-prompt.json"))
+	s.FileExists(filepath.Join(s.home, ".openclaw", "paxl", "hooks", "user-prompt.json"))
 	s.claudeHookCommandContains("paxl __agent-hook --agent claude --event user-prompt")
 }
 
