@@ -78,11 +78,12 @@ func (f *TeamFacade) GetTeam(
 	var envelope managerEnvelope[struct {
 		Team model.Team `json:"team"`
 	}]
+	teamID := strings.TrimSpace(req.TeamID)
 	if err := f.auth.managerJSON(
 		ctx,
 		http.MethodGet,
 		credential.ManagerURL,
-		userTeamPath(credential.UserID, strings.TrimSpace(req.TeamID), ""),
+		userTeamPath(credential.UserID, teamID, ""),
 		credential.APIKey,
 		nil,
 		&envelope,
@@ -135,6 +136,85 @@ func (f *TeamFacade) ListAgents(
 		TeamID: teamID,
 		UserID: credential.UserID,
 	}, nil
+}
+
+type ListAllTeamAgentsRequest struct {
+	AgentID     string
+	IncludeSelf bool
+	OnlineOnly  bool
+}
+
+type TeamRef struct {
+	TeamID string
+	Name   string
+}
+
+type AggregatedTeamAgent struct {
+	Agent *model.TeamAgent
+	Teams []TeamRef
+}
+
+type ListAllTeamAgentsResponse struct {
+	Agents []*AggregatedTeamAgent
+	UserID string
+}
+
+// ListAllAgents aggregates team agents across all of the caller's teams,
+// de-duplicated by agent ID with the teams each agent belongs to. Agents the
+// caller owns are excluded by default; pass IncludeSelf, or an explicit
+// AgentID filter, to include them.
+func (f *TeamFacade) ListAllAgents(
+	ctx context.Context,
+	req *ListAllTeamAgentsRequest,
+	opts ...func(*Option),
+) (*ListAllTeamAgentsResponse, error) {
+	_ = applyOptions(opts)
+	if req == nil {
+		req = &ListAllTeamAgentsRequest{}
+	}
+	teamsResp, err := f.ListTeams(ctx, &ListTeamsRequest{}, opts...)
+	if err != nil {
+		return nil, err
+	}
+	agentID := strings.TrimSpace(req.AgentID)
+	index := make(map[string]*AggregatedTeamAgent)
+	var order []string
+	for _, team := range teamsResp.Teams {
+		agentsResp, err := f.ListAgents(
+			ctx,
+			&ListTeamAgentsRequest{TeamID: team.TeamID},
+			opts...,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("list agents for team %s: %w", team.TeamID, err)
+		}
+		for _, teamAgent := range agentsResp.Agents {
+			if !req.IncludeSelf && agentID == "" && teamAgent.AgentOwnerUserID == teamsResp.UserID {
+				continue
+			}
+			if agentID != "" && teamAgent.AgentID != agentID {
+				continue
+			}
+			if req.OnlineOnly && (teamAgent.Agent == nil || !teamAgent.Agent.Online) {
+				continue
+			}
+			aggregated, ok := index[teamAgent.AgentID]
+			if !ok {
+				aggregated = &AggregatedTeamAgent{Agent: teamAgent}
+				index[teamAgent.AgentID] = aggregated
+				order = append(order, teamAgent.AgentID)
+			}
+			aggregated.Teams = append(aggregated.Teams, TeamRef{
+				TeamID: team.TeamID,
+				Name:   team.Name,
+			})
+		}
+	}
+	out := make([]*AggregatedTeamAgent, 0, len(order))
+	for _, id := range order {
+		out = append(out, index[id])
+	}
+	return &ListAllTeamAgentsResponse{Agents: out, UserID: teamsResp.UserID}, nil
 }
 
 func userTeamPath(userID string, teamID string, sub string) string {
