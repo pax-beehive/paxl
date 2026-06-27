@@ -172,7 +172,7 @@ func (s *CommandSuite) TestAgentListUsesSingularCommandAndOnlyShowsSupportedAgen
 	s.Contains(s.stdout.String(), "claude")
 	s.Contains(s.stdout.String(), "pi")
 	s.Contains(s.stdout.String(), "kiro")
-	s.Contains(s.stdout.String(), "gemini")
+	s.NotContains(s.stdout.String(), "gemini")
 	s.NotContains(s.stdout.String(), "qwen")
 	s.Empty(s.stderr.String())
 }
@@ -269,6 +269,26 @@ func (s *CommandSuite) TestSetupInstallsClaudeHook() {
 	s.Contains(string(raw), "paxl __agent-hook --agent claude --event user-prompt")
 }
 
+func (s *CommandSuite) TestSetupInstallsDescriptorForGenericAgentHook() {
+	piHome := filepath.Join(s.T().TempDir(), ".pi")
+	s.T().Setenv("PI_HOME", piHome)
+
+	err := run(
+		context.Background(),
+		[]string{"setup", "--agent", "pi", "--format", "jsonl"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"agent":"pi"`)
+	s.Contains(s.stdout.String(), `"status":"installed"`)
+	raw, err := os.ReadFile(filepath.Join(piHome, "paxl", "hooks", "user-prompt.json"))
+	s.Require().NoError(err)
+	s.Contains(string(raw), `"agent": "pi"`)
+	s.Contains(string(raw), "__agent-hook --agent pi --event user-prompt")
+}
+
 func (s *CommandSuite) TestHiddenAgentHookConsumesMatchingInjectionOnce() {
 	dbPath := s.seedCodexSessionWithKeyword("bridge")
 	capsuleID := s.createLocalCapsule(dbPath, "bridge")
@@ -296,7 +316,7 @@ func (s *CommandSuite) TestHiddenAgentHookConsumesMatchingInjectionOnce() {
 	}, func() {
 		err = run(
 			context.Background(),
-			[]string{"--db", dbPath, "__agent-hook", "--agent", "claude", "--event", "user-prompt"},
+			[]string{"--db", dbPath, "__agent-hook", "--agent", "claude", "--event", "user_prompt"},
 			&s.stdout,
 			&s.stderr,
 		)
@@ -1275,24 +1295,7 @@ func (s *CommandSuite) TestSessionListSyncsKiroLocalSessionsToSQLite() {
 	s.Contains(s.stdout.String(), `"title":"Kiro session title"`)
 }
 
-func (s *CommandSuite) TestSessionListSyncsGeminiLocalSessionsToSQLite() {
-	geminiHome := s.T().TempDir()
-	sessionDir := filepath.Join(geminiHome, "tmp", "sample-project", "chats")
-	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
-	s.Require().NoError(os.WriteFile(
-		filepath.Join(geminiHome, "tmp", "sample-project", ".project_root"),
-		[]byte("/tmp/project"),
-		0o600,
-	))
-	s.T().Setenv("GEMINI_HOME", geminiHome)
-	s.Require().NoError(os.WriteFile(
-		filepath.Join(sessionDir, "session-2026-06-20T05-31-gemini-session.jsonl"),
-		[]byte(
-			`{"sessionId":"gemini-session","projectHash":"sample-project","startTime":"2026-06-20T05:31:20.160Z","lastUpdated":"2026-06-20T05:32:20.160Z","kind":"main"}`+"\n"+
-				`{"$set":{"messages":[{"id":"u1","timestamp":"2026-06-20T05:31:30.160Z","type":"user","content":[{"text":"Gemini session title"}]}],"lastUpdated":"2026-06-20T05:32:20.160Z"}}`+"\n",
-		),
-		0o600,
-	))
+func (s *CommandSuite) TestSessionListRejectsGeminiAgent() {
 	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
 
 	err := run(
@@ -1302,9 +1305,8 @@ func (s *CommandSuite) TestSessionListSyncsGeminiLocalSessionsToSQLite() {
 		&s.stderr,
 	)
 
-	s.Require().NoError(err)
-	s.Contains(s.stdout.String(), `"id":"gemini:gemini-session"`)
-	s.Contains(s.stdout.String(), `"title":"Gemini session title"`)
+	s.Require().Error(err)
+	s.Contains(err.Error(), `agent "gemini" is no longer supported`)
 }
 
 func (s *CommandSuite) TestSessionListAcceptsCommaSeparatedAgents() {

@@ -29,14 +29,13 @@ func (s *RegistrySuite) TestDefaultRegistryContainsBuiltInAdapters() {
 	resp, err := registry.List(context.Background(), &adaptor.ListRequest{})
 	s.Require().NoError(err)
 
-	s.Len(resp.Agents, 7)
+	s.Len(resp.Agents, 6)
 	s.Equal(model.AgentNameCodex, resp.Agents[0].Name)
 	s.Equal(model.AgentNameClaude, resp.Agents[1].Name)
 	s.Equal(model.AgentNamePi, resp.Agents[2].Name)
 	s.Equal(model.AgentNameKiro, resp.Agents[3].Name)
-	s.Equal(model.AgentNameGemini, resp.Agents[4].Name)
-	s.Equal(model.AgentNameHermes, resp.Agents[5].Name)
-	s.Equal(model.AgentNameOpenClaw, resp.Agents[6].Name)
+	s.Equal(model.AgentNameHermes, resp.Agents[4].Name)
+	s.Equal(model.AgentNameOpenClaw, resp.Agents[5].Name)
 }
 
 func (s *RegistrySuite) TestListAcceptsVerboseWriterOption() {
@@ -50,7 +49,7 @@ func (s *RegistrySuite) TestListAcceptsVerboseWriterOption() {
 	)
 
 	s.Require().NoError(err)
-	s.Len(resp.Agents, 7)
+	s.Len(resp.Agents, 6)
 }
 
 func (s *RegistrySuite) TestLookupRejectsUnsupportedAgent() {
@@ -908,11 +907,6 @@ func (s *RegistrySuite) TestAdapterPromptRequiresNativeIDAndText() {
 			adapter: adaptor.NewKiroAdapter(),
 			req:     &adaptor.PromptRequest{NativeID: "session"},
 		},
-		{
-			name:    "gemini",
-			adapter: adaptor.NewGeminiAdapter(),
-			req:     &adaptor.PromptRequest{Text: "handoff"},
-		},
 	}
 
 	for _, tc := range cases {
@@ -943,11 +937,6 @@ func (s *RegistrySuite) TestAdapterStartSessionRequiresText() {
 		{
 			name:    "kiro empty",
 			adapter: adaptor.NewKiroAdapter(),
-			req:     &adaptor.StartSessionRequest{},
-		},
-		{
-			name:    "gemini empty",
-			adapter: adaptor.NewGeminiAdapter(),
 			req:     &adaptor.StartSessionRequest{},
 		},
 	}

@@ -158,6 +158,41 @@ func (s *HermesSuite) TestAdapterListsHermesHomeSessionsWithNumericTimestamps() 
 	s.Equal("2026-06-20T23:56:53Z", resp.Sessions[0].UpdatedAt)
 }
 
+func (s *HermesSuite) TestAdapterIgnoresPaxlHookDescriptorsWhenLookingForLocalSessions() {
+	hermesHome := s.T().TempDir()
+	hookDir := filepath.Join(hermesHome, "paxl", "hooks")
+	s.Require().NoError(os.MkdirAll(hookDir, 0o700))
+	s.T().Setenv("HERMES_HOME", hermesHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(hookDir, "user-prompt.json"),
+		[]byte(`{"agent":"hermes","event":"user-prompt"}`),
+		0o600,
+	))
+	original := hermesACPCommand
+	hermesACPCommand = []string{}
+	s.T().Cleanup(func() {
+		hermesACPCommand = original
+	})
+	withHermesHTTPClient(s.T(), func(req *http.Request) (*http.Response, error) {
+		s.Equal(http.MethodGet, req.Method)
+		s.Equal("/api/sessions", req.URL.Path)
+		return hermesJSONResponse(
+			http.StatusOK,
+			`[{"sessionId":"sess-http","name":"HTTP Hermes"}]`,
+		), nil
+	})
+
+	resp, err := NewHermesAdapter().ListSessions(
+		context.Background(),
+		&ListSessionsRequest{},
+	)
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Sessions, 1)
+	s.Equal("hermes:sess-http", resp.Sessions[0].ID)
+	s.Equal("HTTP Hermes", resp.Sessions[0].Title)
+}
+
 func (s *HermesSuite) TestAdapterGetsSessionThroughPublicInterface() {
 	withHermesHTTPClient(s.T(), func(req *http.Request) (*http.Response, error) {
 		s.Equal(http.MethodGet, req.Method)

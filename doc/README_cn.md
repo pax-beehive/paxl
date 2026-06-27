@@ -1,146 +1,110 @@
 # paxl
 
-`paxl` 是一个本地优先的 AI coding agent context bridge。
+**给 AI coding agents 用的本地优先上下文转移工具。**
 
-它用来在 Codex、Claude Code、Pi、Kiro、Gemini 和 OpenClaw 之间迁移工作上下文，
-不需要手动复制长 transcript，也不需要把本地 session history 上传到云端服务。
+`paxl` 让 Codex、Claude Code、Pi、Kiro 和 OpenClaw 可以互相交接工作，
+不用手动复制长 transcript，也不用把本地 session history 上传到云端服务。
 
-最直接的使用场景是：某个本地 agent 额度用完、卡住了，或者另一个 agent 更适合下一步时，
-用 `paxl` 把当前 session context 交给目标 agent，让工作继续往前走。
+当一个 agent 额度用完、卡住，或者不适合下一步时，`paxl` 可以保留当前工作上下文，
+再把它投递给另一个本地 agent session。
 
 英文文档：[../README.md](../README.md)
 
 架构文档：[ARCHITECTURE.md](ARCHITECTURE.md)
 
-## 快速安装
-
-安装最新 stable 托管版本：
+## 安装
 
 ```sh
 curl -fsSL https://api.paxtech.net/api/v1/public/paxl/install.sh | bash
-```
-
-安装指定上传版本：
-
-```sh
-curl -fsSL https://api.paxtech.net/api/v1/public/paxl/install.sh | PAXL_VERSION=0.1.0 bash
-```
-
-检查 binary：
-
-```sh
 paxl version
 ```
 
-检查是否有新的 stable 托管版本：
-
-```sh
-paxl version --check
-```
-
-原地升级当前 binary：
-
-```sh
-paxl update
-```
-
-也可以从源码构建：
+从源码构建：
 
 ```sh
 go build -trimpath -o ./paxl ./cmd/paxl
-mkdir -p ~/bin
-cp ./paxl ~/bin/paxl
 ```
 
-## 第一次成功：换个 agent 继续
+## 前五分钟
 
-建议先跑这条最窄 workflow。它能验证核心概念，而且不用一次学完所有命令。
-
-1. 检查哪些本地 agent 有 CLI、哪些已经能看到本地 session 日志：
-
-   ```sh
-   paxl agent list
-   ```
-
-2. 列出最近的 Claude Code sessions：
-
-   ```sh
-   paxl session list --agent claude --limit 5
-   ```
-
-3. 列出最近的 Codex sessions：
-
-   ```sh
-   paxl session list --agent codex --limit 5
-   ```
-
-4. 把 Claude session mirror 到已有 Codex session：
-
-   ```sh
-   paxl session mirror \
-     claude:<source-session-id> \
-     --to-session codex:<target-session-id> \
-     --verbose
-   ```
-
-如果某个 agent 还没有本地日志，session list 会对该 agent 返回空列表，而不是让整条命令失败。
-
-## 为什么用它
-
-- 当 quota、模型表现或工具权限在任务中途变化时，把工作交给另一个 agent 继续。
-- 在交接前把 session timeline 保存成 transcript、JSONL 或 HTML。
-- 把决策、bug 线索、release plan、项目约定整理成可复用的 knowledge capsule。
-- 把准备好的 handoff 注入已有 session，或者用它启动一个新的目标 agent session。
-- 安装 Codex skill 后，让 agent 帮你选择和执行合适的 `paxl` 命令。
-
-## Agent Skill
-
-仓库内包含一个 Codex skill，用来稳定复用本地 knowledge transfer 流程：
+先看本机能连到哪些 agent：
 
 ```sh
-mkdir -p ~/.codex/skills
-cp -R skills/knowledge-transfer ~/.codex/skills/
+paxl agent list
 ```
 
-如果想让 agent 帮你安装，可以让 agent 先阅读这个仓库，再从
-`skills/knowledge-transfer` 安装 skill。可以直接这样说：
+找到要迁移的 session：
 
-```text
-Read this repository, inspect skills/knowledge-transfer/SKILL.md, then install
-the knowledge-transfer skill into the Codex skills directory for all future
-sessions on this machine.
+```sh
+paxl session list --agent claude --limit 5
+paxl session list --agent codex --limit 5
 ```
 
-安装后，在需要跨 Codex、Claude、Pi、Kiro、Gemini、OpenClaw session 转移上下文时，
-让 Codex 使用 `knowledge-transfer` skill。它适合在你不想记具体参数时，让 agent 选择
-应该跑 `session mirror` 还是 `capsule create` / `capsule inject`。
+把 Claude session 迁到已有 Codex session：
 
-## 心智模型
+```sh
+paxl session mirror \
+  claude:<source-session-id> \
+  --to-session codex:<target-session-id> \
+  --verbose
+```
 
-`paxl` 里有三个核心概念：
+也可以带着上下文开一个新的目标 session：
 
-- **session**：从本地 agent 日志中发现的一段本地会话。
-- **mirror**：把一个 session 的上下文即时交接到另一个 agent session。
-- **capsule**：可复用的本地 context artifact，可以查看、归档，也可以之后再注入。
+```sh
+paxl session mirror claude:<source-session-id> --to codex
+```
 
-需要马上接着干活时，用 `session mirror`。需要沉淀以后还能复用的知识时，用
-`capsule create` 和 `capsule inject`。
+## 它转移什么
 
-当前内置 agents：
+`paxl` 主要处理四类本地优先对象：
 
-- `codex`：读取本地 Codex 日志，通过 Codex CLI 投递上下文。
-- `claude`：读取本地 Claude Code 日志，通过 Claude Code CLI 投递上下文。
-- `pi`：读取本地 Pi 日志，通过 Pi CLI 投递上下文。
-- `kiro`：读取本地 Kiro CLI 日志，通过 Kiro CLI 投递上下文。
-- `gemini`：读取本地 Gemini CLI 日志，通过 Gemini CLI 投递上下文。
-- `openclaw`：通过 OpenClaw ACP 做 session list 和已有 session prompt 投递。默认命令
-  是 `openclaw acp`；如果本机入口不同，设置 `PAXL_OPENCLAW_ACP_COMMAND`。
+| 对象 | 什么时候用 | 示例 |
+| --- | --- | --- |
+| Session | 查看本地 agent 会话。 | `paxl session get claude:<id>` |
+| Mirror | 让另一个 agent 立刻接手。 | `paxl session mirror claude:<id> --to codex` |
+| Capsule | 把知识沉淀下来以后复用。 | `paxl capsule create codex:<id> --keyword "release plan"` |
+| Envelope | 把 capsule 发给 accepted friend。 | `paxl capsule send <id> --to @alice` |
 
-## 高级玩法
+关键边界：本地查看就是本地查看。只有你显式 mirror、inject 或 send 时，选中的上下文才会被投递出去。
 
-### 保存 session timeline
+## 支持的 agents
 
-切换 agent 前，可以先把 session 渲染出来：
+| Agent | 本地 session | 投递方式 | Hook setup |
+| --- | --- | --- | --- |
+| Codex | 本地日志 | App server 或 `codex exec` | `UserPromptSubmit` |
+| Claude Code | 本地日志 | `claude --print` | `UserPromptSubmit` |
+| Pi | 本地日志 | Pi CLI | `before_agent_start` extension |
+| Kiro | Kiro CLI 日志 | `kiro-cli chat` | Kiro `userPromptSubmit` agent hook |
+| Hermes | 本地 descriptor host | Hook descriptor | Descriptor only |
+| OpenClaw | ACP | ACP `session/prompt` | Descriptor only |
+
+运行 `paxl agent list` 可以看到这些 agent 在本机是否可用。
+
+Gemini CLI 支持已经下线。旧本地数据里的 `gemini` 值仍可被解析，但新的 CLI 入口会拒绝
+继续使用 Gemini。
+
+## Hook 注入
+
+安装一次本地 hooks：
+
+```sh
+paxl setup
+```
+
+然后把 capsule 排队到下一次匹配的 prompt：
+
+```sh
+paxl capsule inject <capsule-id> --match keyword --keyword "release plan"
+paxl capsule inject <capsule-id> --match project --project paxl --agent claude
+```
+
+隐藏 hook 入口会一次性领取匹配的 injection，把 capsule 渲染成 handoff，再通过对应 agent
+的 native hook shape 交回去。
+
+## 常用动作
+
+切换 agent 前保存 timeline：
 
 ```sh
 paxl session get claude:<session-id>
@@ -150,19 +114,7 @@ paxl session get codex:<session-id> --format html --output session.html
 
 Transcript 适合直接阅读，JSONL 适合脚本处理，HTML 适合当作可携带的 review artifact。
 
-### 带着上下文开新 session
-
-目标 agent 不一定要有已有 session。可以直接用源上下文启动一个新的目标 session：
-
-```sh
-paxl session mirror claude:<source-session-id> --to codex
-```
-
-当你希望目标 agent 收到 handoff 后，在一个干净 session 中决定如何继续时，这个模式更合适。
-
-### 沉淀可复用知识
-
-让源 agent 围绕某个 keyword 生成 capsule：
+沉淀可复用知识：
 
 ```sh
 paxl capsule create claude:<session-id> --keyword "release plan"
@@ -173,43 +125,29 @@ paxl capsule inject <capsule-id> codex:<target-session-id>
 Capsule 适合保存架构决策、debug 历史、release checklist、项目约定这类不应该只留在一个
 conversation 里的上下文。
 
-### 发给 friend
-
-Cloud inbox 投递必须经过 accepted friend。不能直接发到裸邮箱；`--to` 必须是 `@alice`
-这样的 friend alias。
+发给 accepted friend：
 
 ```sh
 paxl friend request alice@example.com --alias alice
 # Alice 接受 friend request 后
 paxl capsule send <capsule-id> --to @alice --message "please review"
-paxl outbox list
-paxl inbox list
-paxl inbox accept <envelope-id>
-paxl inbox accept --all
-paxl inbox watch
 ```
 
-发送方可以通过 outbox 跟踪已发送 envelope；接收方继续从 inbox 处理。接受 inbox envelope
-后，远端 payload 会保存成本地 capsule。可以用 `paxl inbox accept --all` 一次性接受所有
-pending inbox envelope，也可以运行 `paxl inbox watch` 在前台持续接受 pending envelope，
-直到进程被停止。需要让某个本地 agent 接手时，再把这个 capsule inject 到目标 session。
-
-### 转移人工整理好的上下文
-
-如果你已经知道应该交接什么，可以直接从文件创建 capsule，不需要让源 agent 总结：
+转移人工整理好的上下文：
 
 ```sh
-paxl capsule create codex:<session-id> \
+paxl capsule create --manual \
   --keyword "production incident" \
-  --title "api timeout incident" \
-  --summary "Known facts, mitigations, and next checks." \
   --content-file handoff.md
 ```
 
-### 让 agent 帮你操作
-
 安装仓库里的 Codex skill 后，可以直接说“把这个上下文迁到 Claude”或“给这个 bug 建一个
 capsule”，让 agent 去执行对应的 `paxl` 命令。
+
+```sh
+mkdir -p ~/.codex/skills
+cp -R skills/knowledge-transfer ~/.codex/skills/
+```
 
 ## 数据模型
 
@@ -335,7 +273,7 @@ paxl/v<version>
 设置 `PAX_RELEASE_PUSH_TAG=1` 会推送 tag。`RELEASE_VERSION=0.2.0` 可以指定明确
 semantic version；`RELEASE_VERSION=major|minor|patch` 则按语义版本自动递增。
 
-## 常用工作流
+## 命令参考
 
 ### 查看可用 agents
 
@@ -541,6 +479,11 @@ paxl friend block <friend-id>
 
 ## Agent 投递语义
 
+`paxl setup` 默认会安装当前支持的 agent hook plumbing：Codex、Claude、Pi、
+Kiro、Hermes 和 OpenClaw。Codex 和 Claude 会写入原生
+`UserPromptSubmit` hook；Pi 会写入 `before_agent_start` extension；
+其他 agent 会写入 paxl-owned descriptor，供对应 host/gateway 调用同一个隐藏入口。
+
 Codex 投递：
 
 - Codex App/Desktop 已有 session：`codex app-server` 的 `thread/resume` 后优先
@@ -560,16 +503,13 @@ Pi 投递：
 
 - 已有 session：`pi --session <session-id> -p`
 - 新 session：`pi -p`
+- 条件 hook 注入：通过 Pi `before_agent_start` extension 在 agent loop 启动前
+  返回一条 custom message。
 
 Kiro 投递：
 
 - 已有 session：`kiro-cli chat --resume-id <session-id> --no-interactive <message>`
 - 新 session：`kiro-cli chat --no-interactive <message>`
-
-Gemini 投递：
-
-- 已有 session：`gemini --resume <session-id> -p <message>`
-- 新 session：`gemini -p <message>`
 
 OpenClaw 投递：
 
@@ -598,7 +538,7 @@ CI 的 coverage 门槛是 80%。
 ## 当前状态
 
 `paxl` 还是早期 open-source CLI。架构上支持继续扩展更多 agent adapters，
-目前内置支持 Codex、Claude、Pi、Kiro、Gemini 和 OpenClaw。
+目前内置支持 Codex、Claude、Pi、Kiro 和 OpenClaw。
 
 ## 平台支持边界
 
@@ -607,11 +547,11 @@ CLI 架构和 SQLite 存储本身是跨平台 Go 代码，但当前内置 adapte
 
 当前支持边界：
 
-- macOS：已经用本地 Codex、Claude Code、Pi、Kiro CLI 和 Gemini CLI 日志形态验证过。
+- macOS：已经用本地 Codex、Claude Code、Pi 和 Kiro CLI 日志形态验证过。
   OpenClaw 通过 ACP contract tests 覆盖，需要本机存在 OpenClaw ACP 命令。
 - Linux：如果存在 `~/.codex/sessions`、`~/.claude/projects`、
-  `~/.pi/agent/sessions`、`~/.kiro/sessions`、`~/.gemini/tmp`，并且对应 CLI
-  在 `PATH` 中，理论上和 macOS 很接近，但还需要真实环境验证。
+  `~/.pi/agent/sessions`、`~/.kiro/sessions`，并且对应 CLI 在 `PATH` 中，
+  理论上和 macOS 很接近，但还需要真实环境验证。
 - Windows：还没有充分验证。路径处理、Claude project 目录名解码、fake command
   测试方式、native CLI resume 行为都需要单独覆盖。
 

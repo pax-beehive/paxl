@@ -65,7 +65,7 @@ func (f *AgentHookFacade) Run(
 	if f.store == nil {
 		return nil, fmt.Errorf("run agent hook: store is required")
 	}
-	if strings.TrimSpace(req.Event) != "user-prompt" {
+	if normalizeHookEvent(req.Event) != "user_prompt" {
 		return nil, fmt.Errorf("unsupported hook event %q", req.Event)
 	}
 	claimed, err := f.store.ClaimHookKnowledgeInjection(
@@ -89,6 +89,15 @@ func (f *AgentHookFacade) Run(
 		actionItemsFromJSON(claimed.Injection.ActionItemsJSON),
 	)
 	return &AgentHookResponse{Injection: claimed.Injection, Message: message}, nil
+}
+
+func normalizeHookEvent(event string) string {
+	switch strings.TrimSpace(event) {
+	case "user-prompt", "user_prompt", "UserPromptSubmit":
+		return "user_prompt"
+	default:
+		return strings.TrimSpace(event)
+	}
 }
 
 func (f *AgentHookFacade) Deliver(

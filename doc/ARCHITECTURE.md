@@ -111,7 +111,6 @@ Current adapters:
 - Claude: reads local Claude Code logs and delivers with Claude Code CLI.
 - Pi: reads local Pi logs and delivers with Pi CLI.
 - Kiro: reads local Kiro CLI logs and delivers with Kiro CLI.
-- Gemini: reads local Gemini CLI logs and delivers with Gemini CLI.
 - OpenClaw: uses ACP `session/list` and `session/prompt` through the configured
   OpenClaw ACP command.
 
@@ -134,9 +133,6 @@ Pi new session:          pi -p
 Kiro existing session:   kiro-cli chat --resume-id <session-id> --no-interactive <message>
 Kiro new session:        kiro-cli chat --no-interactive <message>
 
-Gemini existing session: gemini --resume <session-id> -p <message>
-Gemini new session:      gemini -p <message>
-
 OpenClaw existing session:
                         openclaw acp + ACP session/prompt
 OpenClaw session list:  openclaw acp + ACP session/list
@@ -147,6 +143,26 @@ OpenClaw command override:
 Adapter stdout/stderr is buffered by default. `--verbose` can surface delivery
 details without polluting normal command output.
 
+## Hook Entry Point
+
+`paxl setup` installs hidden agent hook plumbing. Agent-specific native hook
+formats and descriptor files converge on one paxl entrypoint:
+
+```text
+paxl __agent-hook --agent <agent> --event user-prompt
+```
+
+The CLI entrypoint parses native payload shapes into a small hook event:
+agent, event name, session ID, project path, and current prompt. The facade then
+claims matching pending injection routes, renders the handoff, writes the
+agent-specific hook response, and marks the route consumed after output
+succeeds.
+
+Hook scripts and hosts should not implement routing policy. They report the
+event and let the facade decide whether to inject, ignore, or keep a route
+pending. This keeps duplicate-consume prevention and delivery records in the
+SQLite-backed model layer.
+
 ## Session Identity
 
 `paxl` uses typed session IDs at user-facing boundaries:
@@ -156,7 +172,6 @@ codex:<native-id>
 claude:<native-id>
 pi:<native-id>
 kiro:<native-id>
-gemini:<native-id>
 openclaw:<native-id>
 ```
 

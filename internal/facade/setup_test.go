@@ -28,10 +28,14 @@ func (s *SetupFacadeSuite) SetupTest() {
 	s.T().Setenv("HOME", s.home)
 }
 
-func (s *SetupFacadeSuite) TestInstallSetsUpCodexClaudeAndHermesHooks() {
+func (s *SetupFacadeSuite) TestInstallSetsUpAllSupportedAgentHooks() {
 	s.T().Setenv("CODEX_HOME", filepath.Join(s.home, ".codex"))
 	s.T().Setenv("CLAUDE_HOME", filepath.Join(s.home, ".claude"))
 	s.T().Setenv("HERMES_HOME", filepath.Join(s.home, ".hermes"))
+	s.T().Setenv("PI_HOME", filepath.Join(s.home, ".pi"))
+	s.T().Setenv("PI_CODING_AGENT_DIR", filepath.Join(s.home, ".pi", "agent"))
+	s.T().Setenv("KIRO_HOME", filepath.Join(s.home, ".kiro"))
+	s.T().Setenv("OPENCLAW_HOME", filepath.Join(s.home, ".openclaw"))
 	s.Require().NoError(os.MkdirAll(filepath.Join(s.home, ".claude"), 0o700))
 	s.Require().NoError(os.WriteFile(
 		filepath.Join(s.home, ".claude", "settings.json"),
@@ -39,22 +43,17 @@ func (s *SetupFacadeSuite) TestInstallSetsUpCodexClaudeAndHermesHooks() {
 		0o600,
 	))
 
-	resp, err := facade.NewSetupFacade().Install(s.ctx, &facade.SetupRequest{
-		Agents: []model.AgentName{
-			model.AgentNameCodex,
-			model.AgentNameClaude,
-			model.AgentNameHermes,
-		},
-	})
+	resp, err := facade.NewSetupFacade().Install(s.ctx, &facade.SetupRequest{})
 
 	s.Require().NoError(err)
-	s.Require().Len(resp.Adapters, 3)
+	s.Require().Len(resp.Adapters, 6)
 	s.Equal(model.AgentNameCodex, resp.Adapters[0].Agent)
 	s.Equal(facade.SetupStatusInstalled, resp.Adapters[0].Status)
 	s.Equal(model.AgentNameClaude, resp.Adapters[1].Agent)
 	s.Equal(facade.SetupStatusInstalled, resp.Adapters[1].Status)
-	s.Equal(model.AgentNameHermes, resp.Adapters[2].Agent)
-	s.Equal(facade.SetupStatusInstalled, resp.Adapters[2].Status)
+	for _, result := range resp.Adapters[2:] {
+		s.Equal(facade.SetupStatusInstalled, result.Status)
+	}
 
 	s.FileExists(filepath.Join(s.home, ".pax", "paxl", "hooks", "agent-hook"))
 	s.FileExists(filepath.Join(s.home, ".codex", "paxl", "hooks", "user-prompt.json"))
@@ -64,7 +63,76 @@ func (s *SetupFacadeSuite) TestInstallSetsUpCodexClaudeAndHermesHooks() {
 	s.codexConfigContains("paxl --db ")
 	s.codexConfigContains("__agent-hook --agent codex --event user-prompt")
 	s.FileExists(filepath.Join(s.home, ".hermes", "paxl", "hooks", "user-prompt.json"))
+	s.FileExists(filepath.Join(s.home, ".pi", "paxl", "hooks", "user-prompt.json"))
+	s.FileExists(filepath.Join(s.home, ".pi", "agent", "extensions", "paxl-hook", "index.ts"))
+	s.FileExists(filepath.Join(s.home, ".kiro", "paxl", "hooks", "user-prompt.json"))
+	s.FileExists(filepath.Join(s.home, ".kiro", "agents", "paxl.json"))
+	s.FileExists(filepath.Join(s.home, ".openclaw", "paxl", "hooks", "user-prompt.json"))
 	s.claudeHookCommandContains("paxl __agent-hook --agent claude --event user-prompt")
+}
+
+func (s *SetupFacadeSuite) TestInstallPiHookWritesBeforeAgentStartExtension() {
+	s.T().Setenv("PI_HOME", filepath.Join(s.home, ".pi"))
+	s.T().Setenv("PI_CODING_AGENT_DIR", filepath.Join(s.home, ".pi", "agent"))
+	s.T().Setenv("XDG_DATA_HOME", filepath.Join(s.home, ".data"))
+
+	resp, err := facade.NewSetupFacade().Install(s.ctx, &facade.SetupRequest{
+		Agents:      []model.AgentName{model.AgentNamePi},
+		PaxlCommand: "/opt/paxl test/bin/paxl",
+	})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Adapters, 1)
+	s.Equal(model.AgentNamePi, resp.Adapters[0].Agent)
+	s.Equal(facade.SetupStatusInstalled, resp.Adapters[0].Status)
+	extensionPath := filepath.Join(
+		s.home,
+		".pi",
+		"agent",
+		"extensions",
+		"paxl-hook",
+		"index.ts",
+	)
+	s.Equal(extensionPath, resp.Adapters[0].Path)
+	raw, err := os.ReadFile(extensionPath)
+	s.Require().NoError(err)
+	extension := string(raw)
+	s.Contains(extension, `pi.on("before_agent_start"`)
+	s.Contains(extension, `spawnSync(paxlCommand`)
+	s.Contains(extension, `timestamped = fileName.match`)
+	s.Contains(extension, `"__agent-hook"`)
+	s.Contains(extension, `"--agent", "pi"`)
+	s.Contains(extension, filepath.Join(s.home, ".data", "paxl", "paxl.sqlite"))
+	s.Contains(extension, `/opt/paxl test/bin/paxl`)
+	s.FileExists(filepath.Join(s.home, ".pi", "paxl", "hooks", "user-prompt.json"))
+}
+
+func (s *SetupFacadeSuite) TestInstallKiroHookWritesAgentConfig() {
+	s.T().Setenv("KIRO_HOME", filepath.Join(s.home, ".kiro"))
+	s.T().Setenv("XDG_DATA_HOME", filepath.Join(s.home, ".data"))
+
+	setup := facade.NewSetupFacade()
+	resp, err := setup.Install(s.ctx, &facade.SetupRequest{
+		Agents:      []model.AgentName{model.AgentNameKiro},
+		PaxlCommand: "/opt/paxl test/bin/paxl",
+	})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Adapters, 1)
+	s.Equal(model.AgentNameKiro, resp.Adapters[0].Agent)
+	s.Equal(facade.SetupStatusInstalled, resp.Adapters[0].Status)
+	agentPath := filepath.Join(s.home, ".kiro", "agents", "paxl.json")
+	s.Equal(agentPath, resp.Adapters[0].Path)
+	s.FileExists(filepath.Join(s.home, ".kiro", "paxl", "hooks", "user-prompt.json"))
+	s.assertKiroAgentConfig(agentPath, 1)
+	s.assertKiroDefaultAgent("paxl")
+
+	_, err = setup.Install(s.ctx, &facade.SetupRequest{
+		Agents:      []model.AgentName{model.AgentNameKiro},
+		PaxlCommand: "/opt/paxl test/bin/paxl",
+	})
+	s.Require().NoError(err)
+	s.assertKiroAgentConfig(agentPath, 1)
 }
 
 func (s *SetupFacadeSuite) TestInstallIsIdempotentForClaudeSettings() {
@@ -158,4 +226,33 @@ func (s *SetupFacadeSuite) claudeHookCommandContains(fragment string) {
 	command, ok := handler["command"].(string)
 	s.Require().True(ok)
 	s.Contains(command, fragment)
+}
+
+func (s *SetupFacadeSuite) assertKiroAgentConfig(path string, wantHookCount int) {
+	raw, err := os.ReadFile(path)
+	s.Require().NoError(err)
+	var config map[string]any
+	s.Require().NoError(json.Unmarshal(raw, &config))
+	s.Equal("paxl", config["name"])
+	hooks, ok := config["hooks"].(map[string]any)
+	s.Require().True(ok)
+	userPromptSubmit, ok := hooks["userPromptSubmit"].([]any)
+	s.Require().True(ok)
+	s.Require().Len(userPromptSubmit, wantHookCount)
+	hook, ok := userPromptSubmit[0].(map[string]any)
+	s.Require().True(ok)
+	command, ok := hook["command"].(string)
+	s.Require().True(ok)
+	s.Contains(command, `/opt/paxl test/bin/paxl`)
+	s.Contains(command, "--db")
+	s.Contains(command, filepath.Join(s.home, ".data", "paxl", "paxl.sqlite"))
+	s.Contains(command, "__agent-hook --agent kiro --event user-prompt")
+}
+
+func (s *SetupFacadeSuite) assertKiroDefaultAgent(agentName string) {
+	raw, err := os.ReadFile(filepath.Join(s.home, ".kiro", "settings", "cli.json"))
+	s.Require().NoError(err)
+	var settings map[string]any
+	s.Require().NoError(json.Unmarshal(raw, &settings))
+	s.Equal(agentName, settings["chat.defaultAgent"])
 }

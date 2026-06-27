@@ -1,178 +1,114 @@
 # paxl
 
-`paxl` is a local-first context bridge for AI coding agents.
+**Local-first context transfer for AI coding agents.**
 
-It helps you move working context between Codex, Claude Code, Pi, Kiro, Gemini,
-and OpenClaw without manually copying long transcripts or uploading your session
-history to a cloud service.
+`paxl` lets Codex, Claude Code, Pi, Kiro, and OpenClaw hand work to each other
+without copy-pasting transcripts or uploading your session history.
 
-The practical use case is simple: when one local agent is out of quota, stuck on
-a task, or better suited for a different step, `paxl` can hand the current
-session context to another agent and keep the work moving.
+When one agent is out of quota, stuck, or simply the wrong tool for the next
+step, `paxl` can preserve the working context and deliver it to another local
+agent session.
 
-Chinese documentation: [doc/README_cn.md](doc/README_cn.md)
-
-Architecture documentation: [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md)
-
-Planned automated injection routing:
-[doc/AUTOMATED_INJECTION_ROUTING.md](doc/AUTOMATED_INJECTION_ROUTING.md)
-
-## Quick Install
-
-Install the latest stable hosted build:
+## Install
 
 ```sh
 curl -fsSL https://api.paxtech.net/api/v1/public/paxl/install.sh | bash
-```
-
-Install a specific uploaded version:
-
-```sh
-curl -fsSL https://api.paxtech.net/api/v1/public/paxl/install.sh | PAXL_VERSION=0.1.0 bash
-```
-
-Check the installed binary:
-
-```sh
 paxl version
 ```
 
-Check whether a newer hosted stable build is available:
-
-```sh
-paxl version --check
-```
-
-Upgrade the installed binary in place:
-
-```sh
-paxl update
-```
-
-Build from source instead:
+Build from source:
 
 ```sh
 go build -trimpath -o ./paxl ./cmd/paxl
-mkdir -p ~/bin
-cp ./paxl ~/bin/paxl
 ```
 
-## First Win: Continue Elsewhere
+Useful links:
 
-This is the workflow to try first. It proves the core idea without needing to
-learn every command.
+- Chinese docs: [doc/README_cn.md](doc/README_cn.md)
+- Architecture: [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md)
+- Hook routing: [doc/AUTOMATED_INJECTION_ROUTING.md](doc/AUTOMATED_INJECTION_ROUTING.md)
 
-1. Check which local agents have a CLI and which have local session logs:
+## The First Five Minutes
 
-   ```sh
-   paxl agent list
-   ```
-
-2. List recent Claude Code sessions:
-
-   ```sh
-   paxl session list --agent claude --limit 5
-   ```
-
-3. List recent Codex sessions:
-
-   ```sh
-   paxl session list --agent codex --limit 5
-   ```
-
-4. Mirror Claude into an existing Codex session:
-
-   ```sh
-   paxl session mirror \
-     claude:<source-session-id> \
-     --to-session codex:<target-session-id> \
-     --verbose
-   ```
-
-If an agent has no local logs yet, session listing returns an empty list for that
-agent instead of failing the whole command.
-
-## Why Use It
-
-- Continue work in another agent when quota, model behavior, or tool access
-  changes mid-task.
-- Preserve a session timeline as transcript, JSONL, or HTML before handing work
-  off.
-- Create reusable knowledge capsules for decisions, bugs, release plans, and
-  project-specific context.
-- Inject a prepared handoff into an existing session or start a new target agent
-  session from it.
-- Let a Codex skill call `paxl` for repeatable context-transfer workflows.
-
-## Agent Skill
-
-This repository includes a Codex skill for repeatable local knowledge transfer
-workflows:
+See what `paxl` can reach:
 
 ```sh
-mkdir -p ~/.codex/skills
-cp -R skills/knowledge-transfer ~/.codex/skills/
+paxl agent list
 ```
 
-If you want an agent to install it for you, ask the agent to read this
-repository first and then install the skill from `skills/knowledge-transfer`.
-A good prompt is:
+Find the session you want to move:
 
-```text
-Read this repository, inspect skills/knowledge-transfer/SKILL.md, then install
-the knowledge-transfer skill into the Codex skills directory for all future
-sessions on this machine.
+```sh
+paxl session list --agent claude --limit 5
+paxl session list --agent codex --limit 5
 ```
 
-After installing the skill, ask Codex to use `knowledge-transfer` when moving
-context between Codex, Claude, Pi, Kiro, Gemini, or OpenClaw sessions. The skill
-is useful when you want an agent to choose the right `paxl` command instead of
-asking you to remember flags.
+Move the Claude session into an existing Codex session:
 
-## Mental Model
+```sh
+paxl session mirror \
+  claude:<source-session-id> \
+  --to-session codex:<target-session-id> \
+  --verbose
+```
 
-`paxl` has three core concepts:
+Or start a clean target session with the same working context:
 
-- A **session** is a local agent conversation discovered from local logs.
-- A **mirror** is a live handoff from one session into another agent session.
-- A **capsule** is reusable context stored locally, then inspected, archived, or
-  injected later.
+```sh
+paxl session mirror claude:<source-session-id> --to codex
+```
 
-Use `session mirror` when you want continuity now. Use `capsule create` and
-`capsule inject` when you want reusable knowledge for later.
+## What It Moves
 
-Current built-in agents:
+`paxl` works with four local-first objects:
 
-- `codex`: local Codex logs plus Codex app-server or CLI delivery.
-- `claude`: local Claude Code logs plus Claude Code CLI delivery.
-- `pi`: local Pi logs plus Pi CLI delivery.
-- `kiro`: local Kiro CLI logs plus Kiro CLI delivery.
-- `gemini`: local Gemini CLI logs plus Gemini CLI delivery.
-- `openclaw`: OpenClaw ACP session listing and existing-session prompt delivery.
-  The default command is `openclaw acp`; set `PAXL_OPENCLAW_ACP_COMMAND` when
-  your local OpenClaw ACP entrypoint is different.
+| Object | Use it when | Example |
+| --- | --- | --- |
+| Session | You need to inspect a local conversation. | `paxl session get claude:<id>` |
+| Mirror | You want another agent to continue now. | `paxl session mirror claude:<id> --to codex` |
+| Capsule | You want reusable knowledge for later. | `paxl capsule create codex:<id> --keyword "release plan"` |
+| Envelope | You want to send a capsule to an accepted friend. | `paxl capsule send <id> --to @alice` |
 
-## Advanced Workflows
+The important boundary: local inspection stays local. Context is delivered only
+when you explicitly mirror, inject, or send it.
 
-### Install Agent Hooks
+## Supported Agents
 
-Install local hook adapters for supported agents:
+| Agent | Local sessions | Delivery | Hook setup |
+| --- | --- | --- | --- |
+| Codex | Local logs | App server or `codex exec` | `UserPromptSubmit` |
+| Claude Code | Local logs | `claude --print` | `UserPromptSubmit` |
+| Pi | Local logs | Pi CLI | `before_agent_start` extension |
+| Kiro | Kiro CLI logs | `kiro-cli chat` | Kiro `userPromptSubmit` agent hook |
+| Hermes | Local descriptor host | Hook descriptor | Descriptor only |
+| OpenClaw | ACP | ACP `session/prompt` | Descriptor only |
+
+Run `paxl agent list` to see which of these are available on your machine.
+
+Gemini CLI support has been retired. Legacy `gemini` values can still be parsed
+from old local data, but new CLI entrypoints reject Gemini as unsupported.
+
+## Hook-Based Injection
+
+Install local hooks once:
 
 ```sh
 paxl setup
-paxl setup --agent claude --format jsonl
 ```
 
-The current setup command installs Claude Code's `UserPromptSubmit` hook, writes
-a Codex `UserPromptSubmit` command hook object into Codex config, and writes
-paxl-owned hook descriptors for Codex and Hermes. Codex may require trusting
-changed hooks before they run.
-Conditional local route matching and one-time hook consumption are documented in
-[doc/AUTOMATED_INJECTION_ROUTING.md](doc/AUTOMATED_INJECTION_ROUTING.md).
+Then queue a capsule for the next matching prompt:
 
-### Preserve a Timeline
+```sh
+paxl capsule inject <capsule-id> --match keyword --keyword "release plan"
+paxl capsule inject <capsule-id> --match project --project paxl --agent claude
+```
 
-Render a session before switching agents:
+The hidden hook entrypoint claims each matching injection once, renders the
+capsule as a handoff, and passes it back through the agent's native hook shape.
+
+## Common Moves
+
+Preserve a timeline before switching agents:
 
 ```sh
 paxl session get claude:<session-id>
@@ -183,21 +119,7 @@ paxl session get codex:<session-id> --format html --output session.html
 Use transcript output for reading, JSONL for scripts, and HTML when you want a
 portable review artifact.
 
-### Start Fresh With Context
-
-You do not need an existing target session. Start a new target agent with the
-source context:
-
-```sh
-paxl session mirror claude:<source-session-id> --to codex
-```
-
-This is useful when the target agent should receive the handoff and decide how
-to continue from a clean session.
-
-### Create Reusable Knowledge
-
-Ask the source agent to summarize a specific topic into a capsule:
+Create reusable knowledge:
 
 ```sh
 paxl capsule create claude:<session-id> --keyword "release plan"
@@ -208,45 +130,16 @@ paxl capsule inject <capsule-id> codex:<target-session-id>
 Capsules work well for architecture decisions, debugging history, release
 checklists, and project conventions that should survive beyond one conversation.
 
-### Send Knowledge to a Friend
-
-Cloud inbox delivery is gated by accepted friends. You cannot send a capsule to a
-raw email address; `--to` must be a friend alias such as `@alice`.
+Send knowledge to an accepted friend:
 
 ```sh
 paxl friend request alice@example.com --alias alice
 # after Alice accepts the friend request
 paxl friend alias <friend-id> alice
 paxl capsule send <capsule-id> --to @alice --message "please review"
-paxl outbox list
-paxl inbox list
-paxl inbox accept <envelope-id>
-paxl inbox accept --all
-paxl inbox watch
 ```
 
-The sender can track sent envelopes from outbox while the recipient works from
-inbox. Accepting an inbox envelope stores the remote payload as a local capsule.
-Use `paxl inbox accept --all` to accept every pending inbox envelope in one
-shot, or run `paxl inbox watch` to keep accepting pending envelopes in the
-foreground until the process is stopped.
-Inject that capsule into a local agent session when you want work to continue
-there.
-
-### Transfer Prepared Context
-
-When you already know exactly what should be handed off, create a capsule from a
-file instead of asking the source agent to summarize:
-
-```sh
-paxl capsule create codex:<session-id> \
-  --keyword "production incident" \
-  --title "api timeout incident" \
-  --summary "Known facts, mitigations, and next checks." \
-  --content-file handoff.md
-```
-
-If there is no useful source session, create a manual capsule:
+Transfer prepared context:
 
 ```sh
 paxl capsule create --manual \
@@ -254,11 +147,14 @@ paxl capsule create --manual \
   --content-file handoff.md
 ```
 
-### Work Through an Agent
-
 Install the bundled Codex skill when you want to say "move this context to
 Claude" or "create a capsule for this bug" and let the agent run the concrete
-`paxl` commands.
+`paxl` commands:
+
+```sh
+mkdir -p ~/.codex/skills
+cp -R skills/knowledge-transfer ~/.codex/skills/
+```
 
 ## Data Model
 
@@ -396,7 +292,7 @@ Set `PAX_RELEASE_PUSH_TAG=1` to push the tag. Use `RELEASE_VERSION=0.2.0` for an
 explicit semantic version, or `RELEASE_VERSION=major|minor|patch` for automatic
 incrementing.
 
-## Common Workflows
+## Command Reference
 
 ### List Available Agents
 
@@ -638,16 +534,13 @@ Pi delivery:
 
 - Existing session: `pi --session <session-id> -p`
 - New session: `pi -p`
+- Conditional hook injection: Pi `before_agent_start` extension message before
+  the agent loop starts.
 
 Kiro delivery:
 
 - Existing session: `kiro-cli chat --resume-id <session-id> --no-interactive <message>`
 - New session: `kiro-cli chat --no-interactive <message>`
-
-Gemini delivery:
-
-- Existing session: `gemini --resume <session-id> -p <message>`
-- New session: `gemini -p <message>`
 
 OpenClaw delivery:
 
@@ -676,7 +569,7 @@ The CI coverage gate is 80%.
 ## Status
 
 `paxl` is an early open-source CLI. The architecture is designed for more agent
-adapters. Codex, Claude, Pi, Kiro, Gemini, and OpenClaw are built in today.
+adapters. Codex, Claude, Pi, Kiro, and OpenClaw are built in today.
 
 ## Platform Support
 
@@ -685,13 +578,12 @@ built-in adapters depend on local agent log locations and native CLIs.
 
 Current support boundary:
 
-- macOS: verified with local Codex, Claude Code, Pi, Kiro CLI, and Gemini CLI
-  log shapes. OpenClaw is covered through ACP contract tests and requires a
-  local OpenClaw ACP command.
+- macOS: verified with local Codex, Claude Code, Pi, and Kiro CLI log shapes.
+  OpenClaw is covered through ACP contract tests and requires a local OpenClaw
+  ACP command.
 - Linux: expected to be close to macOS if `~/.codex/sessions`,
-  `~/.claude/projects`, `~/.pi/agent/sessions`, `~/.kiro/sessions`,
-  `~/.gemini/tmp`, and the matching CLIs are available, but it still needs
-  real-world validation.
+  `~/.claude/projects`, `~/.pi/agent/sessions`, `~/.kiro/sessions`, and the
+  matching CLIs are available, but it still needs real-world validation.
 - Windows: not fully validated. Path handling, Claude project directory
   decoding, fake-command tests, and native CLI resume behavior need dedicated
   Windows coverage.

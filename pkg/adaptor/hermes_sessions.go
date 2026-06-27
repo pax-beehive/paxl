@@ -102,7 +102,7 @@ func listHermesSessions(
 	if err != nil {
 		return nil, fmt.Errorf("list local hermes sessions: %w", err)
 	}
-	if hermesLocalRootExists() {
+	if len(local.Sessions) > 0 || hermesLocalSessionsAvailable() {
 		return local, nil
 	}
 	acp, err := listHermesACPSessions(ctx, req)
@@ -330,10 +330,6 @@ func hermesLocalSessionsAvailable() bool {
 	return false
 }
 
-func hermesLocalRootExists() bool {
-	return pathExists(hermesRootNoError())
-}
-
 func hermesLocalSessionPaths(ctx context.Context) ([]string, error) {
 	root, err := hermesRoot()
 	if err != nil {
@@ -383,6 +379,9 @@ func hermesJSONPaths(ctx context.Context, root string) ([]string, error) {
 			return walkErr
 		}
 		if entry.IsDir() {
+			if entry.Name() == "paxl" && path != root {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		switch filepath.Ext(entry.Name()) {

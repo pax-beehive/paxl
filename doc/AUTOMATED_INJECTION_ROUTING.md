@@ -31,6 +31,25 @@ Current setup slice:
   and existing Codex app processes may need to reload config.
 - Hermes: writes a paxl-owned hook descriptor and shim. Activation depends on a
   Hermes hook host reading that descriptor.
+- Pi: writes a Pi extension at `~/.pi/agent/extensions/paxl-hook/index.ts`
+  that listens to `before_agent_start`, calls the hidden paxl hook entrypoint,
+  and returns matching context as a Pi custom message before the agent loop
+  starts. It also writes a paxl-owned descriptor for inspection.
+- Kiro: writes a Kiro CLI agent config with a `userPromptSubmit` hook and sets
+  that agent as the Kiro CLI default. It also writes a paxl-owned descriptor for
+  inspection.
+- OpenClaw: writes a paxl-owned hook descriptor and the shared shim. Activation
+  depends on an agent-specific host or gateway reading the descriptor and calling
+  the hidden paxl hook entrypoint.
+
+All supported agent hooks converge on the same hidden entrypoint:
+
+```sh
+paxl __agent-hook --agent <agent> --event user-prompt
+```
+
+The entrypoint also accepts the normalized event name `user_prompt`; descriptors
+keep `user-prompt` for compatibility with existing hook command strings.
 
 Local injection can either deliver immediately to a known target session, start
 a new target session, or create a conditional hook route.
@@ -128,7 +147,7 @@ The hidden runtime hook receives a structured event from the agent integration:
 }
 ```
 
-For compatibility with current Codex hook payloads, paxl also accepts camelCase
+For compatibility with current agent hook payloads, paxl also accepts camelCase
 field names such as `sessionId`, `projectId`, `projectPath`, and `userPrompt`.
 If no project field is provided, paxl falls back to the hook process working
 directory before evaluating a project route.
@@ -162,6 +181,12 @@ handling the user prompt reads that JSON and inserts the context before the
 current user prompt. paxl must not start a separate `codex app-server` process
 for this hook path, because that targets a different runtime and can create a
 false consumed record without changing the active session context.
+
+For Pi, paxl writes an official Pi extension. The extension subscribes to
+`before_agent_start`, sends the current prompt and session file-derived native
+session ID to `paxl __agent-hook`, and returns the rendered handoff as a custom
+message. If no route matches, the extension returns no message and the Pi turn
+continues normally.
 
 ## Claim and Consume State
 

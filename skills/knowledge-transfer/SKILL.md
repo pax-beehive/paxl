@@ -1,6 +1,6 @@
 ---
 name: knowledge-transfer
-description: Use paxl for local-first agent session knowledge transfer. Trigger this skill when the user asks to move context between Codex, Claude, Pi, Kiro, or Gemini sessions; create, inject, list, get, or archive a knowledge capsule; mirror one agent session into another; or resume work in a different local agent.
+description: Use paxl for local-first agent session knowledge transfer. Trigger this skill when the user asks to move context between Codex, Claude, Pi, or Kiro sessions; create, inject, list, get, or archive a knowledge capsule; mirror one agent session into another; or resume work in a different local agent.
 ---
 
 # Knowledge Transfer
@@ -66,7 +66,7 @@ List sessions, syncing local session data into paxl SQLite:
 ```sh
 paxl session list --agent codex --limit 10
 paxl session list --agent claude --limit 10
-paxl session list --agent gemini --limit 10
+paxl session list --agent kiro --limit 10
 ```
 
 Use cached metadata only when explicitly wanted:
@@ -82,7 +82,6 @@ codex:<native-id>
 claude:<native-id>
 pi:<native-id>
 kiro:<native-id>
-gemini:<native-id>
 ```
 
 If the user gives a bare native ID, pass `--agent <agent>` or convert it to a
