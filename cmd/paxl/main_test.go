@@ -1059,6 +1059,67 @@ func (s *CommandSuite) TestUpdateDownloadsAndReplacesCurrentBinary() {
 	s.Contains(s.stdout.String(), "Path: "+exe)
 }
 
+func (s *CommandSuite) TestUpdateReplacesDevelopmentBuildWithLatestStable() {
+	oldClient := updateHTTPClient
+	oldExecutablePath := executablePath
+	oldVersion := version
+	newBinary := []byte("#!/bin/sh\necho paxl 0.1.18\n")
+	sha := testSHA256(newBinary)
+	exe := filepath.Join(s.T().TempDir(), "paxl")
+	s.Require().NoError(os.WriteFile(exe, []byte("old paxl"), 0o755))
+	version = "0.1.17-dev"
+	executablePath = func() (string, error) {
+		return exe, nil
+	}
+	updateHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.String() {
+		case "https://example.test/api?platform=test%2Fos&product=paxl&tags=stable":
+			return commandJSONResponse(fmt.Sprintf(`{
+				"data": {
+					"url": "https://example.test/download/paxl",
+					"sha256": %q,
+					"size_bytes": %d,
+					"version": "0.1.18",
+					"product": "paxl",
+					"platform": "test/os"
+				}
+			}`, sha, len(newBinary))), nil
+		case "https://example.test/download/paxl":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader(newBinary)),
+				Header:     http.Header{"Content-Type": []string{"application/octet-stream"}},
+			}, nil
+		default:
+			return nil, fmt.Errorf("unexpected update request %s", req.URL.String())
+		}
+	})
+	s.T().Cleanup(func() {
+		updateHTTPClient = oldClient
+		executablePath = oldExecutablePath
+		version = oldVersion
+	})
+
+	err := run(
+		context.Background(),
+		[]string{
+			"update",
+			"--resolver-url",
+			"https://example.test/api",
+			"--platform",
+			"test/os",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	raw, err := os.ReadFile(exe)
+	s.Require().NoError(err)
+	s.Equal(newBinary, raw)
+	s.Contains(s.stdout.String(), "Updated paxl 0.1.17-dev -> 0.1.18")
+}
+
 func (s *CommandSuite) TestUpdateReportsUpToDateWithoutReplacingBinary() {
 	oldClient := updateHTTPClient
 	oldExecutablePath := executablePath
