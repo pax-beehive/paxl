@@ -2,7 +2,7 @@
 
 `paxl` 是一个本地优先的 AI coding agent context bridge。
 
-它用来在 Codex、Claude Code、Pi、Kiro、Gemini 和 OpenClaw 之间迁移工作上下文，
+它用来在 Codex、Claude Code、Pi、Kiro 和 OpenClaw 之间迁移工作上下文，
 不需要手动复制长 transcript，也不需要把本地 session history 上传到云端服务。
 
 最直接的使用场景是：某个本地 agent 额度用完、卡住了，或者另一个 agent 更适合下一步时，
@@ -111,7 +111,7 @@ the knowledge-transfer skill into the Codex skills directory for all future
 sessions on this machine.
 ```
 
-安装后，在需要跨 Codex、Claude、Pi、Kiro、Gemini、OpenClaw session 转移上下文时，
+安装后，在需要跨 Codex、Claude、Pi、Kiro、OpenClaw session 转移上下文时，
 让 Codex 使用 `knowledge-transfer` skill。它适合在你不想记具体参数时，让 agent 选择
 应该跑 `session mirror` 还是 `capsule create` / `capsule inject`。
 
@@ -132,7 +132,6 @@ sessions on this machine.
 - `claude`：读取本地 Claude Code 日志，通过 Claude Code CLI 投递上下文。
 - `pi`：读取本地 Pi 日志，通过 Pi CLI 投递上下文。
 - `kiro`：读取本地 Kiro CLI 日志，通过 Kiro CLI 投递上下文。
-- `gemini`：读取本地 Gemini CLI 日志，通过 Gemini CLI 投递上下文。
 - `openclaw`：通过 OpenClaw ACP 做 session list 和已有 session prompt 投递。默认命令
   是 `openclaw acp`；如果本机入口不同，设置 `PAXL_OPENCLAW_ACP_COMMAND`。
 
@@ -542,7 +541,7 @@ paxl friend block <friend-id>
 ## Agent 投递语义
 
 `paxl setup` 默认会安装当前支持的 agent hook plumbing：Codex、Claude、Pi、
-Kiro、Gemini、Hermes 和 OpenClaw。Codex 和 Claude 会写入原生
+Kiro、Hermes 和 OpenClaw。Codex 和 Claude 会写入原生
 `UserPromptSubmit` hook；Pi 会写入 `before_agent_start` extension；
 其他 agent 会写入 paxl-owned descriptor，供对应 host/gateway 调用同一个隐藏入口。
 
@@ -573,11 +572,6 @@ Kiro 投递：
 - 已有 session：`kiro-cli chat --resume-id <session-id> --no-interactive <message>`
 - 新 session：`kiro-cli chat --no-interactive <message>`
 
-Gemini 投递：
-
-- 已有 session：`gemini --resume <session-id> -p <message>`
-- 新 session：`gemini -p <message>`
-
 OpenClaw 投递：
 
 - 已有 session：通过 `openclaw acp` 发送 ACP `session/prompt`
@@ -605,7 +599,7 @@ CI 的 coverage 门槛是 80%。
 ## 当前状态
 
 `paxl` 还是早期 open-source CLI。架构上支持继续扩展更多 agent adapters，
-目前内置支持 Codex、Claude、Pi、Kiro、Gemini 和 OpenClaw。
+目前内置支持 Codex、Claude、Pi、Kiro 和 OpenClaw。
 
 ## 平台支持边界
 
@@ -614,11 +608,11 @@ CLI 架构和 SQLite 存储本身是跨平台 Go 代码，但当前内置 adapte
 
 当前支持边界：
 
-- macOS：已经用本地 Codex、Claude Code、Pi、Kiro CLI 和 Gemini CLI 日志形态验证过。
+- macOS：已经用本地 Codex、Claude Code、Pi 和 Kiro CLI 日志形态验证过。
   OpenClaw 通过 ACP contract tests 覆盖，需要本机存在 OpenClaw ACP 命令。
 - Linux：如果存在 `~/.codex/sessions`、`~/.claude/projects`、
-  `~/.pi/agent/sessions`、`~/.kiro/sessions`、`~/.gemini/tmp`，并且对应 CLI
-  在 `PATH` 中，理论上和 macOS 很接近，但还需要真实环境验证。
+  `~/.pi/agent/sessions`、`~/.kiro/sessions`，并且对应 CLI 在 `PATH` 中，
+  理论上和 macOS 很接近，但还需要真实环境验证。
 - Windows：还没有充分验证。路径处理、Claude project 目录名解码、fake command
   测试方式、native CLI resume 行为都需要单独覆盖。
 

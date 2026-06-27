@@ -172,7 +172,7 @@ func (s *CommandSuite) TestAgentListUsesSingularCommandAndOnlyShowsSupportedAgen
 	s.Contains(s.stdout.String(), "claude")
 	s.Contains(s.stdout.String(), "pi")
 	s.Contains(s.stdout.String(), "kiro")
-	s.Contains(s.stdout.String(), "gemini")
+	s.NotContains(s.stdout.String(), "gemini")
 	s.NotContains(s.stdout.String(), "qwen")
 	s.Empty(s.stderr.String())
 }
@@ -1295,24 +1295,7 @@ func (s *CommandSuite) TestSessionListSyncsKiroLocalSessionsToSQLite() {
 	s.Contains(s.stdout.String(), `"title":"Kiro session title"`)
 }
 
-func (s *CommandSuite) TestSessionListSyncsGeminiLocalSessionsToSQLite() {
-	geminiHome := s.T().TempDir()
-	sessionDir := filepath.Join(geminiHome, "tmp", "sample-project", "chats")
-	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
-	s.Require().NoError(os.WriteFile(
-		filepath.Join(geminiHome, "tmp", "sample-project", ".project_root"),
-		[]byte("/tmp/project"),
-		0o600,
-	))
-	s.T().Setenv("GEMINI_HOME", geminiHome)
-	s.Require().NoError(os.WriteFile(
-		filepath.Join(sessionDir, "session-2026-06-20T05-31-gemini-session.jsonl"),
-		[]byte(
-			`{"sessionId":"gemini-session","projectHash":"sample-project","startTime":"2026-06-20T05:31:20.160Z","lastUpdated":"2026-06-20T05:32:20.160Z","kind":"main"}`+"\n"+
-				`{"$set":{"messages":[{"id":"u1","timestamp":"2026-06-20T05:31:30.160Z","type":"user","content":[{"text":"Gemini session title"}]}],"lastUpdated":"2026-06-20T05:32:20.160Z"}}`+"\n",
-		),
-		0o600,
-	))
+func (s *CommandSuite) TestSessionListRejectsGeminiAgent() {
 	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
 
 	err := run(
@@ -1322,9 +1305,8 @@ func (s *CommandSuite) TestSessionListSyncsGeminiLocalSessionsToSQLite() {
 		&s.stderr,
 	)
 
-	s.Require().NoError(err)
-	s.Contains(s.stdout.String(), `"id":"gemini:gemini-session"`)
-	s.Contains(s.stdout.String(), `"title":"Gemini session title"`)
+	s.Require().Error(err)
+	s.Contains(err.Error(), `agent "gemini" is no longer supported`)
 }
 
 func (s *CommandSuite) TestSessionListAcceptsCommaSeparatedAgents() {

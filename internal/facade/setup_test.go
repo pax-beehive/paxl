@@ -35,7 +35,6 @@ func (s *SetupFacadeSuite) TestInstallSetsUpAllSupportedAgentHooks() {
 	s.T().Setenv("PI_HOME", filepath.Join(s.home, ".pi"))
 	s.T().Setenv("PI_CODING_AGENT_DIR", filepath.Join(s.home, ".pi", "agent"))
 	s.T().Setenv("KIRO_HOME", filepath.Join(s.home, ".kiro"))
-	s.T().Setenv("GEMINI_HOME", filepath.Join(s.home, ".gemini"))
 	s.T().Setenv("OPENCLAW_HOME", filepath.Join(s.home, ".openclaw"))
 	s.Require().NoError(os.MkdirAll(filepath.Join(s.home, ".claude"), 0o700))
 	s.Require().NoError(os.WriteFile(
@@ -47,7 +46,7 @@ func (s *SetupFacadeSuite) TestInstallSetsUpAllSupportedAgentHooks() {
 	resp, err := facade.NewSetupFacade().Install(s.ctx, &facade.SetupRequest{})
 
 	s.Require().NoError(err)
-	s.Require().Len(resp.Adapters, 7)
+	s.Require().Len(resp.Adapters, 6)
 	s.Equal(model.AgentNameCodex, resp.Adapters[0].Agent)
 	s.Equal(facade.SetupStatusInstalled, resp.Adapters[0].Status)
 	s.Equal(model.AgentNameClaude, resp.Adapters[1].Agent)
@@ -68,7 +67,6 @@ func (s *SetupFacadeSuite) TestInstallSetsUpAllSupportedAgentHooks() {
 	s.FileExists(filepath.Join(s.home, ".pi", "agent", "extensions", "paxl-hook", "index.ts"))
 	s.FileExists(filepath.Join(s.home, ".kiro", "paxl", "hooks", "user-prompt.json"))
 	s.FileExists(filepath.Join(s.home, ".kiro", "agents", "paxl.json"))
-	s.FileExists(filepath.Join(s.home, ".gemini", "paxl", "hooks", "user-prompt.json"))
 	s.FileExists(filepath.Join(s.home, ".openclaw", "paxl", "hooks", "user-prompt.json"))
 	s.claudeHookCommandContains("paxl __agent-hook --agent claude --event user-prompt")
 }

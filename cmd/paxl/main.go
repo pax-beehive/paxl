@@ -222,7 +222,7 @@ func newSetupCommand(stdout io.Writer) *cli.Command {
 		Flags: []cli.Flag{
 			&cli.StringSliceFlag{
 				Name:  "agent",
-				Usage: "Agent to set up: codex, claude, pi, kiro, gemini, hermes, or openclaw. Repeat to select multiple agents.",
+				Usage: "Agent to set up: codex, claude, pi, kiro, hermes, or openclaw. Repeat to select multiple agents.",
 			},
 			&cli.StringFlag{
 				Name:  "format",
@@ -395,7 +395,7 @@ func newSessionCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 				Flags: []cli.Flag{
 					&cli.StringFlag{
 						Name:  "agent",
-						Usage: "Agent to scan: codex, claude, pi, kiro, gemini, or hermes",
+						Usage: "Agent to scan: codex, claude, pi, kiro, hermes, or openclaw",
 					},
 					&cli.StringFlag{
 						Name:  "updated-since",
@@ -2168,7 +2168,7 @@ func parseGetSessionRequest(cmd *cli.Command) (*facade.GetSessionRequest, error)
 	}
 	req := &facade.GetSessionRequest{ID: sessionID}
 	if rawAgent := strings.TrimSpace(cmd.String("agent")); rawAgent != "" {
-		agent, err := model.ParseAgentName(rawAgent)
+		agent, err := parseActiveAgentName(rawAgent)
 		if err != nil {
 			return nil, fmt.Errorf("parse agent: %w", err)
 		}
@@ -2192,14 +2192,14 @@ func parseMirrorSessionRequest(cmd *cli.Command) (*facade.MirrorSessionRequest, 
 		TargetSessionID: strings.TrimSpace(cmd.String("to-session")),
 	}
 	if rawAgent := strings.TrimSpace(cmd.String("agent")); rawAgent != "" {
-		agent, err := model.ParseAgentName(rawAgent)
+		agent, err := parseActiveAgentName(rawAgent)
 		if err != nil {
 			return nil, fmt.Errorf("parse source agent: %w", err)
 		}
 		req.Agent = agent
 	}
 	if rawTargetAgent := strings.TrimSpace(cmd.String("to")); rawTargetAgent != "" {
-		agent, err := model.ParseAgentName(rawTargetAgent)
+		agent, err := parseActiveAgentName(rawTargetAgent)
 		if err != nil {
 			return nil, fmt.Errorf("parse target agent: %w", err)
 		}
@@ -2251,7 +2251,7 @@ func parseCreateCapsuleRequest(cmd *cli.Command) (*facade.CreateCapsuleRequest, 
 		return nil, fmt.Errorf("content-file cannot be used with local extraction")
 	}
 	if rawAgent := strings.TrimSpace(cmd.String("agent")); rawAgent != "" {
-		agent, err := model.ParseAgentName(rawAgent)
+		agent, err := parseActiveAgentName(rawAgent)
 		if err != nil {
 			return nil, fmt.Errorf("parse agent: %w", err)
 		}
@@ -2342,7 +2342,7 @@ func parseSendEnvelopeRequest(cmd *cli.Command) (*facade.SendEnvelopeRequest, er
 		Message:        cmd.String("message"),
 	}
 	if rawAgent := strings.TrimSpace(cmd.String("agent")); rawAgent != "" {
-		agent, err := model.ParseAgentName(rawAgent)
+		agent, err := parseActiveAgentName(rawAgent)
 		if err != nil {
 			return nil, fmt.Errorf("parse agent: %w", err)
 		}
@@ -2380,7 +2380,7 @@ func parseInjectCapsuleRequest(cmd *cli.Command) (*facade.InjectCapsuleRequest, 
 		ActionItems:     cmd.StringSlice("action-items"),
 	}
 	if rawAgent := strings.TrimSpace(cmd.String("agent")); rawAgent != "" {
-		agent, err := model.ParseAgentName(rawAgent)
+		agent, err := parseActiveAgentName(rawAgent)
 		if err != nil {
 			return nil, fmt.Errorf("parse agent: %w", err)
 		}
@@ -2598,7 +2598,7 @@ func parseSetupRequest(cmd *cli.Command) (*facade.SetupRequest, error) {
 			if part == "" {
 				continue
 			}
-			agent, err := model.ParseAgentName(part)
+			agent, err := parseActiveAgentName(part)
 			if err != nil {
 				return nil, fmt.Errorf("parse agent: %w", err)
 			}
@@ -2607,11 +2607,11 @@ func parseSetupRequest(cmd *cli.Command) (*facade.SetupRequest, error) {
 				model.AgentNameClaude,
 				model.AgentNamePi,
 				model.AgentNameKiro,
-				model.AgentNameGemini,
 				model.AgentNameHermes,
 				model.AgentNameOpenClaw:
 				agents = append(agents, agent)
 			case model.AgentNameUnknown,
+				model.AgentNameGemini,
 				model.AgentNamePaxl:
 				return nil, fmt.Errorf("agent %q does not support setup", agent)
 			}
@@ -2647,19 +2647,33 @@ func parseAgentSelection(raw string) ([]model.AgentName, error) {
 		return []model.AgentName{
 			model.AgentNameCodex,
 			model.AgentNameClaude,
-			model.AgentNameGemini,
 			model.AgentNameOpenClaw,
 		}, nil
 	}
 	agents := make([]model.AgentName, 0, len(values))
 	for _, value := range values {
-		agent, err := model.ParseAgentName(value)
+		agent, err := parseActiveAgentName(value)
 		if err != nil {
 			return nil, err
 		}
 		agents = append(agents, agent)
 	}
 	return agents, nil
+}
+
+func parseActiveAgentName(raw string) (model.AgentName, error) {
+	agent, err := model.ParseAgentName(raw)
+	if err != nil {
+		return model.AgentNameUnknown, err
+	}
+	if isRetiredAgentName(agent) {
+		return model.AgentNameUnknown, fmt.Errorf("agent %q is no longer supported", agent)
+	}
+	return agent, nil
+}
+
+func isRetiredAgentName(agent model.AgentName) bool {
+	return agent == model.AgentNameGemini
 }
 
 func parseCSV(raw string) []string {

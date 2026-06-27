@@ -35,9 +35,12 @@ Current setup slice:
   that listens to `before_agent_start`, calls the hidden paxl hook entrypoint,
   and returns matching context as a Pi custom message before the agent loop
   starts. It also writes a paxl-owned descriptor for inspection.
-- Kiro, Gemini, and OpenClaw: write paxl-owned hook descriptors and the
-  shared shim. Activation depends on an agent-specific host or gateway reading
-  the descriptor and calling the hidden paxl hook entrypoint.
+- Kiro: writes a Kiro CLI agent config with a `userPromptSubmit` hook and sets
+  that agent as the Kiro CLI default. It also writes a paxl-owned descriptor for
+  inspection.
+- OpenClaw: writes a paxl-owned hook descriptor and the shared shim. Activation
+  depends on an agent-specific host or gateway reading the descriptor and calling
+  the hidden paxl hook entrypoint.
 
 All supported agent hooks converge on the same hidden entrypoint:
 

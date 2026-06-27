@@ -105,8 +105,7 @@ func (f *SetupFacade) installAgentHook(
 			return nil, err
 		}
 		return installDescriptorHook(agent, hermesHookDescriptorPath(), command, dbPath, dryRun)
-	case model.AgentNameGemini,
-		model.AgentNameOpenClaw:
+	case model.AgentNameOpenClaw:
 		dbPath, err := defaultStorePath()
 		if err != nil {
 			return nil, err
@@ -119,6 +118,7 @@ func (f *SetupFacade) installAgentHook(
 			dryRun,
 		)
 	case model.AgentNameUnknown,
+		model.AgentNameGemini,
 		model.AgentNamePaxl:
 		return &SetupAdapterResult{
 			Agent:   agent,
@@ -140,7 +140,6 @@ func setupAgents(agents []model.AgentName) []model.AgentName {
 			model.AgentNameClaude,
 			model.AgentNamePi,
 			model.AgentNameKiro,
-			model.AgentNameGemini,
 			model.AgentNameHermes,
 			model.AgentNameOpenClaw,
 		}
@@ -712,13 +711,12 @@ func genericAgentRoot(agent model.AgentName) string {
 		return firstNonEmpty(os.Getenv("PI_HOME"), homePath(".pi"))
 	case model.AgentNameKiro:
 		return firstNonEmpty(os.Getenv("KIRO_HOME"), homePath(".kiro"))
-	case model.AgentNameGemini:
-		return firstNonEmpty(os.Getenv("GEMINI_HOME"), homePath(".gemini"))
 	case model.AgentNameOpenClaw:
 		return firstNonEmpty(os.Getenv("OPENCLAW_HOME"), homePath(".openclaw"))
 	case model.AgentNameUnknown,
 		model.AgentNameCodex,
 		model.AgentNameClaude,
+		model.AgentNameGemini,
 		model.AgentNameHermes,
 		model.AgentNamePaxl:
 		return homePath("." + string(agent))

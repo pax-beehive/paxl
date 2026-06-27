@@ -111,7 +111,6 @@ Current adapters:
 - Claude: reads local Claude Code logs and delivers with Claude Code CLI.
 - Pi: reads local Pi logs and delivers with Pi CLI.
 - Kiro: reads local Kiro CLI logs and delivers with Kiro CLI.
-- Gemini: reads local Gemini CLI logs and delivers with Gemini CLI.
 - OpenClaw: uses ACP `session/list` and `session/prompt` through the configured
   OpenClaw ACP command.
 
@@ -133,9 +132,6 @@ Pi new session:          pi -p
 
 Kiro existing session:   kiro-cli chat --resume-id <session-id> --no-interactive <message>
 Kiro new session:        kiro-cli chat --no-interactive <message>
-
-Gemini existing session: gemini --resume <session-id> -p <message>
-Gemini new session:      gemini -p <message>
 
 OpenClaw existing session:
                         openclaw acp + ACP session/prompt
@@ -176,7 +172,6 @@ codex:<native-id>
 claude:<native-id>
 pi:<native-id>
 kiro:<native-id>
-gemini:<native-id>
 openclaw:<native-id>
 ```
 
