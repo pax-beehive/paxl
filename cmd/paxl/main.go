@@ -3327,6 +3327,220 @@ func friendView(userID string, friend *model.Friend) (string, string, string) {
 		"-"
 }
 
+func teamAgentDisplay(teamAgent *model.TeamAgent) string {
+	if teamAgent == nil {
+		return "-"
+	}
+	if teamAgent.Agent != nil && strings.TrimSpace(teamAgent.Agent.Name) != "" {
+		return teamAgent.Agent.Name
+	}
+	return teamAgent.AgentID
+}
+
+func teamAgentOnline(teamAgent *model.TeamAgent) string {
+	if teamAgent != nil && teamAgent.Agent != nil && teamAgent.Agent.Online {
+		return "yes"
+	}
+	return "no"
+}
+
+func renderTeamList(stdout io.Writer, resp *facade.ListTeamsResponse, format string) error {
+	switch format {
+	case "table":
+		writer := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		if _, err := fmt.Fprintln(writer, "ID\tNAME\tROLE\tMEMBERS\tAGENTS\tSTATUS"); err != nil {
+			return fmt.Errorf("write team list header: %w", err)
+		}
+		for _, team := range resp.Teams {
+			if _, err := fmt.Fprintf(
+				writer,
+				"%s\t%s\t%s\t%d\t%d\t%s\n",
+				team.TeamID,
+				firstNonEmpty(team.Name, "-"),
+				firstNonEmpty(team.MyRole, "-"),
+				team.MemberCount,
+				team.AgentCount,
+				firstNonEmpty(team.Status, "-"),
+			); err != nil {
+				return fmt.Errorf("write team row: %w", err)
+			}
+		}
+		return writer.Flush()
+	case "jsonl":
+		for _, team := range resp.Teams {
+			if err := json.NewEncoder(stdout).Encode(map[string]any{
+				"schemaVersion": "paxl.team.v1",
+				"teamId":        team.TeamID,
+				"name":          team.Name,
+				"myRole":        team.MyRole,
+				"memberCount":   team.MemberCount,
+				"agentCount":    team.AgentCount,
+				"status":        team.Status,
+				"ownerUserId":   team.OwnerUserID,
+				"createdAt":     team.CreatedAt,
+				"archivedAt":    team.ArchivedAt,
+			}); err != nil {
+				return fmt.Errorf("encode team: %w", err)
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func renderTeamDetail(stdout io.Writer, resp *facade.GetTeamResponse, format string) error {
+	team := resp.Team
+	switch format {
+	case "table":
+		writer := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		if _, err := fmt.Fprintln(writer, "ID\tNAME\tOWNER\tSTATUS\tCREATED"); err != nil {
+			return fmt.Errorf("write team header: %w", err)
+		}
+		if _, err := fmt.Fprintf(
+			writer,
+			"%s\t%s\t%s\t%s\t%s\n",
+			team.TeamID,
+			firstNonEmpty(team.Name, "-"),
+			firstNonEmpty(team.OwnerUserID, "-"),
+			firstNonEmpty(team.Status, "-"),
+			firstNonEmpty(team.CreatedAt, "-"),
+		); err != nil {
+			return fmt.Errorf("write team row: %w", err)
+		}
+		return writer.Flush()
+	case "jsonl":
+		if err := json.NewEncoder(stdout).Encode(map[string]any{
+			"schemaVersion": "paxl.team.v1",
+			"teamId":        team.TeamID,
+			"name":          team.Name,
+			"ownerUserId":   team.OwnerUserID,
+			"status":        team.Status,
+			"createdAt":     team.CreatedAt,
+			"archivedAt":    team.ArchivedAt,
+		}); err != nil {
+			return fmt.Errorf("encode team: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func renderTeamAgents(stdout io.Writer, resp *facade.ListTeamAgentsResponse, format string) error {
+	switch format {
+	case "table":
+		writer := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		if _, err := fmt.Fprintln(writer, "AGENT\tAGENT_ID\tOWNER\tONLINE\tADDED"); err != nil {
+			return fmt.Errorf("write team agents header: %w", err)
+		}
+		for _, teamAgent := range resp.Agents {
+			if _, err := fmt.Fprintf(
+				writer,
+				"%s\t%s\t%s\t%s\t%s\n",
+				teamAgentDisplay(teamAgent),
+				teamAgent.AgentID,
+				firstNonEmpty(teamAgent.AgentOwnerUserID, "-"),
+				teamAgentOnline(teamAgent),
+				firstNonEmpty(teamAgent.AddedAt, "-"),
+			); err != nil {
+				return fmt.Errorf("write team agent row: %w", err)
+			}
+		}
+		return writer.Flush()
+	case "jsonl":
+		for _, teamAgent := range resp.Agents {
+			if err := encodeTeamAgentJSONL(stdout, teamAgent, nil); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func renderAggregatedTeamAgents(
+	stdout io.Writer,
+	resp *facade.ListAllTeamAgentsResponse,
+	format string,
+) error {
+	switch format {
+	case "table":
+		writer := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		if _, err := fmt.Fprintln(writer, "AGENT\tAGENT_ID\tOWNER\tONLINE\tTEAMS"); err != nil {
+			return fmt.Errorf("write aggregated agents header: %w", err)
+		}
+		for _, aggregated := range resp.Agents {
+			// Agent is guaranteed non-nil by TeamFacade.ListAllAgents.
+			if _, err := fmt.Fprintf(
+				writer,
+				"%s\t%s\t%s\t%s\t%s\n",
+				teamAgentDisplay(aggregated.Agent),
+				aggregated.Agent.AgentID,
+				firstNonEmpty(aggregated.Agent.AgentOwnerUserID, "-"),
+				teamAgentOnline(aggregated.Agent),
+				teamRefsLabel(aggregated.Teams),
+			); err != nil {
+				return fmt.Errorf("write aggregated agent row: %w", err)
+			}
+		}
+		return writer.Flush()
+	case "jsonl":
+		for _, aggregated := range resp.Agents {
+			if err := encodeTeamAgentJSONL(stdout, aggregated.Agent, aggregated.Teams); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func teamRefsLabel(refs []facade.TeamRef) string {
+	if len(refs) == 0 {
+		return "-"
+	}
+	labels := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		labels = append(labels, firstNonEmpty(ref.Name, ref.TeamID))
+	}
+	return strings.Join(labels, ",")
+}
+
+func encodeTeamAgentJSONL(
+	stdout io.Writer,
+	teamAgent *model.TeamAgent,
+	refs []facade.TeamRef,
+) error {
+	teams := make([]map[string]string, 0, len(refs))
+	for _, ref := range refs {
+		teams = append(teams, map[string]string{"teamId": ref.TeamID, "name": ref.Name})
+	}
+	payload := map[string]any{
+		"schemaVersion":    "paxl.teamAgent.v1",
+		"agentId":          teamAgent.AgentID,
+		"agentOwnerUserId": teamAgent.AgentOwnerUserID,
+		"display":          teamAgentDisplay(teamAgent),
+		"online":           teamAgent.Agent != nil && teamAgent.Agent.Online,
+		"addedAt":          teamAgent.AddedAt,
+		"addedByUserId":    teamAgent.AddedByUserID,
+		"removedAt":        teamAgent.RemovedAt,
+		"removedByUserId":  teamAgent.RemovedByUserID,
+	}
+	if teamAgent.TeamID != "" {
+		payload["teamId"] = teamAgent.TeamID
+	}
+	if len(teams) > 0 {
+		payload["teams"] = teams
+	}
+	if err := json.NewEncoder(stdout).Encode(payload); err != nil {
+		return fmt.Errorf("encode team agent: %w", err)
+	}
+	return nil
+}
+
 func renderSessionTimelineOutput(
 	stdout io.Writer,
 	resp *facade.GetSessionResponse,

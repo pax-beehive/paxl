@@ -3707,3 +3707,122 @@ func findCommand(command *cli.Command, name string) *cli.Command {
 	}
 	return nil
 }
+
+func TestRenderTeamListTable(t *testing.T) {
+	var buf bytes.Buffer
+	resp := &facade.ListTeamsResponse{
+		UserID: "usr_1",
+		Teams: []*model.TeamSummary{
+			{Team: model.Team{TeamID: "team_1", Name: "Core", Status: "active"},
+				MyRole: "owner", MemberCount: 2, AgentCount: 3},
+		},
+	}
+	if err := renderTeamList(&buf, resp, "table"); err != nil {
+		t.Fatalf("render team list: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "team_1") || !strings.Contains(out, "Core") ||
+		!strings.Contains(out, "owner") {
+		t.Errorf("unexpected table output:\n%s", out)
+	}
+}
+
+func TestRenderTeamAgentsAggregatedShowsTeamsColumn(t *testing.T) {
+	var buf bytes.Buffer
+	resp := &facade.ListAllTeamAgentsResponse{
+		UserID: "usr_1",
+		Agents: []*facade.AggregatedTeamAgent{
+			{
+				Agent: &model.TeamAgent{
+					AgentID:          "agent_mate",
+					AgentOwnerUserID: "usr_mate",
+					Agent:            &model.NodeAgent{AgentID: "agent_mate", Name: "mate-claude"},
+				},
+				Teams: []facade.TeamRef{
+					{TeamID: "team_a", Name: "Alpha"},
+					{TeamID: "team_b", Name: "Beta"},
+				},
+			},
+		},
+	}
+	if err := renderAggregatedTeamAgents(&buf, resp, "table"); err != nil {
+		t.Fatalf("render aggregated team agents: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "mate-claude") || !strings.Contains(out, "Alpha") ||
+		!strings.Contains(out, "Beta") {
+		t.Errorf("unexpected aggregated output:\n%s", out)
+	}
+}
+
+func TestTeamAgentDisplayFallsBackToAgentID(t *testing.T) {
+	withName := &model.TeamAgent{AgentID: "a1", Agent: &model.NodeAgent{Name: "named"}}
+	if got := teamAgentDisplay(withName); got != "named" {
+		t.Errorf("display = %q, want named", got)
+	}
+	noName := &model.TeamAgent{AgentID: "a2"}
+	if got := teamAgentDisplay(noName); got != "a2" {
+		t.Errorf("display = %q, want a2", got)
+	}
+}
+
+func TestRenderTeamListJSONLAndRejectsUnknownFormat(t *testing.T) {
+	resp := &facade.ListTeamsResponse{
+		UserID: "usr_1",
+		Teams: []*model.TeamSummary{
+			{
+				Team: model.Team{
+					TeamID:     "team_1",
+					Name:       "Core",
+					Status:     "archived",
+					ArchivedAt: "2026-06-27T00:00:00Z",
+				},
+				MyRole: "owner",
+			},
+		},
+	}
+	var buf bytes.Buffer
+	if err := renderTeamList(&buf, resp, "jsonl"); err != nil {
+		t.Fatalf("render jsonl: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, `"schemaVersion":"paxl.team.v1"`) {
+		t.Errorf("missing schemaVersion: %s", out)
+	}
+	if !strings.Contains(out, `"archivedAt":"2026-06-27T00:00:00Z"`) {
+		t.Errorf("missing archivedAt: %s", out)
+	}
+	if err := renderTeamList(&buf, resp, "yaml"); err == nil {
+		t.Error("expected error for unknown format")
+	}
+}
+
+func TestEncodeTeamAgentJSONLIncludesProvenanceAndTeams(t *testing.T) {
+	resp := &facade.ListAllTeamAgentsResponse{
+		UserID: "usr_1",
+		Agents: []*facade.AggregatedTeamAgent{{
+			Agent: &model.TeamAgent{
+				AgentID:          "agent_mate",
+				AgentOwnerUserID: "usr_mate",
+				AddedByUserID:    "usr_1",
+				Agent:            &model.NodeAgent{Name: "mate-claude"},
+			},
+			Teams: []facade.TeamRef{{TeamID: "team_a", Name: "Alpha"}},
+		}},
+	}
+	var buf bytes.Buffer
+	if err := renderAggregatedTeamAgents(&buf, resp, "jsonl"); err != nil {
+		t.Fatalf("render jsonl: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		`"schemaVersion":"paxl.teamAgent.v1"`,
+		`"addedByUserId":"usr_1"`,
+		`"removedAt":""`,
+		`"teams"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in jsonl: %s", want, out)
+		}
+	}
+}
