@@ -1584,6 +1584,18 @@ func (s *CommandSuite) TestFriendCommandExposesSubcommands() {
 	}
 }
 
+func (s *CommandSuite) TestTeamCommandExposesSubcommands() {
+	cases := []string{"list", "get", "agents"}
+	command := findCommand(newCommand(&s.stdout, &s.stderr), "team")
+	s.Require().NotNil(command)
+
+	for _, name := range cases {
+		s.Run(name, func() {
+			s.True(hasCommand(command, name))
+		})
+	}
+}
+
 func (s *CommandSuite) TestCapsuleLocalLifecycleUsesSingularCommands() {
 	dbPath := s.seedCodexSessionWithKeyword("bridge")
 
@@ -2273,6 +2285,100 @@ func (s *CommandSuite) TestFriendCommandsUseManagerFriends() {
 	s.Contains(s.stdout.String(), "blocked")
 }
 
+func (s *CommandSuite) TestTeamCommandsUseManagerTeams() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	restoreHTTPClient := s.stubDefaultHTTPClient(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/usr_1/teams":
+			return commandJSONResponse(`{
+				"data":{
+					"teams":[{
+						"team_id":"team_1",
+						"name":"Alpha",
+						"owner_user_id":"usr_1",
+						"my_role":"owner",
+						"member_count":2,
+						"agent_count":1,
+						"status":"active",
+						"created_at":"2026-06-22T00:00:00Z"
+					}]
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/usr_1/teams/team_1":
+			return commandJSONResponse(`{
+				"data":{
+					"team":{
+						"team_id":"team_1",
+						"name":"Alpha",
+						"owner_user_id":"usr_1",
+						"status":"active",
+						"created_at":"2026-06-22T00:00:00Z"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/usr_1/teams/team_1/agents":
+			return commandJSONResponse(`{
+				"data":{
+					"agents":[{
+						"team_id":"team_1",
+						"agent_id":"agent_mate",
+						"agent_owner_user_id":"usr_mate",
+						"added_by_user_id":"usr_1",
+						"added_at":"2026-06-23T00:00:00Z",
+						"agent":{"agent_id":"agent_mate","name":"mate-claude","online":true}
+					}]
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		default:
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader("unexpected request")),
+				Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			}, nil
+		}
+	})
+	defer restoreHTTPClient()
+	s.seedManagerCredential(dbPath, "https://manager.example")
+
+	err := run(
+		context.Background(),
+		[]string{"--db", dbPath, "team", "list"},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "team_1")
+	s.Contains(s.stdout.String(), "Alpha")
+
+	s.SetupTest()
+	err = run(
+		context.Background(),
+		[]string{"--db", dbPath, "team", "get", "team_1"},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "team_1")
+	s.Contains(s.stdout.String(), "Alpha")
+
+	s.SetupTest()
+	err = run(
+		context.Background(),
+		[]string{"--db", dbPath, "team", "agents", "--all"},
+		&s.stdout,
+		&s.stderr,
+	)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "agent_mate")
+	s.Contains(s.stdout.String(), "Alpha")
+}
+
 func (s *CommandSuite) TestCapsuleCreateSupportsContentFile() {
 	dbPath := s.seedCodexSessionWithKeyword("bridge")
 	contentPath := filepath.Join(s.T().TempDir(), "capsule.md")
@@ -2954,6 +3060,35 @@ func (s *CommandSuite) TestFriendCommandsRejectInvalidRequestsBeforeIO() {
 		},
 		{name: "remove missing friend", args: []string{"friend", "remove"}},
 		{name: "block missing friend", args: []string{"friend", "block"}},
+	}
+
+	for _, tc := range cases {
+		s.Run(tc.name, func() {
+			err := run(context.Background(), tc.args, &s.stdout, &s.stderr)
+			s.Error(err)
+		})
+	}
+}
+
+func (s *CommandSuite) TestTeamCommandsRejectInvalidRequestsBeforeIO() {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{name: "get missing team", args: []string{"team", "get"}},
+		{
+			name: "get unknown format",
+			args: []string{"team", "get", "team_1", "--format", "xml"},
+		},
+		{name: "agents neither arg nor all", args: []string{"team", "agents"}},
+		{
+			name: "agents unknown format",
+			args: []string{"team", "agents", "team_1", "--format", "xml"},
+		},
+		{
+			name: "agents agent without all",
+			args: []string{"team", "agents", "team_1", "--agent", "foo"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -3824,5 +3959,73 @@ func TestEncodeTeamAgentJSONLIncludesProvenanceAndTeams(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in jsonl: %s", want, out)
 		}
+	}
+}
+
+func newTeamAgentsTestCommand(t *testing.T, args []string) *cli.Command {
+	t.Helper()
+	cmd := &cli.Command{
+		Name: "agents",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{Name: "all"},
+			&cli.BoolFlag{Name: "include-self"},
+			&cli.BoolFlag{Name: "online"},
+			&cli.StringFlag{Name: "agent"},
+			&cli.StringFlag{Name: "format", Value: "table"},
+		},
+		Action: func(context.Context, *cli.Command) error { return nil },
+	}
+	if err := cmd.Run(context.Background(), append([]string{"agents"}, args...)); err != nil {
+		t.Fatalf("run test command: %v", err)
+	}
+	return cmd
+}
+
+func TestParseListAllTeamAgentsRejectsBothTeamIDAndAll(t *testing.T) {
+	cmd := newTeamAgentsTestCommand(t, []string{"team_1", "--all"})
+	if _, _, err := parseTeamAgentsRequest(cmd); err == nil {
+		t.Fatal("expected error when both team id and --all are set")
+	}
+}
+
+func TestParseListAllTeamAgentsRejectsNeither(t *testing.T) {
+	cmd := newTeamAgentsTestCommand(t, []string{})
+	if _, _, err := parseTeamAgentsRequest(cmd); err == nil {
+		t.Fatal("expected error when neither team id nor --all is set")
+	}
+}
+
+func TestParseTeamAgentsAllRequest(t *testing.T) {
+	cmd := newTeamAgentsTestCommand(t, []string{"--all", "--include-self", "--agent", "agent_x"})
+	single, all, err := parseTeamAgentsRequest(cmd)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if single != nil {
+		t.Fatalf("expected no single-team request, got %+v", single)
+	}
+	if all == nil || !all.IncludeSelf || all.AgentID != "agent_x" {
+		t.Fatalf("unexpected aggregate request: %+v", all)
+	}
+}
+
+func TestParseTeamAgentsSingleTeamRequest(t *testing.T) {
+	cmd := newTeamAgentsTestCommand(t, []string{"team_1"})
+	single, all, err := parseTeamAgentsRequest(cmd)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if all != nil {
+		t.Fatalf("expected no aggregate request, got %+v", all)
+	}
+	if single == nil || single.TeamID != "team_1" {
+		t.Fatalf("unexpected single request: %+v", single)
+	}
+}
+
+func TestParseTeamAgentsRejectsAgentWithoutAll(t *testing.T) {
+	cmd := newTeamAgentsTestCommand(t, []string{"team_1", "--agent", "agent_x"})
+	if _, _, err := parseTeamAgentsRequest(cmd); err == nil {
+		t.Fatal("expected error when --agent is used without --all")
 	}
 }

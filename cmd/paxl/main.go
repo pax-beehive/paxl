@@ -89,6 +89,7 @@ func newCommandWithDiagnostics(
 			newInboxCommand(stdout),
 			newOutboxCommand(stdout),
 			newFriendCommand(stdout),
+			newTeamCommand(stdout),
 			newAgentHookCommand(stdout),
 		},
 	}
@@ -905,6 +906,56 @@ func newFriendCommand(stdout io.Writer) *cli.Command {
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					return friendBlock(ctx, cmd, stdout)
+				},
+			},
+		},
+	}
+}
+
+func newTeamCommand(stdout io.Writer) *cli.Command {
+	formatFlag := func() cli.Flag {
+		return &cli.StringFlag{
+			Name:  "format",
+			Value: "table",
+			Usage: "Output format: table or jsonl",
+		}
+	}
+	return &cli.Command{
+		Name:  "team",
+		Usage: "Read teams and team agents for delivery discovery",
+		Commands: []*cli.Command{
+			{
+				Name:   "list",
+				Usage:  "List teams you belong to",
+				Flags:  []cli.Flag{formatFlag()},
+				Action: func(ctx context.Context, cmd *cli.Command) error { return teamList(ctx, cmd, stdout) },
+			},
+			{
+				Name:      "get",
+				Usage:     "Show a single team",
+				ArgsUsage: "<team-id>",
+				Flags:     []cli.Flag{formatFlag()},
+				Action:    func(ctx context.Context, cmd *cli.Command) error { return teamGet(ctx, cmd, stdout) },
+			},
+			{
+				Name:      "agents",
+				Usage:     "List team agents (delivery candidates)",
+				ArgsUsage: "<team-id> | --all",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "all", Usage: "Aggregate agents across all your teams"},
+					&cli.BoolFlag{
+						Name:  "include-self",
+						Usage: "Include agents you own (excluded by default)",
+					},
+					&cli.BoolFlag{Name: "online", Usage: "Only agents reporting online"},
+					&cli.StringFlag{
+						Name:  "agent",
+						Usage: "Filter to a single agent id (with --all)",
+					},
+					formatFlag(),
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return teamAgents(ctx, cmd, stdout)
 				},
 			},
 		},
@@ -2114,6 +2165,67 @@ func friendBlock(ctx context.Context, cmd *cli.Command, stdout io.Writer) error 
 	)
 }
 
+func teamList(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	req, err := parseListTeamsRequest(cmd)
+	if err != nil {
+		return fmt.Errorf("parse team list: %w", err)
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open team store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	teamFacade := facade.NewTeamFacade(nil, opened.Store)
+	resp, err := teamFacade.ListTeams(ctx, req)
+	if err != nil {
+		return fmt.Errorf("list teams: %w", err)
+	}
+	return renderTeamList(stdout, resp, cmd.String("format"))
+}
+
+func teamGet(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	req, err := parseGetTeamRequest(cmd)
+	if err != nil {
+		return fmt.Errorf("parse team get: %w", err)
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open team store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	teamFacade := facade.NewTeamFacade(nil, opened.Store)
+	resp, err := teamFacade.GetTeam(ctx, req)
+	if err != nil {
+		return fmt.Errorf("get team: %w", err)
+	}
+	return renderTeamDetail(stdout, resp, cmd.String("format"))
+}
+
+func teamAgents(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	singleReq, allReq, err := parseTeamAgentsRequest(cmd)
+	if err != nil {
+		return fmt.Errorf("parse team agents: %w", err)
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open team store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	teamFacade := facade.NewTeamFacade(nil, opened.Store)
+	if allReq != nil {
+		resp, err := teamFacade.ListAllAgents(ctx, allReq)
+		if err != nil {
+			return fmt.Errorf("list all team agents: %w", err)
+		}
+		return renderAggregatedTeamAgents(stdout, resp, cmd.String("format"))
+	}
+	resp, err := teamFacade.ListAgents(ctx, singleReq)
+	if err != nil {
+		return fmt.Errorf("list team agents: %w", err)
+	}
+	return renderTeamAgents(stdout, resp, cmd.String("format"))
+}
+
 func capsuleInjectionList(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
 	req, err := parseListInjectionsRequest(cmd)
 	if err != nil {
@@ -2555,6 +2667,53 @@ func parseBlockFriendRequest(cmd *cli.Command) (*facade.BlockFriendRequest, erro
 		return nil, err
 	}
 	return &facade.BlockFriendRequest{FriendID: friendID}, nil
+}
+
+func parseListTeamsRequest(cmd *cli.Command) (*facade.ListTeamsRequest, error) {
+	if err := validateFormat(cmd.String("format"), "table", "jsonl"); err != nil {
+		return nil, err
+	}
+	return &facade.ListTeamsRequest{}, nil
+}
+
+func parseGetTeamRequest(cmd *cli.Command) (*facade.GetTeamRequest, error) {
+	teamID := strings.TrimSpace(cmd.Args().First())
+	if teamID == "" {
+		return nil, fmt.Errorf("team id is required")
+	}
+	if err := validateFormat(cmd.String("format"), "table", "jsonl"); err != nil {
+		return nil, err
+	}
+	return &facade.GetTeamRequest{TeamID: teamID}, nil
+}
+
+// parseTeamAgentsRequest returns either a single-team request or an aggregate
+// request, never both. Exactly one of <team-id> and --all must be provided.
+func parseTeamAgentsRequest(
+	cmd *cli.Command,
+) (*facade.ListTeamAgentsRequest, *facade.ListAllTeamAgentsRequest, error) {
+	if err := validateFormat(cmd.String("format"), "table", "jsonl"); err != nil {
+		return nil, nil, err
+	}
+	teamID := strings.TrimSpace(cmd.Args().First())
+	all := cmd.Bool("all")
+	if all && teamID != "" {
+		return nil, nil, fmt.Errorf("use either <team-id> or --all, not both")
+	}
+	if !all && teamID == "" {
+		return nil, nil, fmt.Errorf("provide a <team-id> or use --all")
+	}
+	if !all && strings.TrimSpace(cmd.String("agent")) != "" {
+		return nil, nil, fmt.Errorf("--agent requires --all")
+	}
+	if all {
+		return nil, &facade.ListAllTeamAgentsRequest{
+			AgentID:     strings.TrimSpace(cmd.String("agent")),
+			IncludeSelf: cmd.Bool("include-self"),
+			OnlineOnly:  cmd.Bool("online"),
+		}, nil
+	}
+	return &facade.ListTeamAgentsRequest{TeamID: teamID}, nil, nil
 }
 
 func validateFormat(format string, values ...string) error {
