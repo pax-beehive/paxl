@@ -32,7 +32,6 @@ not on local manager source.
 
 - `GET /teams` → `{ "teams": TeamSummary[] }`
 - `GET /teams/:team_id` → `{ "team": Team }`
-- `GET /teams/:team_id/members` → `{ "members": TeamMember[] }`
 - `GET /teams/:team_id/agents` → `{ "agents": TeamAgent[] }` (`TeamAgent.agent`
   included when available)
 
@@ -43,13 +42,10 @@ are called in this iteration.
 
 - `Team`: `team_id, owner_user_id, name, status, created_at, archived_at`
 - `TeamSummary`: all `Team` fields plus `my_role, member_count, agent_count`
-- `TeamMember`: `team_id, user_id, email, role, status, invited_by_user_id,
-  joined_at, removed_at, removed_by_user_id`
 - `TeamAgent`: `team_id, agent_id, agent_owner_user_id, added_by_user_id,
   added_at, removed_at, removed_by_user_id, agent`
 
-Enums: role = `owner|operator|member`; team status = `active|archived`; member
-status = `active|removed`.
+Enums: role = `owner|operator|member`; team status = `active|archived`.
 
 Naming rule (from the contract): node/agent have no alias. Bind by stable IDs
 (`node_id`, `agent_id`). For display use `name → hostname → agent_id` fallback.
@@ -64,8 +60,7 @@ existing `paxl friend` / `paxl node` convention).
 |---|---|---|
 | `paxl team list` | `GET /teams` | Teams the user belongs to (`TeamSummary`) |
 | `paxl team get <team_id>` | `GET /teams/:id` | Single team detail |
-| `paxl team members <team_id>` | `GET /teams/:id/members` | Members + roles (permission visibility) |
-| `paxl team agents [<team_id>] [--all] [--agent <id>] [--exclude-self] [--online]` | `GET /teams/:id/agents` (+ client-side aggregation when `--all`) | Delivery-candidate agents; reverse-lookup an agent's teams |
+| `paxl team agents [<team_id>] [--all] [--agent <id>] [--include-self] [--online]` | `GET /teams/:id/agents` (+ client-side aggregation when `--all`) | Delivery-candidate agents; reverse-lookup an agent's teams |
 
 `team agents` behavior:
 
@@ -75,8 +70,10 @@ existing `paxl friend` / `paxl node` convention).
   read #3: all agents across the user's teams).
 - `team agents --all --agent <id>` — filter the aggregate to one agent and show
   its `TEAMS` (covers read #2: which teams an agent is in).
-- `--exclude-self` — drop agents whose `agent_owner_user_id` equals the current
-  user (i.e. show only teammates' agents — "其他 agents").
+- **By default, agents owned by the current user are excluded** (show only
+  teammates' agents — "其他 agents", the actual delivery targets). Filtering is by
+  `agent_owner_user_id == current user`.
+- `--include-self` — also include the current user's own agents.
 - `--online` — keep only agents whose embedded agent reports `online`.
 
 `<team_id>` and `--all` are mutually exclusive; require exactly one for
@@ -92,12 +89,12 @@ live on each call; nothing is cached in local SQLite.
 
 ### Model — `internal/model/team.go`
 
-New types: `Team`, `TeamSummary`, `TeamMember`, `TeamAgent`. `TeamAgent` embeds
-the registered agent via `Agent *NodeAgent` to reuse existing agent fields
-(`agent_id, node_id, owner_user_id, name, agent_type, status, online`). Roles and
-statuses are string enums with an unknown-first value, per Go style rules.
+New types: `Team`, `TeamSummary`, `TeamAgent`. `TeamAgent` embeds the registered
+agent via `Agent *NodeAgent` to reuse existing agent fields (`agent_id, node_id,
+owner_user_id, name, agent_type, status, online`). Roles and statuses are string
+enums with an unknown-first value, per Go style rules.
 
-Out of scope: `TeamInvite` and any write-oriented types.
+Out of scope: `TeamMember`, `TeamInvite`, and any write-oriented types.
 
 ### Facade — `internal/facade/team.go`
 
@@ -112,12 +109,12 @@ Methods (all read-only, GET via `auth.managerJSON`, request/response structs,
 
 - `ListTeams(ctx, req) (*ListTeamsResponse, error)` → `TeamSummary[]`
 - `GetTeam(ctx, req) (*GetTeamResponse, error)` → `Team`
-- `ListMembers(ctx, req) (*ListTeamMembersResponse, error)` → `TeamMember[]`
 - `ListAgents(ctx, req) (*ListTeamAgentsResponse, error)` → `TeamAgent[]` for one team
 - `ListAllAgents(ctx, req) (*ListAllTeamAgentsResponse, error)` → aggregation:
   calls `ListTeams`, then `ListAgents` per team, merges by `agent_id` collecting
-  the set of teams each agent belongs to. Applies `--agent`, `--exclude-self`,
-  `--online` filters. Carries `UserID` for self-detection.
+  the set of teams each agent belongs to. Excludes the current user's own agents
+  by default; `IncludeSelf` keeps them. Applies `Agent` (single-agent filter) and
+  `Online` filters. Carries `UserID` for self-detection.
 
 Path helper `userTeamPath(userID, teamID, sub string)` analogous to
 `userFriendPath`.
@@ -133,12 +130,13 @@ helpers mirroring the friend equivalents (table + jsonl encoders).
 ## Data Flow
 
 ```
-paxl team agents --all --exclude-self
+paxl team agents --all
   → teamAgents (cmd) → parseListAllTeamAgentsRequest
   → TeamFacade.ListAllAgents
       → ListTeams (GET /teams)
       → for each team: ListAgents (GET /teams/:id/agents)
-      → merge by agent_id, collect teams, filter exclude-self/online/agent
+      → merge by agent_id, collect teams, exclude self (unless --include-self),
+        filter online/agent
   → renderTeamAgents (table|jsonl)
 ```
 
@@ -149,18 +147,19 @@ paxl team agents --all --exclude-self
   command context using `%w`.
 - `team agents` with neither `<team_id>` nor `--all`, or with both, is a
   validation error returned before any manager call.
-- Aggregation is best-effort-strict: if any per-team agent fetch fails, return the
-  error (do not silently drop a team), wrapped with the failing `team_id`.
+- Aggregation is strict: if any per-team agent fetch fails, return the error (do
+  not silently drop a team), wrapped with the failing `team_id`.
 
 ## Testing (TDD)
 
 Behavior tests through public interfaces, table-driven where it fits, using a
 fake `AuthHTTPClient` like the existing friend/auth tests:
 
-- Facade: `ListTeams`/`GetTeam`/`ListMembers`/`ListAgents` decode envelopes and
-  build correct paths; `ListAllAgents` aggregates and de-dupes by `agent_id`,
-  collects multiple teams per agent, and applies `--exclude-self`/`--online`/
-  `--agent` filters; `not logged in` propagates.
+- Facade: `ListTeams`/`GetTeam`/`ListAgents` decode envelopes and build correct
+  paths; `ListAllAgents` aggregates and de-dupes by `agent_id`, collects multiple
+  teams per agent, excludes self by default, honors `--include-self`, and applies
+  `--online`/`--agent` filters; `not logged in` propagates; a per-team agent fetch
+  failure surfaces as an error naming the `team_id`.
 - CLI: `team agents` rejects both/neither `<team_id>`/`--all`; table and jsonl
   renderers; `name → hostname → agent_id` display fallback.
 
