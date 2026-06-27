@@ -2,6 +2,7 @@ package facade
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"testing"
@@ -69,4 +70,56 @@ func (s *TeamFacadeSuite) TestListTeamsGetsSummaries() {
 	s.Equal("team_1", resp.Teams[0].TeamID)
 	s.Equal("owner", resp.Teams[0].MyRole)
 	s.Equal("usr_1", resp.UserID)
+}
+
+func (s *TeamFacadeSuite) TestGetTeamReturnsTeam() {
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		s.Equal(http.MethodGet, req.Method)
+		s.Equal("/api/v1/user/usr_1/teams/team_1", req.URL.Path)
+		return jsonResponse(`{
+			"data":{"team":{"team_id":"team_1","name":"Core","status":"active"}},
+			"code":200,"message":"ok"
+		}`), nil
+	})
+	teamFacade := NewTeamFacade(client, s.store)
+
+	resp, err := teamFacade.GetTeam(s.ctx, &GetTeamRequest{TeamID: "team_1"})
+
+	s.Require().NoError(err)
+	s.Equal("Core", resp.Team.Name)
+	s.Equal("usr_1", resp.UserID)
+}
+
+func (s *TeamFacadeSuite) TestGetTeamRequiresTeamID() {
+	teamFacade := NewTeamFacade(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		s.Fail("manager should not be called")
+		return nil, fmt.Errorf("unexpected call")
+	}), s.store)
+
+	_, err := teamFacade.GetTeam(s.ctx, &GetTeamRequest{})
+
+	s.Require().Error(err)
+	s.Contains(err.Error(), "team id is required")
+}
+
+func (s *TeamFacadeSuite) TestListAgentsGetsTeamAgents() {
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		s.Equal(http.MethodGet, req.Method)
+		s.Equal("/api/v1/user/usr_1/teams/team_1/agents", req.URL.Path)
+		return jsonResponse(`{
+			"data":{"agents":[
+				{"team_id":"team_1","agent_id":"agent_9","agent_owner_user_id":"usr_mate",
+				 "agent":{"agent_id":"agent_9","name":"codex-laptop","online":true}}
+			]},
+			"code":200,"message":"ok"
+		}`), nil
+	})
+	teamFacade := NewTeamFacade(client, s.store)
+
+	resp, err := teamFacade.ListAgents(s.ctx, &ListTeamAgentsRequest{TeamID: "team_1"})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Agents, 1)
+	s.Equal("agent_9", resp.Agents[0].AgentID)
+	s.Equal("team_1", resp.TeamID)
 }
