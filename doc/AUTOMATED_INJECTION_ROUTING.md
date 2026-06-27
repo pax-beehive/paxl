@@ -50,6 +50,11 @@ paxl __agent-hook --agent <agent> --event user-prompt
 
 The entrypoint also accepts the normalized event name `user_prompt`; descriptors
 keep `user-prompt` for compatibility with existing hook command strings.
+Before matching local routes, the hook performs a best-effort
+`inbox accept --all` equivalent for pending envelopes. This lets cross-node
+routes become local pending hook injections during the same hook invocation. If
+the inbox cannot be reached or the node is not logged in, the hook skips that
+sync and still attempts to consume already-local routes.
 
 Local injection can either deliver immediately to a known target session, start
 a new target session, or create a conditional hook route.
