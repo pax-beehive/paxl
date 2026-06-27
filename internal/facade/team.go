@@ -200,6 +200,7 @@ func (f *TeamFacade) ListAllAgents(
 			}
 			aggregated, ok := index[teamAgent.AgentID]
 			if !ok {
+				// First-seen snapshot wins; if an agent reports differing state across teams, later snapshots are ignored.
 				aggregated = &AggregatedTeamAgent{Agent: teamAgent}
 				index[teamAgent.AgentID] = aggregated
 				order = append(order, teamAgent.AgentID)

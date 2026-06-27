@@ -4029,3 +4029,60 @@ func TestParseTeamAgentsRejectsAgentWithoutAll(t *testing.T) {
 		t.Fatal("expected error when --agent is used without --all")
 	}
 }
+
+func TestParseTeamAgentsRejectsIncludeSelfWithoutAll(t *testing.T) {
+	cmd := newTeamAgentsTestCommand(t, []string{"team_1", "--include-self"})
+	if _, _, err := parseTeamAgentsRequest(cmd); err == nil {
+		t.Fatal("expected error when --include-self is used without --all")
+	}
+}
+
+func TestParseTeamAgentsRejectsOnlineWithoutAll(t *testing.T) {
+	cmd := newTeamAgentsTestCommand(t, []string{"team_1", "--online"})
+	if _, _, err := parseTeamAgentsRequest(cmd); err == nil {
+		t.Fatal("expected error when --online is used without --all")
+	}
+}
+
+func TestRenderTeamAgentsTableAndJSONL(t *testing.T) {
+	resp := &facade.ListTeamAgentsResponse{
+		TeamID: "team_1",
+		UserID: "usr_1",
+		Agents: []*model.TeamAgent{
+			{
+				TeamID:           "team_1",
+				AgentID:          "agent_9",
+				AgentOwnerUserID: "usr_mate",
+				AddedAt:          "2026-06-27T00:00:00Z",
+				Agent: &model.NodeAgent{
+					AgentID: "agent_9",
+					Name:    "codex-laptop",
+					Online:  true,
+				},
+			},
+		},
+	}
+	var table bytes.Buffer
+	if err := renderTeamAgents(&table, resp, "table"); err != nil {
+		t.Fatalf("render table: %v", err)
+	}
+	if !strings.Contains(table.String(), "codex-laptop") ||
+		!strings.Contains(table.String(), "agent_9") ||
+		!strings.Contains(table.String(), "yes") {
+		t.Errorf("unexpected table:\n%s", table.String())
+	}
+
+	var jsonl bytes.Buffer
+	if err := renderTeamAgents(&jsonl, resp, "jsonl"); err != nil {
+		t.Fatalf("render jsonl: %v", err)
+	}
+	out := jsonl.String()
+	if !strings.Contains(out, `"schemaVersion":"paxl.teamAgent.v1"`) ||
+		!strings.Contains(out, `"teamId":"team_1"`) ||
+		!strings.Contains(out, `"online":true`) {
+		t.Errorf("unexpected jsonl:\n%s", out)
+	}
+	if err := renderTeamAgents(&jsonl, resp, "xml"); err == nil {
+		t.Error("expected error for unknown format")
+	}
+}

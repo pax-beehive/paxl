@@ -945,9 +945,12 @@ func newTeamCommand(stdout io.Writer) *cli.Command {
 					&cli.BoolFlag{Name: "all", Usage: "Aggregate agents across all your teams"},
 					&cli.BoolFlag{
 						Name:  "include-self",
-						Usage: "Include agents you own (excluded by default)",
+						Usage: "Include agents you own (excluded by default; with --all)",
 					},
-					&cli.BoolFlag{Name: "online", Usage: "Only agents reporting online"},
+					&cli.BoolFlag{
+						Name:  "online",
+						Usage: "Only agents reporting online (with --all)",
+					},
 					&cli.StringFlag{
 						Name:  "agent",
 						Usage: "Filter to a single agent id (with --all)",
@@ -2703,8 +2706,9 @@ func parseTeamAgentsRequest(
 	if !all && teamID == "" {
 		return nil, nil, fmt.Errorf("provide a <team-id> or use --all")
 	}
-	if !all && strings.TrimSpace(cmd.String("agent")) != "" {
-		return nil, nil, fmt.Errorf("--agent requires --all")
+	if !all && (strings.TrimSpace(cmd.String("agent")) != "" ||
+		cmd.Bool("include-self") || cmd.Bool("online")) {
+		return nil, nil, fmt.Errorf("--agent, --include-self, and --online require --all")
 	}
 	if all {
 		return nil, &facade.ListAllTeamAgentsRequest{
