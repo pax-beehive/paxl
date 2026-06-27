@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/pax-oss/paxl/internal/model"
@@ -13,7 +14,8 @@ import (
 )
 
 type AgentHookFacade struct {
-	store *store.Store
+	client AuthHTTPClient
+	store  *store.Store
 }
 
 type AgentHookRequest struct {
@@ -58,7 +60,7 @@ func (f *AgentHookFacade) Run(
 	req *AgentHookRequest,
 	opts ...func(*Option),
 ) (*AgentHookResponse, error) {
-	_ = applyOptions(opts)
+	option := applyOptions(opts)
 	if req == nil {
 		return nil, fmt.Errorf("run agent hook: request is required")
 	}
@@ -68,6 +70,7 @@ func (f *AgentHookFacade) Run(
 	if normalizeHookEvent(req.Event) != "user_prompt" {
 		return nil, fmt.Errorf("unsupported hook event %q", req.Event)
 	}
+	f.acceptPendingInboxRoutes(ctx, option.VerboseWriter)
 	claimed, err := f.store.ClaimHookKnowledgeInjection(
 		ctx,
 		&store.ClaimHookKnowledgeInjectionRequest{
@@ -89,6 +92,33 @@ func (f *AgentHookFacade) Run(
 		actionItemsFromJSON(claimed.Injection.ActionItemsJSON),
 	)
 	return &AgentHookResponse{Injection: claimed.Injection, Message: message}, nil
+}
+
+func (f *AgentHookFacade) acceptPendingInboxRoutes(ctx context.Context, verbose io.Writer) {
+	envelopeFacade := NewEnvelopeFacade(f.client, f.store)
+	resp, err := envelopeFacade.AcceptAll(ctx, &AcceptAllEnvelopesRequest{
+		Status:          "pending",
+		ContinueOnError: true,
+	})
+	if err != nil {
+		writeHookVerbose(verbose, "Skip inbox accept-all before hook injection: %v.", err)
+		return
+	}
+	if len(resp.Accepted) > 0 || len(resp.Failures) > 0 {
+		writeHookVerbose(
+			verbose,
+			"Accepted %d inbox envelopes before hook injection with %d failures.",
+			len(resp.Accepted),
+			len(resp.Failures),
+		)
+	}
+}
+
+func writeHookVerbose(writer io.Writer, format string, args ...any) {
+	if writer == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(writer, format+"\n", args...)
 }
 
 func normalizeHookEvent(event string) string {
