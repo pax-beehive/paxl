@@ -97,14 +97,15 @@ func (f *SetupFacade) installAgentHook(
 		return installClaudeHook(command, dryRun)
 	case model.AgentNamePi:
 		return installPiHook(command, dryRun)
+	case model.AgentNameKiro:
+		return installKiroHook(command, dryRun)
 	case model.AgentNameHermes:
 		dbPath, err := defaultStorePath()
 		if err != nil {
 			return nil, err
 		}
 		return installDescriptorHook(agent, hermesHookDescriptorPath(), command, dbPath, dryRun)
-	case model.AgentNameKiro,
-		model.AgentNameGemini,
+	case model.AgentNameGemini,
 		model.AgentNameOpenClaw:
 		dbPath, err := defaultStorePath()
 		if err != nil {
@@ -232,6 +233,57 @@ func installPiHook(command string, dryRun bool) (*SetupAdapterResult, error) {
 	return result, nil
 }
 
+func installKiroHook(command string, dryRun bool) (*SetupAdapterResult, error) {
+	dbPath, err := defaultStorePath()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := installDescriptorHook(
+		model.AgentNameKiro,
+		genericHookDescriptorPath(model.AgentNameKiro),
+		command,
+		dbPath,
+		dryRun,
+	); err != nil {
+		return nil, err
+	}
+	path := kiroAgentConfigPath()
+	result := &SetupAdapterResult{
+		Agent:   model.AgentNameKiro,
+		Status:  SetupStatusInstalled,
+		Path:    path,
+		Message: "Installed Kiro CLI userPromptSubmit hook agent and set it as default.",
+	}
+	if dryRun {
+		result.Status = SetupStatusPending
+		result.Message = "Would install Kiro CLI userPromptSubmit hook agent and set it as default."
+		return result, nil
+	}
+	config, err := readJSONMap(path)
+	if err != nil {
+		return nil, fmt.Errorf("read Kiro agent config: %w", err)
+	}
+	ensureKiroAgentDefaults(config)
+	hooks := ensureMap(config, "hooks")
+	commands := ensureSlice(hooks, "userPromptSubmit")
+	next := map[string]any{
+		"command": setupHookCommand(command, model.AgentNameKiro, dbPath),
+	}
+	hooks["userPromptSubmit"] = upsertKiroUserPromptHook(commands, next)
+	raw, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode Kiro agent config: %w", err)
+	}
+	raw = append(raw, '\n')
+	if err := writeFile(path, raw, 0o600); err != nil {
+		return nil, fmt.Errorf("write Kiro agent config: %w", err)
+	}
+	if err := setKiroDefaultAgent("paxl"); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 func installCodexHook(command string, dryRun bool) (*SetupAdapterResult, error) {
 	dbPath, err := defaultStorePath()
 	if err != nil {
@@ -345,6 +397,61 @@ func upsertPaxlHook(groups []any, agent model.AgentName, next map[string]any) []
 		}
 	}
 	return append(groups, next)
+}
+
+func ensureKiroAgentDefaults(config map[string]any) {
+	config["name"] = "paxl"
+	setDefault(config, "description", "Kiro CLI agent with paxl knowledge injection hook.")
+	setDefault(config, "prompt", nil)
+	setDefault(config, "mcpServers", map[string]any{})
+	setDefault(config, "tools", []any{"*"})
+	setDefault(config, "toolAliases", map[string]any{})
+	setDefault(config, "allowedTools", []any{})
+	setDefault(config, "resources", []any{})
+	setDefault(config, "toolsSettings", map[string]any{})
+	setDefault(config, "includeMcpJson", true)
+	setDefault(config, "model", nil)
+}
+
+func setDefault(config map[string]any, key string, value any) {
+	if _, ok := config[key]; ok {
+		return
+	}
+	config[key] = value
+}
+
+func upsertKiroUserPromptHook(commands []any, next map[string]any) []any {
+	needle := "__agent-hook --agent kiro --event user-prompt"
+	for index, rawCommand := range commands {
+		command, ok := rawCommand.(map[string]any)
+		if !ok {
+			continue
+		}
+		value, _ := command["command"].(string)
+		if strings.Contains(value, needle) {
+			commands[index] = next
+			return commands
+		}
+	}
+	return append(commands, next)
+}
+
+func setKiroDefaultAgent(agentName string) error {
+	path := kiroSettingsPath()
+	settings, err := readJSONMap(path)
+	if err != nil {
+		return fmt.Errorf("read Kiro settings: %w", err)
+	}
+	settings["chat.defaultAgent"] = agentName
+	raw, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode Kiro settings: %w", err)
+	}
+	raw = append(raw, '\n')
+	if err := writeFile(path, raw, 0o600); err != nil {
+		return fmt.Errorf("write Kiro settings: %w", err)
+	}
+	return nil
 }
 
 func renderPiHookExtension(command string, dbPath string) string {
@@ -584,6 +691,14 @@ func piHookExtensionPath() string {
 		filepath.Join(genericAgentRoot(model.AgentNamePi), "agent"),
 	)
 	return filepath.Join(root, "extensions", "paxl-hook", "index.ts")
+}
+
+func kiroAgentConfigPath() string {
+	return filepath.Join(genericAgentRoot(model.AgentNameKiro), "agents", "paxl.json")
+}
+
+func kiroSettingsPath() string {
+	return filepath.Join(genericAgentRoot(model.AgentNameKiro), "settings", "cli.json")
 }
 
 func genericHookDescriptorPath(agent model.AgentName) string {

@@ -67,6 +67,7 @@ func (s *SetupFacadeSuite) TestInstallSetsUpAllSupportedAgentHooks() {
 	s.FileExists(filepath.Join(s.home, ".pi", "paxl", "hooks", "user-prompt.json"))
 	s.FileExists(filepath.Join(s.home, ".pi", "agent", "extensions", "paxl-hook", "index.ts"))
 	s.FileExists(filepath.Join(s.home, ".kiro", "paxl", "hooks", "user-prompt.json"))
+	s.FileExists(filepath.Join(s.home, ".kiro", "agents", "paxl.json"))
 	s.FileExists(filepath.Join(s.home, ".gemini", "paxl", "hooks", "user-prompt.json"))
 	s.FileExists(filepath.Join(s.home, ".openclaw", "paxl", "hooks", "user-prompt.json"))
 	s.claudeHookCommandContains("paxl __agent-hook --agent claude --event user-prompt")
@@ -106,6 +107,34 @@ func (s *SetupFacadeSuite) TestInstallPiHookWritesBeforeAgentStartExtension() {
 	s.Contains(extension, filepath.Join(s.home, ".data", "paxl", "paxl.sqlite"))
 	s.Contains(extension, `/opt/paxl test/bin/paxl`)
 	s.FileExists(filepath.Join(s.home, ".pi", "paxl", "hooks", "user-prompt.json"))
+}
+
+func (s *SetupFacadeSuite) TestInstallKiroHookWritesAgentConfig() {
+	s.T().Setenv("KIRO_HOME", filepath.Join(s.home, ".kiro"))
+	s.T().Setenv("XDG_DATA_HOME", filepath.Join(s.home, ".data"))
+
+	setup := facade.NewSetupFacade()
+	resp, err := setup.Install(s.ctx, &facade.SetupRequest{
+		Agents:      []model.AgentName{model.AgentNameKiro},
+		PaxlCommand: "/opt/paxl test/bin/paxl",
+	})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Adapters, 1)
+	s.Equal(model.AgentNameKiro, resp.Adapters[0].Agent)
+	s.Equal(facade.SetupStatusInstalled, resp.Adapters[0].Status)
+	agentPath := filepath.Join(s.home, ".kiro", "agents", "paxl.json")
+	s.Equal(agentPath, resp.Adapters[0].Path)
+	s.FileExists(filepath.Join(s.home, ".kiro", "paxl", "hooks", "user-prompt.json"))
+	s.assertKiroAgentConfig(agentPath, 1)
+	s.assertKiroDefaultAgent("paxl")
+
+	_, err = setup.Install(s.ctx, &facade.SetupRequest{
+		Agents:      []model.AgentName{model.AgentNameKiro},
+		PaxlCommand: "/opt/paxl test/bin/paxl",
+	})
+	s.Require().NoError(err)
+	s.assertKiroAgentConfig(agentPath, 1)
 }
 
 func (s *SetupFacadeSuite) TestInstallIsIdempotentForClaudeSettings() {
@@ -199,4 +228,33 @@ func (s *SetupFacadeSuite) claudeHookCommandContains(fragment string) {
 	command, ok := handler["command"].(string)
 	s.Require().True(ok)
 	s.Contains(command, fragment)
+}
+
+func (s *SetupFacadeSuite) assertKiroAgentConfig(path string, wantHookCount int) {
+	raw, err := os.ReadFile(path)
+	s.Require().NoError(err)
+	var config map[string]any
+	s.Require().NoError(json.Unmarshal(raw, &config))
+	s.Equal("paxl", config["name"])
+	hooks, ok := config["hooks"].(map[string]any)
+	s.Require().True(ok)
+	userPromptSubmit, ok := hooks["userPromptSubmit"].([]any)
+	s.Require().True(ok)
+	s.Require().Len(userPromptSubmit, wantHookCount)
+	hook, ok := userPromptSubmit[0].(map[string]any)
+	s.Require().True(ok)
+	command, ok := hook["command"].(string)
+	s.Require().True(ok)
+	s.Contains(command, `/opt/paxl test/bin/paxl`)
+	s.Contains(command, "--db")
+	s.Contains(command, filepath.Join(s.home, ".data", "paxl", "paxl.sqlite"))
+	s.Contains(command, "__agent-hook --agent kiro --event user-prompt")
+}
+
+func (s *SetupFacadeSuite) assertKiroDefaultAgent(agentName string) {
+	raw, err := os.ReadFile(filepath.Join(s.home, ".kiro", "settings", "cli.json"))
+	s.Require().NoError(err)
+	var settings map[string]any
+	s.Require().NoError(json.Unmarshal(raw, &settings))
+	s.Equal(agentName, settings["chat.defaultAgent"])
 }
