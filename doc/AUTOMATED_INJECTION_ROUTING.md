@@ -31,7 +31,11 @@ Current setup slice:
   and existing Codex app processes may need to reload config.
 - Hermes: writes a paxl-owned hook descriptor and shim. Activation depends on a
   Hermes hook host reading that descriptor.
-- Pi, Kiro, Gemini, and OpenClaw: write paxl-owned hook descriptors and the
+- Pi: writes a Pi extension at `~/.pi/agent/extensions/paxl-hook/index.ts`
+  that listens to `before_agent_start`, calls the hidden paxl hook entrypoint,
+  and returns matching context as a Pi custom message before the agent loop
+  starts. It also writes a paxl-owned descriptor for inspection.
+- Kiro, Gemini, and OpenClaw: write paxl-owned hook descriptors and the
   shared shim. Activation depends on an agent-specific host or gateway reading
   the descriptor and calling the hidden paxl hook entrypoint.
 
@@ -174,6 +178,12 @@ handling the user prompt reads that JSON and inserts the context before the
 current user prompt. paxl must not start a separate `codex app-server` process
 for this hook path, because that targets a different runtime and can create a
 false consumed record without changing the active session context.
+
+For Pi, paxl writes an official Pi extension. The extension subscribes to
+`before_agent_start`, sends the current prompt and session file-derived native
+session ID to `paxl __agent-hook`, and returns the rendered handoff as a custom
+message. If no route matches, the extension returns no message and the Pi turn
+continues normally.
 
 ## Claim and Consume State
 

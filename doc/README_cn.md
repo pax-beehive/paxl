@@ -543,8 +543,8 @@ paxl friend block <friend-id>
 
 `paxl setup` 默认会安装当前支持的 agent hook plumbing：Codex、Claude、Pi、
 Kiro、Gemini、Hermes 和 OpenClaw。Codex 和 Claude 会写入原生
-`UserPromptSubmit` hook；其他 agent 会写入 paxl-owned descriptor，供对应
-host/gateway 调用同一个隐藏入口。
+`UserPromptSubmit` hook；Pi 会写入 `before_agent_start` extension；
+其他 agent 会写入 paxl-owned descriptor，供对应 host/gateway 调用同一个隐藏入口。
 
 Codex 投递：
 
@@ -565,6 +565,8 @@ Pi 投递：
 
 - 已有 session：`pi --session <session-id> -p`
 - 新 session：`pi -p`
+- 条件 hook 注入：通过 Pi `before_agent_start` extension 在 agent loop 启动前
+  返回一条 custom message。
 
 Kiro 投递：
 

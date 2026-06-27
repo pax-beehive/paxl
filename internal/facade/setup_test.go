@@ -33,6 +33,7 @@ func (s *SetupFacadeSuite) TestInstallSetsUpAllSupportedAgentHooks() {
 	s.T().Setenv("CLAUDE_HOME", filepath.Join(s.home, ".claude"))
 	s.T().Setenv("HERMES_HOME", filepath.Join(s.home, ".hermes"))
 	s.T().Setenv("PI_HOME", filepath.Join(s.home, ".pi"))
+	s.T().Setenv("PI_CODING_AGENT_DIR", filepath.Join(s.home, ".pi", "agent"))
 	s.T().Setenv("KIRO_HOME", filepath.Join(s.home, ".kiro"))
 	s.T().Setenv("GEMINI_HOME", filepath.Join(s.home, ".gemini"))
 	s.T().Setenv("OPENCLAW_HOME", filepath.Join(s.home, ".openclaw"))
@@ -64,10 +65,47 @@ func (s *SetupFacadeSuite) TestInstallSetsUpAllSupportedAgentHooks() {
 	s.codexConfigContains("__agent-hook --agent codex --event user-prompt")
 	s.FileExists(filepath.Join(s.home, ".hermes", "paxl", "hooks", "user-prompt.json"))
 	s.FileExists(filepath.Join(s.home, ".pi", "paxl", "hooks", "user-prompt.json"))
+	s.FileExists(filepath.Join(s.home, ".pi", "agent", "extensions", "paxl-hook", "index.ts"))
 	s.FileExists(filepath.Join(s.home, ".kiro", "paxl", "hooks", "user-prompt.json"))
 	s.FileExists(filepath.Join(s.home, ".gemini", "paxl", "hooks", "user-prompt.json"))
 	s.FileExists(filepath.Join(s.home, ".openclaw", "paxl", "hooks", "user-prompt.json"))
 	s.claudeHookCommandContains("paxl __agent-hook --agent claude --event user-prompt")
+}
+
+func (s *SetupFacadeSuite) TestInstallPiHookWritesBeforeAgentStartExtension() {
+	s.T().Setenv("PI_HOME", filepath.Join(s.home, ".pi"))
+	s.T().Setenv("PI_CODING_AGENT_DIR", filepath.Join(s.home, ".pi", "agent"))
+	s.T().Setenv("XDG_DATA_HOME", filepath.Join(s.home, ".data"))
+
+	resp, err := facade.NewSetupFacade().Install(s.ctx, &facade.SetupRequest{
+		Agents:      []model.AgentName{model.AgentNamePi},
+		PaxlCommand: "/opt/paxl test/bin/paxl",
+	})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Adapters, 1)
+	s.Equal(model.AgentNamePi, resp.Adapters[0].Agent)
+	s.Equal(facade.SetupStatusInstalled, resp.Adapters[0].Status)
+	extensionPath := filepath.Join(
+		s.home,
+		".pi",
+		"agent",
+		"extensions",
+		"paxl-hook",
+		"index.ts",
+	)
+	s.Equal(extensionPath, resp.Adapters[0].Path)
+	raw, err := os.ReadFile(extensionPath)
+	s.Require().NoError(err)
+	extension := string(raw)
+	s.Contains(extension, `pi.on("before_agent_start"`)
+	s.Contains(extension, `spawnSync(paxlCommand`)
+	s.Contains(extension, `timestamped = fileName.match`)
+	s.Contains(extension, `"__agent-hook"`)
+	s.Contains(extension, `"--agent", "pi"`)
+	s.Contains(extension, filepath.Join(s.home, ".data", "paxl", "paxl.sqlite"))
+	s.Contains(extension, `/opt/paxl test/bin/paxl`)
+	s.FileExists(filepath.Join(s.home, ".pi", "paxl", "hooks", "user-prompt.json"))
 }
 
 func (s *SetupFacadeSuite) TestInstallIsIdempotentForClaudeSettings() {

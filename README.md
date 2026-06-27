@@ -164,9 +164,10 @@ paxl setup --agent claude --format jsonl
 ```
 
 The current setup command installs Claude Code's `UserPromptSubmit` hook, writes
-a Codex `UserPromptSubmit` command hook object into Codex config, and writes
-paxl-owned hook descriptors for Codex and Hermes. Codex may require trusting
-changed hooks before they run.
+a Codex `UserPromptSubmit` command hook object into Codex config, installs a Pi
+`before_agent_start` extension, and writes paxl-owned hook descriptors for
+agents that need descriptor-based hosts. Codex may require trusting changed
+hooks before they run.
 Conditional local route matching and one-time hook consumption are documented in
 [doc/AUTOMATED_INJECTION_ROUTING.md](doc/AUTOMATED_INJECTION_ROUTING.md).
 
@@ -638,6 +639,8 @@ Pi delivery:
 
 - Existing session: `pi --session <session-id> -p`
 - New session: `pi -p`
+- Conditional hook injection: Pi `before_agent_start` extension message before
+  the agent loop starts.
 
 Kiro delivery:
 
