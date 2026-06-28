@@ -282,6 +282,17 @@ It also uploads the installer to:
 gs://pax-tech-bucket/paxl/install.sh
 ```
 
+After upload, the script publishes the same artifact metadata to pax-manager and
+verifies the public resolver for each platform:
+
+```text
+https://api.paxtech.net/api/v1/public/artifacts/download?product=paxl&platform=<platform>&tags=<tag>
+```
+
+This resolver publish step is required for `paxl update` and the installer flow
+to see the new version. Set `PAX_RELEASE_SKIP_METADATA=1` only when you
+intentionally want a GCS-only upload.
+
 After a successful upload it creates a local git tag:
 
 ```text

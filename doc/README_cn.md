@@ -264,6 +264,16 @@ gs://pax-tech-bucket/paxl/releases/latest/<tag>/manifest.json
 gs://pax-tech-bucket/paxl/install.sh
 ```
 
+上传后，脚本会把同一份 artifact metadata 发布到 pax-manager，并验证每个平台的
+public resolver：
+
+```text
+https://api.paxtech.net/api/v1/public/artifacts/download?product=paxl&platform=<platform>&tags=<tag>
+```
+
+这一步是 `paxl update` 和 installer 看到新版本的必要路径。只有在明确需要
+GCS-only 上传时，才设置 `PAX_RELEASE_SKIP_METADATA=1` 跳过。
+
 上传成功后，脚本会创建本地 git tag：
 
 ```text
