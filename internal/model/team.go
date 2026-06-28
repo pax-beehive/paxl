@@ -24,6 +24,7 @@ type TeamAgent struct {
 	TeamID           string     `json:"team_id"`
 	AgentID          string     `json:"agent_id"`
 	AgentOwnerUserID string     `json:"agent_owner_user_id,omitempty"`
+	AgentOwnerEmail  string     `json:"agent_owner_email,omitempty"`
 	AddedByUserID    string     `json:"added_by_user_id,omitempty"`
 	AddedAt          string     `json:"added_at,omitempty"`
 	RemovedAt        string     `json:"removed_at,omitempty"`

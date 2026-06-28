@@ -3535,6 +3535,27 @@ func teamAgentOnline(teamAgent *model.TeamAgent) string {
 	return "no"
 }
 
+func teamAgentOwner(teamAgent *model.TeamAgent) string {
+	if teamAgent == nil {
+		return "-"
+	}
+	return firstNonEmpty(teamAgent.AgentOwnerEmail, teamAgent.AgentOwnerUserID, "-")
+}
+
+func teamAgentType(teamAgent *model.TeamAgent) string {
+	if teamAgent == nil || teamAgent.Agent == nil {
+		return "-"
+	}
+	return firstNonEmpty(teamAgent.Agent.AgentType, "-")
+}
+
+func teamAgentHost(teamAgent *model.TeamAgent) string {
+	if teamAgent == nil || teamAgent.Agent == nil {
+		return "-"
+	}
+	return firstNonEmpty(teamAgent.Agent.Hostname, "-")
+}
+
 func renderTeamList(stdout io.Writer, resp *facade.ListTeamsResponse, format string) error {
 	switch format {
 	case "table":
@@ -3622,16 +3643,19 @@ func renderTeamAgents(stdout io.Writer, resp *facade.ListTeamAgentsResponse, for
 	switch format {
 	case "table":
 		writer := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		if _, err := fmt.Fprintln(writer, "AGENT\tAGENT_ID\tOWNER\tONLINE\tADDED"); err != nil {
+		header := "NAME\tAGENT_ID\tOWNER\tTYPE\tHOST\tONLINE\tADDED"
+		if _, err := fmt.Fprintln(writer, header); err != nil {
 			return fmt.Errorf("write team agents header: %w", err)
 		}
 		for _, teamAgent := range resp.Agents {
 			if _, err := fmt.Fprintf(
 				writer,
-				"%s\t%s\t%s\t%s\t%s\n",
+				"%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				teamAgentDisplay(teamAgent),
 				teamAgent.AgentID,
-				firstNonEmpty(teamAgent.AgentOwnerUserID, "-"),
+				teamAgentOwner(teamAgent),
+				teamAgentType(teamAgent),
+				teamAgentHost(teamAgent),
 				teamAgentOnline(teamAgent),
 				firstNonEmpty(teamAgent.AddedAt, "-"),
 			); err != nil {
@@ -3659,17 +3683,20 @@ func renderAggregatedTeamAgents(
 	switch format {
 	case "table":
 		writer := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		if _, err := fmt.Fprintln(writer, "AGENT\tAGENT_ID\tOWNER\tONLINE\tTEAMS"); err != nil {
+		header := "NAME\tAGENT_ID\tOWNER\tTYPE\tHOST\tONLINE\tTEAMS"
+		if _, err := fmt.Fprintln(writer, header); err != nil {
 			return fmt.Errorf("write aggregated agents header: %w", err)
 		}
 		for _, aggregated := range resp.Agents {
 			// Agent is guaranteed non-nil by TeamFacade.ListAllAgents.
 			if _, err := fmt.Fprintf(
 				writer,
-				"%s\t%s\t%s\t%s\t%s\n",
+				"%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				teamAgentDisplay(aggregated.Agent),
 				aggregated.Agent.AgentID,
-				firstNonEmpty(aggregated.Agent.AgentOwnerUserID, "-"),
+				teamAgentOwner(aggregated.Agent),
+				teamAgentType(aggregated.Agent),
+				teamAgentHost(aggregated.Agent),
 				teamAgentOnline(aggregated.Agent),
 				teamRefsLabel(aggregated.Teams),
 			); err != nil {
@@ -3713,12 +3740,21 @@ func encodeTeamAgentJSONL(
 		"schemaVersion":    "paxl.teamAgent.v1",
 		"agentId":          teamAgent.AgentID,
 		"agentOwnerUserId": teamAgent.AgentOwnerUserID,
+		"agentOwnerEmail":  teamAgent.AgentOwnerEmail,
 		"display":          teamAgentDisplay(teamAgent),
 		"online":           teamAgent.Agent != nil && teamAgent.Agent.Online,
 		"addedAt":          teamAgent.AddedAt,
 		"addedByUserId":    teamAgent.AddedByUserID,
 		"removedAt":        teamAgent.RemovedAt,
 		"removedByUserId":  teamAgent.RemovedByUserID,
+	}
+	if teamAgent.Agent != nil {
+		payload["name"] = teamAgent.Agent.Name
+		payload["hostname"] = teamAgent.Agent.Hostname
+		payload["agentType"] = teamAgent.Agent.AgentType
+		payload["machineType"] = teamAgent.Agent.MachineType
+		payload["os"] = teamAgent.Agent.OS
+		payload["status"] = teamAgent.Agent.Status
 	}
 	if teamAgent.TeamID != "" {
 		payload["teamId"] = teamAgent.TeamID
