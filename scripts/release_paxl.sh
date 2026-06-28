@@ -24,10 +24,14 @@ Environment overrides:
   PAX_RELEASE_BUILD_ID    Build id stored in metadata. Defaults to git short SHA.
   PAX_RELEASE_DIST_DIR    Local output directory. Defaults to dist.
   PAX_RELEASE_INSTALLER_OBJECT GCS object for installer. Defaults to paxl/install.sh.
+  PAX_RELEASE_MANAGER_URL Public manager API base URL. Defaults to https://api.paxtech.net.
+  PAX_RELEASE_UPLOAD_AUDIENCE Google ID token audience for artifact publish.
+  PAX_RELEASE_ID_TOKEN    Bearer token for artifact metadata publish. Defaults to gcloud.
   PAX_RELEASE_DRY_RUN=1   Build and smoke-test without upload or git tag.
   PAX_RELEASE_SKIP_UPLOAD=1 Build only; also skips git tag.
   PAX_RELEASE_SKIP_VERIFY=1
   PAX_RELEASE_SKIP_INSTALLER=1
+  PAX_RELEASE_SKIP_METADATA=1 Skip manager metadata publish and resolver verification.
   PAX_RELEASE_SKIP_TAG=1
   PAX_RELEASE_PUSH_TAG=1
   PAX_RELEASE_ALLOW_DIRTY=1
@@ -226,18 +230,26 @@ append_artifact_metadata() {
   local sha="$4"
   local size="$5"
   local storage_url="$6"
+  local bucket="$7"
+  local object="$8"
+  local generation="$9"
+  local content_type="${10}"
 
-  python3 - "$path" "$platform" "$file" "$sha" "$size" "$storage_url" <<'PY'
+  python3 - "$path" "$platform" "$file" "$sha" "$size" "$storage_url" "$bucket" "$object" "$generation" "$content_type" <<'PY'
 import json
 import sys
 
-path, platform, file_name, sha, size, storage_url = sys.argv[1:]
+path, platform, file_name, sha, size, storage_url, bucket, object_name, generation, content_type = sys.argv[1:]
 record = {
     "platform": platform,
     "file": file_name,
     "sha256": sha,
     "size": int(size),
     "storage_url": storage_url,
+    "bucket": bucket,
+    "object": object_name,
+    "generation": int(generation),
+    "content_type": content_type,
 }
 with open(path, "a", encoding="utf-8") as f:
     f.write(json.dumps(record, separators=(",", ":"), sort_keys=True) + "\n")
@@ -272,6 +284,147 @@ verify_gcs_object() {
     fail "GCS object size mismatch for ${dst}: ${actual_size}, expected ${expected_size}"
 }
 
+gcs_object_generation() {
+  local dst="$1"
+
+  if [[ "${PAX_RELEASE_SKIP_UPLOAD:-0}" == "1" || "${PAX_RELEASE_DRY_RUN:-0}" == "1" ]]; then
+    printf '0'
+    return
+  fi
+  gcloud storage objects describe "$dst" --format='value(generation)'
+}
+
+json_field() {
+  local path="$1"
+
+  python3 - "$path" <<'PY'
+import json
+import sys
+
+path = sys.argv[1].split(".")
+doc = json.load(sys.stdin)
+value = doc
+for part in path:
+    value = value[part]
+print(value)
+PY
+}
+
+urlencode() {
+  python3 - "$1" <<'PY'
+import sys
+import urllib.parse
+
+print(urllib.parse.quote(sys.argv[1], safe=""))
+PY
+}
+
+artifact_publish_token() {
+  local audience="$1"
+
+  if [[ -n "${PAX_RELEASE_ID_TOKEN:-}" ]]; then
+    printf '%s' "$PAX_RELEASE_ID_TOKEN"
+    return
+  fi
+  gcloud auth print-identity-token --audiences="$audience"
+}
+
+should_publish_metadata() {
+  [[ "${PAX_RELEASE_SKIP_METADATA:-0}" != "1" &&
+    "${PAX_RELEASE_SKIP_UPLOAD:-0}" != "1" &&
+    "${PAX_RELEASE_DRY_RUN:-0}" != "1" ]]
+}
+
+publish_artifact_metadata() {
+  local artifacts_jsonl="$1"
+  local version="$2"
+  local build_id="$3"
+  local tags_json="$4"
+  local manager_url="$5"
+  local audience="$6"
+  local token line payload endpoint
+
+  if ! should_publish_metadata; then
+    log "skipping manager artifact metadata publish"
+    return
+  fi
+
+  require_cmd curl
+  token="$(artifact_publish_token "$audience")"
+  endpoint="${manager_url%/}/api/v1/admin/artifacts"
+  log "publishing artifact metadata -> ${endpoint}"
+
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    payload="$(python3 - "$line" "$version" "$build_id" "$tags_json" <<'PY'
+import json
+import sys
+
+record = json.loads(sys.argv[1])
+version = sys.argv[2]
+build_id = sys.argv[3]
+tags = json.loads(sys.argv[4])
+payload = {
+    "product": "paxl",
+    "platform": record["platform"],
+    "tags": tags,
+    "version": version,
+    "build_id": build_id,
+    "bucket": record["bucket"],
+    "object": record["object"],
+    "generation": record["generation"],
+    "sha256": record["sha256"],
+    "size_bytes": record["size"],
+    "content_type": record["content_type"],
+}
+if record["platform"] == "script":
+    payload["tags"] = sorted(set(tags + ["installer"]))
+print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+PY
+)"
+    curl -fsS \
+      -H "Authorization: Bearer ${token}" \
+      -H "Content-Type: application/json" \
+      -X POST \
+      --data "$payload" \
+      "$endpoint" >/dev/null
+  done <"$artifacts_jsonl"
+}
+
+verify_resolver_artifacts() {
+  local artifacts_jsonl="$1"
+  local version="$2"
+  local tags="$3"
+  local manager_url="$4"
+  local verify_tag line platform encoded_platform encoded_tag response actual_version actual_sha actual_size
+
+  if ! should_publish_metadata || [[ "${PAX_RELEASE_SKIP_VERIFY:-0}" == "1" ]]; then
+    log "skipping public resolver verification"
+    return
+  fi
+
+  require_cmd curl
+  verify_tag="${tags%%,*}"
+  encoded_tag="$(urlencode "$verify_tag")"
+  log "verifying public resolver metadata"
+
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    platform="$(printf '%s' "$line" | json_field platform)"
+    encoded_platform="$(urlencode "$platform")"
+    response="$(curl -fsS "${manager_url%/}/api/v1/public/artifacts/download?product=paxl&platform=${encoded_platform}&tags=${encoded_tag}")"
+    actual_version="$(printf '%s' "$response" | json_field version)"
+    actual_sha="$(printf '%s' "$response" | json_field sha256)"
+    actual_size="$(printf '%s' "$response" | json_field size_bytes)"
+    [[ "$actual_version" == "$version" ]] ||
+      fail "resolver version mismatch for ${platform}: ${actual_version}, expected ${version}"
+    [[ "$actual_sha" == "$(printf '%s' "$line" | json_field sha256)" ]] ||
+      fail "resolver sha256 mismatch for ${platform}"
+    [[ "$actual_size" == "$(printf '%s' "$line" | json_field size)" ]] ||
+      fail "resolver size mismatch for ${platform}: ${actual_size}, expected $(printf '%s' "$line" | json_field size)"
+  done <"$artifacts_jsonl"
+}
+
 create_release_tag() {
   local version="$1"
   local tag="paxl/v${version}"
@@ -300,7 +453,7 @@ main() {
 
   local version_arg="${1:-patch}"
   local version tags bucket prefix_parent platforms dist_dir build_id tags_json created_at
-  local artifacts_jsonl manifest manifest_dst installer_object
+  local artifacts_jsonl manifest manifest_dst installer_object manager_url upload_audience
 
   require_cmd go
   require_cmd git
@@ -318,6 +471,8 @@ main() {
   platforms="${PAX_RELEASE_PLATFORMS:-darwin/amd64 darwin/arm64 linux/amd64 linux/arm64}"
   dist_dir="${PAX_RELEASE_DIST_DIR:-dist}"
   installer_object="${PAX_RELEASE_INSTALLER_OBJECT:-paxl/install.sh}"
+  manager_url="${PAX_RELEASE_MANAGER_URL:-https://api.paxtech.net}"
+  upload_audience="${PAX_RELEASE_UPLOAD_AUDIENCE:-32555940559.apps.googleusercontent.com}"
   build_id="${PAX_RELEASE_BUILD_ID:-$(git rev-parse --short HEAD)}"
   tags_json="$(tag_json_array "$tags")"
   created_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -331,7 +486,7 @@ main() {
   log "bucket: gs://${bucket}/${prefix_parent}/${version}/"
   log "platforms: ${platforms}"
 
-  local platform os arch name output sha size object dst content_type sha_file
+  local platform os arch name output sha size object dst content_type sha_file generation
   for platform in $platforms; do
     os="${platform%/*}"
     arch="${platform#*/}"
@@ -355,16 +510,16 @@ main() {
     sha_file="${output}.sha256"
 
     printf '%s  %s\n' "$sha" "$name" >"$sha_file"
-    append_artifact_metadata "$artifacts_jsonl" "$platform" "$name" "$sha" "$size" "$dst"
     upload_file "$output" "$dst" "$content_type"
     upload_file "$sha_file" "${dst}.sha256" "text/plain"
     verify_gcs_object "$dst" "$size"
+    generation="$(gcs_object_generation "$dst")"
+    append_artifact_metadata "$artifacts_jsonl" "$platform" "$name" "$sha" "$size" "$dst" "$bucket" "$object" "$generation" "$content_type"
   done
 
   manifest="${dist_dir}/paxl_${version}_manifest.json"
   manifest_dst="gs://${bucket}/${prefix_parent}/${version}/manifest.json"
   write_manifest "$manifest" "$version" "$build_id" "$tags_json" "$created_at" "$artifacts_jsonl"
-  rm -f "$artifacts_jsonl"
   upload_file "$manifest" "$manifest_dst" "application/json"
   verify_gcs_object "$manifest_dst" "$(file_size "$manifest")"
   local release_tag latest_manifest_dst
@@ -378,9 +533,24 @@ main() {
   if [[ "${PAX_RELEASE_SKIP_INSTALLER:-0}" != "1" ]]; then
     upload_file "scripts/installer.sh" "gs://${bucket}/${installer_object}" "text/x-shellscript"
     verify_gcs_object "gs://${bucket}/${installer_object}" "$(file_size scripts/installer.sh)"
+    generation="$(gcs_object_generation "gs://${bucket}/${installer_object}")"
+    append_artifact_metadata \
+      "$artifacts_jsonl" \
+      "script" \
+      "install.sh" \
+      "$(sha256_file scripts/installer.sh)" \
+      "$(file_size scripts/installer.sh)" \
+      "gs://${bucket}/${installer_object}" \
+      "$bucket" \
+      "$installer_object" \
+      "$generation" \
+      "text/x-shellscript"
   else
     log "skipping installer upload"
   fi
+  publish_artifact_metadata "$artifacts_jsonl" "$version" "$build_id" "$tags_json" "$manager_url" "$upload_audience"
+  verify_resolver_artifacts "$artifacts_jsonl" "$version" "$tags" "$manager_url"
+  rm -f "$artifacts_jsonl"
   create_release_tag "$version"
 
   log "release ${version} complete"
