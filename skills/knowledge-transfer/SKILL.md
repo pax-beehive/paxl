@@ -103,7 +103,7 @@ paxl capsule create codex:<source-session-id> \
   --keyword "topic" \
   --title "short title" \
   --summary "short summary" \
-  --content-file /path/to/content.md
+  --content "Prepared transfer context..."
 ```
 
 Create a manual capsule from prepared content when there is no useful source
@@ -111,8 +111,7 @@ session:
 
 ```sh
 paxl capsule create --manual \
-  --keyword "topic" \
-  --content-file /path/to/content.md
+  --keyword "topic" < /path/to/content.md
 ```
 
 Use local transcript extraction only when the user explicitly wants local

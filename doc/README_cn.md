@@ -138,7 +138,7 @@ paxl capsule send <capsule-id> --to @alice --message "please review"
 ```sh
 paxl capsule create --manual \
   --keyword "production incident" \
-  --content-file handoff.md
+  --content "Prepared incident context..."
 ```
 
 安装仓库里的 Codex skill 后，可以直接说“把这个上下文迁到 Claude”或“给这个 bug 建一个
@@ -385,22 +385,21 @@ paxl capsule create claude:<session-id> --keyword "release plan"
 paxl capsule create codex:<session-id> --keyword "sqlite schema" --local
 ```
 
-如果要转发一条已经整理好的需求，可以直接从文件创建 capsule：
+如果要转发一条已经整理好的需求，可以直接通过 `--content` 创建 capsule：
 
 ```sh
 paxl capsule create codex:<session-id> \
   --keyword "installer hosting" \
   --title "paxl installer hosting" \
   --summary "Installer upload and hosting requirement." \
-  --content-file capsule.md
+  --content "The installer should be uploaded and hosted at GCS."
 ```
 
 如果这条内容不需要绑定某个 source session，可以创建 manual capsule：
 
 ```sh
 paxl capsule create --manual \
-  --keyword "installer hosting" \
-  --content-file capsule.md
+  --keyword "installer hosting" < capsule.md
 ```
 
 列出和查看 capsules：

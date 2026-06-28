@@ -2379,14 +2379,8 @@ func (s *CommandSuite) TestTeamCommandsUseManagerTeams() {
 	s.Contains(s.stdout.String(), "Alpha")
 }
 
-func (s *CommandSuite) TestCapsuleCreateSupportsContentFile() {
+func (s *CommandSuite) TestCapsuleCreateSupportsContentFlag() {
 	dbPath := s.seedCodexSessionWithKeyword("bridge")
-	contentPath := filepath.Join(s.T().TempDir(), "capsule.md")
-	s.Require().NoError(os.WriteFile(
-		contentPath,
-		[]byte("The paxl installer should be uploaded and hosted at GCS."),
-		0o600,
-	))
 
 	err := run(
 		context.Background(),
@@ -2396,7 +2390,7 @@ func (s *CommandSuite) TestCapsuleCreateSupportsContentFile() {
 			"--keyword", "installer hosting",
 			"--title", "paxl installer hosting",
 			"--summary", "Installer upload and hosting requirement.",
-			"--content-file", contentPath,
+			"--content", "The paxl installer should be uploaded and hosted at GCS.",
 			"--format", "jsonl",
 		},
 		&s.stdout,
@@ -2409,25 +2403,19 @@ func (s *CommandSuite) TestCapsuleCreateSupportsContentFile() {
 	s.NotContains(s.stdout.String(), "Bridge context")
 }
 
-func (s *CommandSuite) TestCapsuleCreateSupportsManualContentFile() {
+func (s *CommandSuite) TestCapsuleCreateSupportsManualStdinContent() {
 	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
-	contentPath := filepath.Join(s.T().TempDir(), "capsule.md")
-	s.Require().NoError(os.WriteFile(
-		contentPath,
-		[]byte("Pax-manager must preserve routed envelope metadata on accept."),
-		0o600,
-	))
 
-	err := run(
+	err := runWithInput(
 		context.Background(),
 		[]string{
 			"--db", dbPath,
 			"capsule", "create",
 			"--manual",
 			"--keyword", "routed envelopes",
-			"--content-file", contentPath,
 			"--format", "jsonl",
 		},
+		strings.NewReader("Pax-manager must preserve routed envelope metadata on accept."),
 		&s.stdout,
 		&s.stderr,
 	)
@@ -2437,6 +2425,14 @@ func (s *CommandSuite) TestCapsuleCreateSupportsManualContentFile() {
 	s.Contains(s.stdout.String(), `"sourceAgent":"paxl"`)
 	s.Contains(s.stdout.String(), `"title":"Knowledge capsule: routed envelopes"`)
 	s.Contains(s.stdout.String(), "Pax-manager must preserve routed envelope metadata on accept.")
+}
+
+func (s *CommandSuite) TestCapsuleCreateHelpDoesNotExposeContentFile() {
+	err := run(context.Background(), []string{"capsule", "create", "--help"}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "--content")
+	s.NotContains(s.stdout.String(), "--content-file")
 }
 
 func (s *CommandSuite) TestCapsuleCreateUsesSourceAgentGenerationByDefault() {
@@ -2885,7 +2881,7 @@ func (s *CommandSuite) TestCapsuleCreateRejectsManualWithSourceSession() {
 			"capsule", "create", "codex:sess",
 			"--manual",
 			"--keyword", "bridge",
-			"--content-file", "capsule.md",
+			"--content", "manual content",
 		},
 		&s.stdout,
 		&s.stderr,
@@ -2894,7 +2890,7 @@ func (s *CommandSuite) TestCapsuleCreateRejectsManualWithSourceSession() {
 	s.Error(err)
 }
 
-func (s *CommandSuite) TestCapsuleCreateRejectsManualWithoutContentFile() {
+func (s *CommandSuite) TestCapsuleCreateRejectsManualWithoutContent() {
 	err := run(
 		context.Background(),
 		[]string{"capsule", "create", "--manual", "--keyword", "bridge"},

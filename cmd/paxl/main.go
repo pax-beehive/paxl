@@ -40,9 +40,19 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) error {
+	return runWithInput(ctx, args, os.Stdin, stdout, stderr)
+}
+
+func runWithInput(
+	ctx context.Context,
+	args []string,
+	stdin io.Reader,
+	stdout io.Writer,
+	stderr io.Writer,
+) error {
 	logger := openExecutionLogger(args)
 	defer closeExecutionLogger(logger)
-	command := newCommandWithDiagnostics(stdout, stderr, diagnosticWriter(logger))
+	command := newCommandWithDiagnostics(stdin, stdout, stderr, diagnosticWriter(logger))
 	if err := command.Run(ctx, append([]string{"paxl"}, args...)); err != nil {
 		wrapped := fmt.Errorf("run paxl command: %w", err)
 		finishExecutionLog(logger, wrapped)
@@ -53,10 +63,11 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 }
 
 func newCommand(stdout io.Writer, stderr io.Writer) *cli.Command {
-	return newCommandWithDiagnostics(stdout, stderr, nil)
+	return newCommandWithDiagnostics(os.Stdin, stdout, stderr, nil)
 }
 
 func newCommandWithDiagnostics(
+	stdin io.Reader,
 	stdout io.Writer,
 	stderr io.Writer,
 	diagnostics io.Writer,
@@ -85,7 +96,7 @@ func newCommandWithDiagnostics(
 			newSetupCommand(stdout),
 			newAgentCommand(agentFacade, stdout, stderr, diagnostics),
 			newSessionCommand(stdout, stderr, diagnostics),
-			newCapsuleCommand(stdout, stderr, diagnostics),
+			newCapsuleCommand(stdin, stdout, stderr, diagnostics),
 			newInboxCommand(stdout),
 			newOutboxCommand(stdout),
 			newFriendCommand(stdout),
@@ -472,7 +483,12 @@ func newSessionCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 	}
 }
 
-func newCapsuleCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer) *cli.Command {
+func newCapsuleCommand(
+	stdin io.Reader,
+	stdout io.Writer,
+	stderr io.Writer,
+	diagnostics io.Writer,
+) *cli.Command {
 	return &cli.Command{
 		Name:  "capsule",
 		Usage: "Create, list, and inject knowledge capsules",
@@ -499,12 +515,12 @@ func newCapsuleCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 						Usage: "Summary for a capsule created from provided content",
 					},
 					&cli.StringFlag{
-						Name:  "content-file",
-						Usage: "Create the capsule from this file instead of prompting the source agent",
+						Name:  "content",
+						Usage: "Create the capsule from this content instead of prompting the source agent",
 					},
 					&cli.BoolFlag{
 						Name:  "manual",
-						Usage: "Create a capsule from provided content without a source session",
+						Usage: "Create a capsule from --content or stdin without a source session",
 					},
 					&cli.StringFlag{
 						Name:  "format",
@@ -524,7 +540,7 @@ func newCapsuleCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 					&cli.BoolFlag{Name: "verbose", Usage: "Print capsule creation details"},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					return capsuleCreate(ctx, cmd, stdout, stderr, diagnostics)
+					return capsuleCreate(ctx, cmd, stdin, stdout, stderr, diagnostics)
 				},
 			},
 			{
@@ -1552,11 +1568,12 @@ func sessionMirror(
 func capsuleCreate(
 	ctx context.Context,
 	cmd *cli.Command,
+	stdin io.Reader,
 	stdout io.Writer,
 	stderr io.Writer,
 	diagnostics io.Writer,
 ) error {
-	req, err := parseCreateCapsuleRequest(cmd)
+	req, err := parseCreateCapsuleRequest(cmd, stdin)
 	if err != nil {
 		return fmt.Errorf("parse capsule create request: %w", err)
 	}
@@ -2332,7 +2349,10 @@ func parseMirrorSessionRequest(cmd *cli.Command) (*facade.MirrorSessionRequest, 
 	}
 }
 
-func parseCreateCapsuleRequest(cmd *cli.Command) (*facade.CreateCapsuleRequest, error) {
+func parseCreateCapsuleRequest(
+	cmd *cli.Command,
+	stdin io.Reader,
+) (*facade.CreateCapsuleRequest, error) {
 	sourceID := cmd.Args().First()
 	manual := cmd.Bool("manual")
 	if sourceID == "" && !manual {
@@ -2341,7 +2361,7 @@ func parseCreateCapsuleRequest(cmd *cli.Command) (*facade.CreateCapsuleRequest, 
 	if sourceID != "" && manual {
 		return nil, fmt.Errorf("source session id cannot be used with manual capsule creation")
 	}
-	content, err := readCapsuleContentFile(cmd.String("content-file"))
+	content, err := readCapsuleContent(cmd, stdin)
 	if err != nil {
 		return nil, err
 	}
@@ -2361,10 +2381,10 @@ func parseCreateCapsuleRequest(cmd *cli.Command) (*facade.CreateCapsuleRequest, 
 		return nil, fmt.Errorf("agent cannot be used with manual capsule creation")
 	}
 	if req.Manual && strings.TrimSpace(req.Content) == "" {
-		return nil, fmt.Errorf("content-file is required for manual capsule creation")
+		return nil, fmt.Errorf("content is required for manual capsule creation")
 	}
 	if req.Content != "" && req.Local {
-		return nil, fmt.Errorf("content-file cannot be used with local extraction")
+		return nil, fmt.Errorf("content cannot be used with local extraction")
 	}
 	if rawAgent := strings.TrimSpace(cmd.String("agent")); rawAgent != "" {
 		agent, err := parseActiveAgentName(rawAgent)
@@ -2384,19 +2404,27 @@ func parseCreateCapsuleRequest(cmd *cli.Command) (*facade.CreateCapsuleRequest, 
 	}
 }
 
-func readCapsuleContentFile(path string) (string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
+func readCapsuleContent(cmd *cli.Command, stdin io.Reader) (string, error) {
+	if cmd.IsSet("content") {
+		return cmd.String("content"), nil
+	}
+	if !cmd.Bool("manual") {
 		return "", nil
 	}
-	content, err := os.ReadFile(path) // #nosec G304
+	if file, ok := stdin.(*os.File); ok {
+		info, err := file.Stat()
+		if err == nil && info.Mode()&os.ModeCharDevice != 0 {
+			return "", nil
+		}
+	}
+	raw, err := io.ReadAll(stdin)
 	if err != nil {
-		return "", fmt.Errorf("read content file: %w", err)
+		return "", fmt.Errorf("read stdin content: %w", err)
 	}
-	if strings.TrimSpace(string(content)) == "" {
-		return "", fmt.Errorf("content file is empty")
+	if strings.TrimSpace(string(raw)) == "" {
+		return "", nil
 	}
-	return string(content), nil
+	return string(raw), nil
 }
 
 func parseListCapsulesRequest(cmd *cli.Command) (*facade.ListCapsulesRequest, error) {
