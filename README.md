@@ -144,7 +144,7 @@ Transfer prepared context:
 ```sh
 paxl capsule create --manual \
   --keyword "production incident" \
-  --content-file handoff.md
+  --content "Prepared incident context..."
 ```
 
 Install the bundled Codex skill when you want to say "move this context to
@@ -417,7 +417,7 @@ paxl capsule create codex:<session-id> \
   --keyword "installer hosting" \
   --title "paxl installer hosting" \
   --summary "Installer upload and hosting requirement." \
-  --content-file capsule.md
+  --content "The installer should be uploaded and hosted at GCS."
 ```
 
 Create a manual capsule when the content should not be tied to a source
@@ -425,8 +425,7 @@ session:
 
 ```sh
 paxl capsule create --manual \
-  --keyword "installer hosting" \
-  --content-file capsule.md
+  --keyword "installer hosting" < capsule.md
 ```
 
 List and inspect capsules:
