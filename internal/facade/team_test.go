@@ -111,7 +111,9 @@ func (s *TeamFacadeSuite) TestListAgentsGetsTeamAgents() {
 		return jsonResponse(`{
 			"data":{"agents":[
 				{"team_id":"team_1","agent_id":"agent_9","agent_owner_user_id":"usr_mate",
-				 "agent":{"agent_id":"agent_9","name":"codex-laptop","online":true}}
+				 "agent_owner_email":"mate@example.com",
+				 "agent":{"agent_id":"agent_9","name":"codex-laptop","hostname":"mate-host.local",
+				 "agent_type":"codex","machine_type":"macos_arm64","os":"darwin","online":true}}
 			]},
 			"code":200,"message":"ok"
 		}`), nil
@@ -123,6 +125,8 @@ func (s *TeamFacadeSuite) TestListAgentsGetsTeamAgents() {
 	s.Require().NoError(err)
 	s.Require().Len(resp.Agents, 1)
 	s.Equal("agent_9", resp.Agents[0].AgentID)
+	s.Equal("mate@example.com", resp.Agents[0].AgentOwnerEmail)
+	s.Equal("mate-host.local", resp.Agents[0].Agent.Hostname)
 	s.Equal("team_1", resp.TeamID)
 }
 

@@ -22,7 +22,10 @@ type NodeAgent struct {
 	NodeID        string  `json:"node_id,omitempty"`
 	OwnerUserID   string  `json:"owner_user_id,omitempty"`
 	Name          string  `json:"name,omitempty"`
+	Hostname      string  `json:"hostname,omitempty"`
 	AgentType     string  `json:"agent_type,omitempty"`
+	MachineType   string  `json:"machine_type,omitempty"`
+	OS            string  `json:"os,omitempty"`
 	Status        string  `json:"status,omitempty"`
 	Online        bool    `json:"online,omitempty"`
 	LastHeartbeat *string `json:"last_heartbeat,omitempty"`

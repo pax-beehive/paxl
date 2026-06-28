@@ -41,15 +41,29 @@ func (s *TeamSuite) TestTeamAgentUnmarshalsEmbeddedAgent() {
 		"team_id":"team_1",
 		"agent_id":"agent_9",
 		"agent_owner_user_id":"usr_mate",
+		"agent_owner_email":"mate@example.com",
 		"added_at":"2026-06-27T00:00:00Z",
-		"agent":{"agent_id":"agent_9","name":"codex-laptop","online":true}
+		"agent":{
+			"agent_id":"agent_9",
+			"name":"codex-laptop",
+			"hostname":"mate-host.local",
+			"agent_type":"codex",
+			"machine_type":"macos_arm64",
+			"os":"darwin",
+			"online":true
+		}
 	}`
 	var teamAgent model.TeamAgent
 	s.Require().NoError(json.Unmarshal([]byte(raw), &teamAgent))
 	s.Equal("team_1", teamAgent.TeamID)
 	s.Equal("agent_9", teamAgent.AgentID)
 	s.Equal("usr_mate", teamAgent.AgentOwnerUserID)
+	s.Equal("mate@example.com", teamAgent.AgentOwnerEmail)
 	s.Require().NotNil(teamAgent.Agent)
 	s.Equal("codex-laptop", teamAgent.Agent.Name)
+	s.Equal("mate-host.local", teamAgent.Agent.Hostname)
+	s.Equal("codex", teamAgent.Agent.AgentType)
+	s.Equal("macos_arm64", teamAgent.Agent.MachineType)
+	s.Equal("darwin", teamAgent.Agent.OS)
 	s.True(teamAgent.Agent.Online)
 }

@@ -3865,9 +3865,14 @@ func TestRenderTeamAgentsAggregatedShowsTeamsColumn(t *testing.T) {
 		Agents: []*facade.AggregatedTeamAgent{
 			{
 				Agent: &model.TeamAgent{
-					AgentID:          "agent_mate",
-					AgentOwnerUserID: "usr_mate",
-					Agent:            &model.NodeAgent{AgentID: "agent_mate", Name: "mate-claude"},
+					AgentID:         "agent_mate",
+					AgentOwnerEmail: "mate@example.com",
+					Agent: &model.NodeAgent{
+						AgentID:   "agent_mate",
+						Name:      "mate-claude",
+						Hostname:  "mate-host.local",
+						AgentType: "claude",
+					},
 				},
 				Teams: []facade.TeamRef{
 					{TeamID: "team_a", Name: "Alpha"},
@@ -3881,7 +3886,8 @@ func TestRenderTeamAgentsAggregatedShowsTeamsColumn(t *testing.T) {
 	}
 	out := buf.String()
 	if !strings.Contains(out, "mate-claude") || !strings.Contains(out, "Alpha") ||
-		!strings.Contains(out, "Beta") {
+		!strings.Contains(out, "Beta") || !strings.Contains(out, "mate@example.com") ||
+		!strings.Contains(out, "mate-host.local") || !strings.Contains(out, "claude") {
 		t.Errorf("unexpected aggregated output:\n%s", out)
 	}
 }
@@ -3935,8 +3941,13 @@ func TestEncodeTeamAgentJSONLIncludesProvenanceAndTeams(t *testing.T) {
 			Agent: &model.TeamAgent{
 				AgentID:          "agent_mate",
 				AgentOwnerUserID: "usr_mate",
+				AgentOwnerEmail:  "mate@example.com",
 				AddedByUserID:    "usr_1",
-				Agent:            &model.NodeAgent{Name: "mate-claude"},
+				Agent: &model.NodeAgent{
+					Name:      "mate-claude",
+					Hostname:  "mate-host.local",
+					AgentType: "claude",
+				},
 			},
 			Teams: []facade.TeamRef{{TeamID: "team_a", Name: "Alpha"}},
 		}},
@@ -3949,6 +3960,9 @@ func TestEncodeTeamAgentJSONLIncludesProvenanceAndTeams(t *testing.T) {
 	for _, want := range []string{
 		`"schemaVersion":"paxl.teamAgent.v1"`,
 		`"addedByUserId":"usr_1"`,
+		`"agentOwnerEmail":"mate@example.com"`,
+		`"hostname":"mate-host.local"`,
+		`"agentType":"claude"`,
 		`"removedAt":""`,
 		`"teams"`,
 	} {
@@ -4049,11 +4063,14 @@ func TestRenderTeamAgentsTableAndJSONL(t *testing.T) {
 				TeamID:           "team_1",
 				AgentID:          "agent_9",
 				AgentOwnerUserID: "usr_mate",
+				AgentOwnerEmail:  "mate@example.com",
 				AddedAt:          "2026-06-27T00:00:00Z",
 				Agent: &model.NodeAgent{
-					AgentID: "agent_9",
-					Name:    "codex-laptop",
-					Online:  true,
+					AgentID:   "agent_9",
+					Name:      "codex-laptop",
+					Hostname:  "mate-host.local",
+					AgentType: "codex",
+					Online:    true,
 				},
 			},
 		},
@@ -4064,6 +4081,9 @@ func TestRenderTeamAgentsTableAndJSONL(t *testing.T) {
 	}
 	if !strings.Contains(table.String(), "codex-laptop") ||
 		!strings.Contains(table.String(), "agent_9") ||
+		!strings.Contains(table.String(), "mate@example.com") ||
+		!strings.Contains(table.String(), "codex") ||
+		!strings.Contains(table.String(), "mate-host.local") ||
 		!strings.Contains(table.String(), "yes") {
 		t.Errorf("unexpected table:\n%s", table.String())
 	}
@@ -4075,6 +4095,9 @@ func TestRenderTeamAgentsTableAndJSONL(t *testing.T) {
 	out := jsonl.String()
 	if !strings.Contains(out, `"schemaVersion":"paxl.teamAgent.v1"`) ||
 		!strings.Contains(out, `"teamId":"team_1"`) ||
+		!strings.Contains(out, `"agentOwnerEmail":"mate@example.com"`) ||
+		!strings.Contains(out, `"hostname":"mate-host.local"`) ||
+		!strings.Contains(out, `"agentType":"codex"`) ||
 		!strings.Contains(out, `"online":true`) {
 		t.Errorf("unexpected jsonl:\n%s", out)
 	}
