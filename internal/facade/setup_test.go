@@ -10,6 +10,7 @@ import (
 	"github.com/pax-oss/paxl/internal/facade"
 	"github.com/pax-oss/paxl/internal/model"
 	"github.com/stretchr/testify/suite"
+	"gopkg.in/yaml.v3"
 )
 
 type SetupFacadeSuite struct {
@@ -62,13 +63,57 @@ func (s *SetupFacadeSuite) TestInstallSetsUpAllSupportedAgentHooks() {
 	s.codexConfigContains("async = false")
 	s.codexConfigContains("paxl --db ")
 	s.codexConfigContains("__agent-hook --agent codex --event user-prompt")
-	s.FileExists(filepath.Join(s.home, ".hermes", "paxl", "hooks", "user-prompt.json"))
+	s.hermesConfigHookContains("__agent-hook --agent hermes --event pre_llm_call")
 	s.FileExists(filepath.Join(s.home, ".pi", "paxl", "hooks", "user-prompt.json"))
 	s.FileExists(filepath.Join(s.home, ".pi", "agent", "extensions", "paxl-hook", "index.ts"))
 	s.FileExists(filepath.Join(s.home, ".kiro", "paxl", "hooks", "user-prompt.json"))
 	s.FileExists(filepath.Join(s.home, ".kiro", "agents", "paxl.json"))
 	s.FileExists(filepath.Join(s.home, ".openclaw", "paxl", "hooks", "user-prompt.json"))
 	s.claudeHookCommandContains("paxl __agent-hook --agent claude --event user-prompt")
+}
+
+func (s *SetupFacadeSuite) TestInstallHermesHookWritesPreLLMCallShellHook() {
+	s.T().Setenv("HERMES_HOME", filepath.Join(s.home, ".hermes"))
+	s.T().Setenv("XDG_DATA_HOME", filepath.Join(s.home, ".data"))
+	s.Require().NoError(os.MkdirAll(filepath.Join(s.home, ".hermes"), 0o700))
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(s.home, ".hermes", "config.yaml"),
+		[]byte(
+			"model:\n  provider: openrouter\nhooks:\n  post_llm_call:\n    - command: \"~/.hermes/agent-hooks/log.sh\"\n",
+		),
+		0o600,
+	))
+
+	resp, err := facade.NewSetupFacade().Install(s.ctx, &facade.SetupRequest{
+		Agents:      []model.AgentName{model.AgentNameHermes},
+		PaxlCommand: "/opt/paxl test/bin/paxl",
+	})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Adapters, 1)
+	s.Equal(model.AgentNameHermes, resp.Adapters[0].Agent)
+	s.Equal(facade.SetupStatusInstalled, resp.Adapters[0].Status)
+	s.Equal(filepath.Join(s.home, ".hermes", "config.yaml"), resp.Adapters[0].Path)
+	s.hermesConfigHookContains(`/opt/paxl test/bin/paxl`)
+	s.hermesConfigHookContains("--db")
+	s.hermesConfigHookContains(filepath.Join(s.home, ".data", "paxl", "paxl.sqlite"))
+	s.hermesConfigHookContains("__agent-hook --agent hermes --event pre_llm_call")
+	s.hermesConfigHookContains("post_llm_call")
+
+	_, err = facade.NewSetupFacade().Install(s.ctx, &facade.SetupRequest{
+		Agents:      []model.AgentName{model.AgentNameHermes},
+		PaxlCommand: "/opt/paxl test/bin/paxl",
+	})
+	s.Require().NoError(err)
+	s.assertHermesHookCount(1)
+
+	_, err = facade.NewSetupFacade().Install(s.ctx, &facade.SetupRequest{
+		Agents:      []model.AgentName{model.AgentNameHermes},
+		PaxlCommand: "/tmp/new-paxl",
+	})
+	s.Require().NoError(err)
+	s.assertHermesHookCount(1)
+	s.hermesConfigHookContains("/tmp/new-paxl")
 }
 
 func (s *SetupFacadeSuite) TestInstallPiHookWritesBeforeAgentStartExtension() {
@@ -226,6 +271,24 @@ func (s *SetupFacadeSuite) claudeHookCommandContains(fragment string) {
 	command, ok := handler["command"].(string)
 	s.Require().True(ok)
 	s.Contains(command, fragment)
+}
+
+func (s *SetupFacadeSuite) hermesConfigHookContains(fragment string) {
+	raw, err := os.ReadFile(filepath.Join(s.home, ".hermes", "config.yaml"))
+	s.Require().NoError(err)
+	s.Contains(string(raw), fragment)
+}
+
+func (s *SetupFacadeSuite) assertHermesHookCount(want int) {
+	raw, err := os.ReadFile(filepath.Join(s.home, ".hermes", "config.yaml"))
+	s.Require().NoError(err)
+	var config map[string]any
+	s.Require().NoError(yaml.Unmarshal(raw, &config))
+	hooks, ok := config["hooks"].(map[string]any)
+	s.Require().True(ok)
+	preLLMCall, ok := hooks["pre_llm_call"].([]any)
+	s.Require().True(ok)
+	s.Len(preLLMCall, want)
 }
 
 func (s *SetupFacadeSuite) assertKiroAgentConfig(path string, wantHookCount int) {

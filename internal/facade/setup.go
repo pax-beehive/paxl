@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pax-oss/paxl/internal/model"
+	"gopkg.in/yaml.v3"
 )
 
 const paxlHookAdapterSchemaVersion = "paxl.agent_hook_adapter.v1"
@@ -100,11 +101,7 @@ func (f *SetupFacade) installAgentHook(
 	case model.AgentNameKiro:
 		return installKiroHook(command, dryRun)
 	case model.AgentNameHermes:
-		dbPath, err := defaultStorePath()
-		if err != nil {
-			return nil, err
-		}
-		return installDescriptorHook(agent, hermesHookDescriptorPath(), command, dbPath, dryRun)
+		return installHermesHook(command, dryRun)
 	case model.AgentNameOpenClaw:
 		dbPath, err := defaultStorePath()
 		if err != nil {
@@ -283,6 +280,32 @@ func installKiroHook(command string, dryRun bool) (*SetupAdapterResult, error) {
 	return result, nil
 }
 
+func installHermesHook(command string, dryRun bool) (*SetupAdapterResult, error) {
+	dbPath, err := defaultStorePath()
+	if err != nil {
+		return nil, err
+	}
+	path := hermesConfigPath()
+	result := &SetupAdapterResult{
+		Agent:   model.AgentNameHermes,
+		Status:  SetupStatusInstalled,
+		Path:    path,
+		Message: "Installed Hermes pre_llm_call shell hook.",
+	}
+	if dryRun {
+		result.Status = SetupStatusPending
+		result.Message = "Would install Hermes pre_llm_call shell hook."
+		return result, nil
+	}
+	if err := upsertHermesConfigHook(
+		path,
+		setupHookCommandWithEvent(command, model.AgentNameHermes, dbPath, "pre_llm_call"),
+	); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 func installCodexHook(command string, dryRun bool) (*SetupAdapterResult, error) {
 	dbPath, err := defaultStorePath()
 	if err != nil {
@@ -362,6 +385,15 @@ func installClaudeHook(command string, dryRun bool) (*SetupAdapterResult, error)
 }
 
 func setupHookCommand(command string, agent model.AgentName, dbPath string) string {
+	return setupHookCommandWithEvent(command, agent, dbPath, "user-prompt")
+}
+
+func setupHookCommandWithEvent(
+	command string,
+	agent model.AgentName,
+	dbPath string,
+	event string,
+) string {
 	out := shellCommandToken(strings.TrimSpace(command))
 	if strings.TrimSpace(dbPath) != "" {
 		out += " --db " + shellQuote(dbPath)
@@ -369,7 +401,8 @@ func setupHookCommand(command string, agent model.AgentName, dbPath string) stri
 	return out +
 		" __agent-hook --agent " +
 		string(agent) +
-		" --event user-prompt"
+		" --event " +
+		event
 }
 
 func upsertPaxlHook(groups []any, agent model.AgentName, next map[string]any) []any {
@@ -451,6 +484,155 @@ func setKiroDefaultAgent(agentName string) error {
 		return fmt.Errorf("write Kiro settings: %w", err)
 	}
 	return nil
+}
+
+func upsertHermesConfigHook(path string, command string) error {
+	doc, err := readYAMLDocument(path)
+	if err != nil {
+		return fmt.Errorf("read Hermes config: %w", err)
+	}
+	root := ensureYAMLDocumentMapping(doc)
+	hooks := ensureYAMLMapping(root, "hooks")
+	entries := ensureYAMLSequence(hooks, "pre_llm_call")
+	upsertHermesShellHook(entries, command)
+	raw, err := marshalYAMLDocument(doc)
+	if err != nil {
+		return fmt.Errorf("encode Hermes config: %w", err)
+	}
+	if err := writeFile(path, raw, 0o600); err != nil {
+		return fmt.Errorf("write Hermes config: %w", err)
+	}
+	return nil
+}
+
+func readYAMLDocument(path string) (*yaml.Node, error) {
+	raw, err := os.ReadFile(path) // #nosec G304
+	if os.IsNotExist(err) {
+		return &yaml.Node{Kind: yaml.DocumentNode}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read yaml file: %w", err)
+	}
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return &yaml.Node{Kind: yaml.DocumentNode}, nil
+	}
+	doc := &yaml.Node{}
+	if err := yaml.Unmarshal(raw, doc); err != nil {
+		return nil, fmt.Errorf("parse yaml file: %w", err)
+	}
+	return doc, nil
+}
+
+func ensureYAMLDocumentMapping(doc *yaml.Node) *yaml.Node {
+	if doc.Kind != yaml.DocumentNode {
+		doc.Kind = yaml.DocumentNode
+		doc.Content = nil
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		doc.Content = []*yaml.Node{{Kind: yaml.MappingNode}}
+	}
+	return doc.Content[0]
+}
+
+func ensureYAMLMapping(parent *yaml.Node, key string) *yaml.Node {
+	if existing := yamlMappingValue(parent, key); existing != nil {
+		if existing.Kind == yaml.MappingNode {
+			return existing
+		}
+		existing.Kind = yaml.MappingNode
+		existing.Value = ""
+		existing.Content = nil
+		return existing
+	}
+	next := &yaml.Node{Kind: yaml.MappingNode}
+	parent.Content = append(parent.Content, yamlScalarKey(key), next)
+	return next
+}
+
+func ensureYAMLSequence(parent *yaml.Node, key string) *yaml.Node {
+	if existing := yamlMappingValue(parent, key); existing != nil {
+		if existing.Kind == yaml.SequenceNode {
+			return existing
+		}
+		existing.Kind = yaml.SequenceNode
+		existing.Value = ""
+		existing.Content = nil
+		return existing
+	}
+	next := &yaml.Node{Kind: yaml.SequenceNode}
+	parent.Content = append(parent.Content, yamlScalarKey(key), next)
+	return next
+}
+
+func yamlMappingValue(parent *yaml.Node, key string) *yaml.Node {
+	if parent == nil || parent.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(parent.Content); i += 2 {
+		if parent.Content[i].Value == key {
+			return parent.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func yamlScalarKey(key string) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}
+}
+
+func upsertHermesShellHook(entries *yaml.Node, command string) {
+	next := hermesShellHookNode(command)
+	replaced := false
+	kept := make([]*yaml.Node, 0, len(entries.Content)+1)
+	for _, entry := range entries.Content {
+		if yamlHookCommand(entry) == command || isHermesPaxlHookCommand(yamlHookCommand(entry)) {
+			if !replaced {
+				kept = append(kept, next)
+				replaced = true
+			}
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	if !replaced {
+		kept = append(kept, next)
+	}
+	entries.Content = kept
+}
+
+func isHermesPaxlHookCommand(command string) bool {
+	return strings.Contains(command, "__agent-hook --agent hermes --event pre_llm_call")
+}
+
+func hermesShellHookNode(command string) *yaml.Node {
+	return &yaml.Node{
+		Kind: yaml.MappingNode,
+		Content: []*yaml.Node{
+			yamlScalarKey("command"),
+			{Kind: yaml.ScalarNode, Tag: "!!str", Value: command},
+			yamlScalarKey("timeout"),
+			{Kind: yaml.ScalarNode, Tag: "!!int", Value: "60"},
+		},
+	}
+}
+
+func yamlHookCommand(entry *yaml.Node) string {
+	value := yamlMappingValue(entry, "command")
+	if value == nil {
+		return ""
+	}
+	return value.Value
+}
+
+func marshalYAMLDocument(doc *yaml.Node) ([]byte, error) {
+	raw, err := yaml.Marshal(doc)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 || raw[len(raw)-1] != '\n' {
+		raw = append(raw, '\n')
+	}
+	return raw, nil
 }
 
 func renderPiHookExtension(command string, dbPath string) string {
@@ -675,13 +857,13 @@ func claudeSettingsPath() string {
 	return filepath.Join(root, "settings.json")
 }
 
-func hermesHookDescriptorPath() string {
+func hermesConfigPath() string {
 	root := firstNonEmpty(
 		os.Getenv("PAXL_HERMES_HOME"),
 		os.Getenv("HERMES_HOME"),
 		homePath(".hermes"),
 	)
-	return filepath.Join(root, "paxl", "hooks", "user-prompt.json")
+	return filepath.Join(root, "config.yaml")
 }
 
 func piHookExtensionPath() string {

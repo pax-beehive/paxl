@@ -2,6 +2,7 @@ package facade
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -113,4 +114,71 @@ func TestAgentHookAcceptsInboxRoutesBeforeClaimingInjection(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, listed.Capsules, 1)
 	require.Equal(t, "Remote routed handoff", listed.Capsules[0].Title)
+}
+
+func TestAgentHookSupportsHermesPreLLMCallContextOutput(t *testing.T) {
+	ctx := context.Background()
+	opened, err := store.Open(
+		ctx,
+		&store.OpenRequest{Path: filepath.Join(t.TempDir(), "paxl.sqlite")},
+	)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, opened.Store.Close())
+	}()
+	_, err = opened.Store.CreateKnowledgeCapsule(
+		ctx,
+		&store.CreateKnowledgeCapsuleRequest{Capsule: &model.KnowledgeCapsule{
+			CapsuleID:       "kcap_hermes",
+			SourceNodeID:    "local-node",
+			SourceSessionID: "codex:source",
+			SourceAgent:     model.AgentNameCodex,
+			Keyword:         "handoff",
+			Title:           "Hermes handoff",
+			Summary:         "summary",
+			Content:         "Hermes should receive this context.",
+			Status:          "active",
+			CreatedAt:       "2026-06-29T00:00:00Z",
+		}},
+	)
+	require.NoError(t, err)
+	_, err = opened.Store.CreateKnowledgeInjection(
+		ctx,
+		&store.CreateKnowledgeInjectionRequest{Injection: &model.KnowledgeInjection{
+			InjectionID:         "kci_hermes",
+			CapsuleID:           "kcap_hermes",
+			SourceNodeID:        "local-node",
+			SourceAgent:         model.AgentNameCodex,
+			SourceSessionID:     "codex:source",
+			TargetNodeID:        "local-node",
+			TargetAgent:         model.AgentNameHermes,
+			DeliveryMethod:      "hook",
+			DeliveryMessageType: "system_handoff",
+			Status:              "pending",
+			RouteMatchType:      "any",
+		}},
+	)
+	require.NoError(t, err)
+	hookFacade := NewAgentHookFacade(opened.Store)
+
+	claimed, err := hookFacade.Run(ctx, &AgentHookRequest{
+		Agent:     model.AgentNameHermes,
+		Event:     "pre_llm_call",
+		SessionID: "hermes-session",
+		Prompt:    "continue",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, claimed.Injection)
+	require.Contains(t, claimed.Message, "Hermes should receive this context.")
+
+	delivered, err := hookFacade.Deliver(ctx, &DeliverAgentHookRequest{
+		Agent:       model.AgentNameHermes,
+		SessionID:   "hermes-session",
+		InjectionID: claimed.Injection.InjectionID,
+		Message:     claimed.Message,
+	})
+	require.NoError(t, err)
+	var output map[string]string
+	require.NoError(t, json.Unmarshal([]byte(delivered.Message), &output))
+	require.Contains(t, output["context"], "Hermes should receive this context.")
 }
