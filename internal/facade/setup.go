@@ -77,7 +77,15 @@ func (f *SetupFacade) Install(
 		return nil, err
 	}
 	for _, agent := range agents {
-		result, err := f.installAgentHook(agent, command, req.DryRun)
+		agentCommand := command
+		if supportsAgentShim(agent) {
+			var err error
+			agentCommand, err = installAgentShim(agent, command, req.DryRun)
+			if err != nil {
+				return nil, err
+			}
+		}
+		result, err := f.installAgentHook(agent, agentCommand, req.DryRun)
 		if err != nil {
 			return nil, err
 		}
@@ -157,6 +165,39 @@ func installHookShim(command string, dryRun bool) error {
 		return fmt.Errorf("install hook shim: %w", err)
 	}
 	return nil
+}
+
+func supportsAgentShim(agent model.AgentName) bool {
+	switch agent {
+	case model.AgentNameCodex,
+		model.AgentNameClaude,
+		model.AgentNamePi,
+		model.AgentNameKiro,
+		model.AgentNameHermes,
+		model.AgentNameOpenClaw:
+		return true
+	case model.AgentNameUnknown,
+		model.AgentNameGemini,
+		model.AgentNamePaxl:
+		return false
+	default:
+		return false
+	}
+}
+
+func installAgentShim(agent model.AgentName, command string, dryRun bool) (string, error) {
+	path := agentShimPath(agent)
+	if dryRun {
+		return path, nil
+	}
+	script := "#!/bin/sh\n" +
+		"export PAXL_CALLER_AGENT=" + string(agent) + "\n" +
+		"export PAXL_AGENT=" + string(agent) + "\n" +
+		"exec " + shellQuote(command) + " --caller-agent " + string(agent) + " \"$@\"\n"
+	if err := writeFile(path, []byte(script), 0o755); err != nil {
+		return "", fmt.Errorf("install agent shim: %w", err)
+	}
+	return path, nil
 }
 
 func installDescriptorHook(
@@ -300,6 +341,7 @@ func installHermesHook(command string, dryRun bool) (*SetupAdapterResult, error)
 	if err := upsertHermesConfigHook(
 		path,
 		setupHookCommandWithEvent(command, model.AgentNameHermes, dbPath, "pre_llm_call"),
+		setupEnvCommandWithEvent(command, model.AgentNameHermes, "pre_tool_call"),
 	); err != nil {
 		return nil, err
 	}
@@ -405,6 +447,14 @@ func setupHookCommandWithEvent(
 		event
 }
 
+func setupEnvCommandWithEvent(command string, agent model.AgentName, event string) string {
+	return shellCommandToken(strings.TrimSpace(command)) +
+		" __agent-env --agent " +
+		string(agent) +
+		" --event " +
+		event
+}
+
 func upsertPaxlHook(groups []any, agent model.AgentName, next map[string]any) []any {
 	needle := "__agent-hook --agent " + string(agent) + " --event user-prompt"
 	for index, rawGroup := range groups {
@@ -486,15 +536,25 @@ func setKiroDefaultAgent(agentName string) error {
 	return nil
 }
 
-func upsertHermesConfigHook(path string, command string) error {
+func upsertHermesConfigHook(path string, preLLMCommand string, preToolCommand string) error {
 	doc, err := readYAMLDocument(path)
 	if err != nil {
 		return fmt.Errorf("read Hermes config: %w", err)
 	}
 	root := ensureYAMLDocumentMapping(doc)
 	hooks := ensureYAMLMapping(root, "hooks")
-	entries := ensureYAMLSequence(hooks, "pre_llm_call")
-	upsertHermesShellHook(entries, command)
+	preLLMEntries := ensureYAMLSequence(hooks, "pre_llm_call")
+	upsertHermesShellHook(
+		preLLMEntries,
+		preLLMCommand,
+		"__agent-hook --agent hermes --event pre_llm_call",
+	)
+	preToolEntries := ensureYAMLSequence(hooks, "pre_tool_call")
+	upsertHermesShellHook(
+		preToolEntries,
+		preToolCommand,
+		"__agent-env --agent hermes --event pre_tool_call",
+	)
 	raw, err := marshalYAMLDocument(doc)
 	if err != nil {
 		return fmt.Errorf("encode Hermes config: %w", err)
@@ -580,12 +640,13 @@ func yamlScalarKey(key string) *yaml.Node {
 	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}
 }
 
-func upsertHermesShellHook(entries *yaml.Node, command string) {
+func upsertHermesShellHook(entries *yaml.Node, command string, needle string) {
 	next := hermesShellHookNode(command)
 	replaced := false
 	kept := make([]*yaml.Node, 0, len(entries.Content)+1)
 	for _, entry := range entries.Content {
-		if yamlHookCommand(entry) == command || isHermesPaxlHookCommand(yamlHookCommand(entry)) {
+		if yamlHookCommand(entry) == command ||
+			isHermesPaxlHookCommand(yamlHookCommand(entry), needle) {
 			if !replaced {
 				kept = append(kept, next)
 				replaced = true
@@ -600,8 +661,8 @@ func upsertHermesShellHook(entries *yaml.Node, command string) {
 	entries.Content = kept
 }
 
-func isHermesPaxlHookCommand(command string) bool {
-	return strings.Contains(command, "__agent-hook --agent hermes --event pre_llm_call")
+func isHermesPaxlHookCommand(command string, needle string) bool {
+	return strings.Contains(command, needle)
 }
 
 func hermesShellHookNode(command string) *yaml.Node {
@@ -840,6 +901,10 @@ func hookShimPath() (string, error) {
 		return "", fmt.Errorf("resolve home: %w", err)
 	}
 	return filepath.Join(home, ".pax", "paxl", "hooks", "agent-hook"), nil
+}
+
+func agentShimPath(agent model.AgentName) string {
+	return filepath.Join(homePath(".pax", "paxl", "shims"), string(agent), "paxl")
 }
 
 func codexHookDescriptorPath() string {

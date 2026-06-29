@@ -31,6 +31,9 @@ type SendEnvelopeRequest struct {
 	MatchType      string
 	MatchValue     string
 	TargetAgent    model.AgentName
+	CallerAgent    model.AgentName
+	FromAgentID    string
+	ToAgentID      string
 }
 
 type SendEnvelopeResponse struct {
@@ -113,6 +116,12 @@ type envelopeRouteResult struct {
 	Route *envelopePayloadRoute
 }
 
+type envelopeRecipientFields struct {
+	RecipientEmail string
+	FromAgentID    string
+	ToAgentID      string
+}
+
 type envelopePayloadCapsule struct {
 	CapsuleID              string          `json:"capsule_id"`
 	SourceNodeID           string          `json:"source_node_id,omitempty"`
@@ -145,14 +154,15 @@ func (f *EnvelopeFacade) Send(
 	if req == nil {
 		return nil, fmt.Errorf("send envelope: request is required")
 	}
-	if strings.TrimSpace(req.RecipientEmail) == "" {
-		return nil, fmt.Errorf("send envelope: recipient email is required")
-	}
 	capsule, err := f.loadLocalCapsule(ctx, req.CapsuleID)
 	if err != nil {
 		return nil, err
 	}
 	credential, err := f.auth.requireCredential(ctx)
+	if err != nil {
+		return nil, err
+	}
+	recipientFields, err := f.resolveEnvelopeRecipientFields(ctx, credential, req)
 	if err != nil {
 		return nil, err
 	}
@@ -165,10 +175,16 @@ func (f *EnvelopeFacade) Send(
 		return nil, err
 	}
 	body := map[string]any{
-		"recipient_email": req.RecipientEmail,
-		"payload_type":    "knowledge_capsule",
-		"payload_json":    json.RawMessage(payload),
-		"message":         strings.TrimSpace(req.Message),
+		"payload_type": "knowledge_capsule",
+		"payload_json": json.RawMessage(payload),
+		"message":      strings.TrimSpace(req.Message),
+	}
+	if recipientFields.RecipientEmail != "" {
+		body["recipient_email"] = recipientFields.RecipientEmail
+	}
+	if recipientFields.FromAgentID != "" {
+		body["from_agent_id"] = recipientFields.FromAgentID
+		body["to_agent_id"] = recipientFields.ToAgentID
 	}
 	var envelope managerEnvelope[struct {
 		Envelope model.Envelope `json:"envelope"`
@@ -185,6 +201,96 @@ func (f *EnvelopeFacade) Send(
 		return nil, err
 	}
 	return &SendEnvelopeResponse{Envelope: &envelope.Data.Envelope}, nil
+}
+
+func (f *EnvelopeFacade) resolveEnvelopeRecipientFields(
+	ctx context.Context,
+	credential *model.AuthCredential,
+	req *SendEnvelopeRequest,
+) (*envelopeRecipientFields, error) {
+	recipientEmail := strings.TrimSpace(req.RecipientEmail)
+	fromAgentID := strings.TrimSpace(req.FromAgentID)
+	toAgentID := strings.TrimSpace(req.ToAgentID)
+	callerProvided := req.CallerAgent != model.AgentNameUnknown && req.CallerAgent != ""
+	if callerProvided && fromAgentID == "" && toAgentID == "" {
+		return nil, fmt.Errorf("send envelope: caller agent delivery requires to_agent_id")
+	}
+	if toAgentID != "" && fromAgentID == "" && callerProvided {
+		var err error
+		fromAgentID, err = f.resolveCallerAgentID(ctx, credential, req.CallerAgent)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if (fromAgentID == "") != (toAgentID == "") {
+		return nil, fmt.Errorf(
+			"send envelope: from_agent_id and to_agent_id must be provided together",
+		)
+	}
+	if recipientEmail == "" && fromAgentID == "" {
+		return nil, fmt.Errorf("send envelope: recipient email or to_agent_id is required")
+	}
+	return &envelopeRecipientFields{
+		RecipientEmail: recipientEmail,
+		FromAgentID:    fromAgentID,
+		ToAgentID:      toAgentID,
+	}, nil
+}
+
+func (f *EnvelopeFacade) resolveCallerAgentID(
+	ctx context.Context,
+	credential *model.AuthCredential,
+	callerAgent model.AgentName,
+) (string, error) {
+	if credential == nil || strings.TrimSpace(credential.NodeID) == "" {
+		return "", fmt.Errorf("send envelope: current node id is required to resolve caller agent")
+	}
+	var envelope managerEnvelope[struct {
+		Agents []*model.NodeAgent `json:"agents"`
+	}]
+	nodeID := strings.TrimSpace(credential.NodeID)
+	if err := f.auth.managerJSON(
+		ctx,
+		http.MethodGet,
+		credential.ManagerURL,
+		userNodePath(credential.UserID)+"/"+url.PathEscape(nodeID)+"/agents",
+		credential.APIKey,
+		nil,
+		&envelope,
+	); err != nil {
+		return "", fmt.Errorf("list current node agents: %w", err)
+	}
+	var matches []string
+	for _, agent := range envelope.Data.Agents {
+		if callerMatchesNodeAgent(callerAgent, agent) {
+			matches = append(matches, strings.TrimSpace(agent.AgentID))
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf(
+			"send envelope: caller agent %q is not registered on node %s",
+			callerAgent,
+			nodeID,
+		)
+	case 1:
+		return matches[0], nil
+	default:
+		return "", fmt.Errorf(
+			"send envelope: caller agent %q is ambiguous on node %s",
+			callerAgent,
+			nodeID,
+		)
+	}
+}
+
+func callerMatchesNodeAgent(callerAgent model.AgentName, agent *model.NodeAgent) bool {
+	if agent == nil || strings.TrimSpace(agent.AgentID) == "" {
+		return false
+	}
+	caller := string(callerAgent)
+	return strings.EqualFold(strings.TrimSpace(agent.AgentType), caller) ||
+		strings.EqualFold(strings.TrimSpace(agent.Name), caller)
 }
 
 func (f *EnvelopeFacade) ListInbox(

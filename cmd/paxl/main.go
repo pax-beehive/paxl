@@ -80,6 +80,12 @@ func newCommandWithDiagnostics(
 		ErrWriter: stderr,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "db", Usage: "SQLite database path"},
+			&cli.StringFlag{
+				Name:    "caller-agent",
+				Usage:   "Agent invoking paxl",
+				Hidden:  true,
+				Sources: cli.EnvVars("PAXL_CALLER_AGENT", "PAXL_AGENT"),
+			},
 		},
 		ExitErrHandler: func(ctx context.Context, cmd *cli.Command, err error) {
 			_ = ctx
@@ -102,6 +108,7 @@ func newCommandWithDiagnostics(
 			newFriendCommand(stdout),
 			newTeamCommand(stdout),
 			newAgentHookCommand(stdout),
+			newAgentEnvCommand(stdout),
 		},
 	}
 }
@@ -265,6 +272,22 @@ func newAgentHookCommand(stdout io.Writer) *cli.Command {
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			return agentHook(ctx, cmd, stdout)
+		},
+	}
+}
+
+func newAgentEnvCommand(stdout io.Writer) *cli.Command {
+	return &cli.Command{
+		Name:   "__agent-env",
+		Usage:  "Internal paxl agent environment hook entrypoint",
+		Hidden: true,
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "agent", Usage: "Agent that fired the hook"},
+			&cli.StringFlag{Name: "event", Usage: "Hook event name"},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			_ = ctx
+			return agentEnv(cmd, stdout)
 		},
 	}
 }
@@ -594,6 +617,15 @@ func newCapsuleCommand(
 				ArgsUsage: "<capsule-id>",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "to", Usage: "Accepted friend alias, for example @alice"},
+					&cli.StringFlag{
+						Name:  "to-agent-id",
+						Usage: "Target team agent id for agent-to-agent delivery",
+					},
+					&cli.StringFlag{
+						Name:   "from-agent-id",
+						Usage:  "Source team agent id override",
+						Hidden: true,
+					},
 					&cli.StringFlag{Name: "message", Usage: "Optional note for the recipient"},
 					&cli.StringFlag{
 						Name:  "match",
@@ -1069,6 +1101,42 @@ func agentHook(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
 		InjectionID: resp.Injection.InjectionID,
 	}); err != nil {
 		return fmt.Errorf("complete agent hook: %w", err)
+	}
+	return nil
+}
+
+type agentEnvPayload struct {
+	SchemaVersion string            `json:"schemaVersion"`
+	Agent         model.AgentName   `json:"agent"`
+	Event         string            `json:"event"`
+	Env           map[string]string `json:"env"`
+	Context       string            `json:"context"`
+	AdditionalCtx string            `json:"additionalContext"`
+}
+
+func agentEnv(cmd *cli.Command, stdout io.Writer) error {
+	agent, err := model.ParseAgentName(cmd.String("agent"))
+	if err != nil {
+		return fmt.Errorf("parse environment hook agent: %w", err)
+	}
+	event := strings.TrimSpace(cmd.String("event"))
+	if event == "" {
+		return fmt.Errorf("parse environment hook event: event is required")
+	}
+	context := "paxl caller agent: " + string(agent)
+	payload := &agentEnvPayload{
+		SchemaVersion: "paxl.agent_environment.v1",
+		Agent:         agent,
+		Event:         event,
+		Env: map[string]string{
+			"PAXL_CALLER_AGENT": string(agent),
+			"PAXL_AGENT":        string(agent),
+		},
+		Context:       context,
+		AdditionalCtx: context,
+	}
+	if err := json.NewEncoder(stdout).Encode(payload); err != nil {
+		return fmt.Errorf("write environment hook payload: %w", err)
 	}
 	return nil
 }
@@ -1683,13 +1751,15 @@ func capsuleSend(ctx context.Context, cmd *cli.Command, stdout io.Writer) error 
 	}
 	defer closeStore(opened.Store)
 	friendFacade := facade.NewFriendFacade(nil, opened.Store)
-	resolved, err := friendFacade.ResolveAlias(ctx, &facade.ResolveFriendAliasRequest{
-		Alias: req.RecipientEmail,
-	})
-	if err != nil {
-		return fmt.Errorf("resolve friend alias: %w", err)
+	if strings.TrimSpace(req.RecipientEmail) != "" {
+		resolved, err := friendFacade.ResolveAlias(ctx, &facade.ResolveFriendAliasRequest{
+			Alias: req.RecipientEmail,
+		})
+		if err != nil {
+			return fmt.Errorf("resolve friend alias: %w", err)
+		}
+		req.RecipientEmail = resolved.Email
 	}
-	req.RecipientEmail = resolved.Email
 	envelopeFacade := facade.NewEnvelopeFacade(nil, opened.Store)
 	resp, err := envelopeFacade.Send(ctx, req)
 	if err != nil {
@@ -2469,10 +2539,12 @@ func parseSendEnvelopeRequest(cmd *cli.Command) (*facade.SendEnvelopeRequest, er
 		return nil, fmt.Errorf("capsule id is required")
 	}
 	recipient := strings.TrimSpace(cmd.String("to"))
-	if recipient == "" {
-		return nil, fmt.Errorf("recipient friend alias is required")
+	toAgentID := strings.TrimSpace(cmd.String("to-agent-id"))
+	fromAgentID := strings.TrimSpace(cmd.String("from-agent-id"))
+	if recipient == "" && toAgentID == "" {
+		return nil, fmt.Errorf("recipient friend alias or --to-agent-id is required")
 	}
-	if !strings.HasPrefix(recipient, "@") {
+	if recipient != "" && !strings.HasPrefix(recipient, "@") {
 		return nil, fmt.Errorf("recipient must be an accepted friend alias like @alice")
 	}
 	switch cmd.String("format") {
@@ -2484,6 +2556,15 @@ func parseSendEnvelopeRequest(cmd *cli.Command) (*facade.SendEnvelopeRequest, er
 		CapsuleID:      capsuleID,
 		RecipientEmail: recipient,
 		Message:        cmd.String("message"),
+		FromAgentID:    fromAgentID,
+		ToAgentID:      toAgentID,
+	}
+	if rawCallerAgent := strings.TrimSpace(cmd.String("caller-agent")); rawCallerAgent != "" {
+		callerAgent, err := parseActiveAgentName(rawCallerAgent)
+		if err != nil {
+			return nil, fmt.Errorf("parse caller agent: %w", err)
+		}
+		req.CallerAgent = callerAgent
 	}
 	if rawAgent := strings.TrimSpace(cmd.String("agent")); rawAgent != "" {
 		agent, err := parseActiveAgentName(rawAgent)
@@ -3426,6 +3507,8 @@ func encodeEnvelopeJSONL(stdout io.Writer, envelope *model.Envelope) error {
 		"senderEmail":     envelope.SenderEmail,
 		"recipientUserId": envelope.RecipientUserID,
 		"recipientEmail":  envelope.RecipientEmail,
+		"fromAgentId":     envelope.FromAgentID,
+		"toAgentId":       envelope.ToAgentID,
 		"payloadType":     envelope.PayloadType,
 		"payloadJson":     envelope.PayloadJSON,
 		"message":         envelope.Message,
@@ -4461,13 +4544,48 @@ func openExecutionLogger(args []string) *executionLogger {
 		encoder:   json.NewEncoder(file),
 		startedAt: now,
 	}
-	logger.write("command_start", map[string]any{
+	fields := map[string]any{
 		"args":    args,
 		"cwd":     currentWorkingDirectory(),
 		"version": version,
 		"commit":  buildCommit,
-	})
+	}
+	if callerAgent := callerAgentNameFromInvocation(args); callerAgent != model.AgentNameUnknown {
+		fields["callerAgent"] = callerAgent
+	}
+	logger.write("command_start", fields)
 	return logger
+}
+
+func callerAgentNameFromInvocation(args []string) model.AgentName {
+	raw := callerAgentRawFromArgs(args)
+	if strings.TrimSpace(raw) == "" {
+		raw = firstNonEmpty(os.Getenv("PAXL_CALLER_AGENT"), os.Getenv("PAXL_AGENT"))
+	}
+	agent, err := model.ParseAgentName(raw)
+	if err != nil {
+		return model.AgentNameUnknown
+	}
+	return agent
+}
+
+func callerAgentRawFromArgs(args []string) string {
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if arg == "--" {
+			return ""
+		}
+		if arg == "--caller-agent" {
+			if index+1 >= len(args) {
+				return ""
+			}
+			return args[index+1]
+		}
+		if value, ok := strings.CutPrefix(arg, "--caller-agent="); ok {
+			return value
+		}
+	}
+	return ""
 }
 
 func executionLogDir() (string, error) {
