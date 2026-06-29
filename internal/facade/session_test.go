@@ -293,3 +293,148 @@ func (s *SessionFacadeSuite) TestGetRequiresRequestAndStore() {
 	_, err = withoutStore.Get(s.ctx, &facade.GetSessionRequest{ID: "codex:sess"})
 	s.Error(err)
 }
+
+func (s *SessionFacadeSuite) TestSearchReturnsResultsFromStore() {
+	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+		Agent: model.AgentNameCodex,
+		Sessions: []*model.Session{
+			{NativeID: "sess-search", Title: "Docker deploy"},
+		},
+	})
+	s.Require().NoError(err)
+	_, err = s.store.ReplaceSessionElements(s.ctx, &store.ReplaceSessionElementsRequest{
+		SessionID: "codex:sess-search",
+		Elements: []*model.Element{
+			{Seq: 1, Type: "message", Role: "user", ContentText: "docker deployment config"},
+		},
+	})
+	s.Require().NoError(err)
+
+	sessionFacade := facade.NewSessionFacade(nil, s.store)
+	resp, err := sessionFacade.Search(s.ctx, &facade.SearchRequest{
+		Query: "docker",
+		Limit: 10,
+	})
+	s.Require().NoError(err)
+	s.Require().Len(resp.Results, 1)
+	s.Equal("codex:sess-search", resp.Results[0].SessionID)
+	s.Equal(model.AgentNameCodex, resp.Results[0].Agent)
+	s.Equal("Docker deploy", resp.Results[0].Title)
+}
+
+func (s *SessionFacadeSuite) TestSearchReturnsEmptyForNoMatches() {
+	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+		Agent: model.AgentNameClaude,
+		Sessions: []*model.Session{
+			{NativeID: "sess-no-search", Title: "No match"},
+		},
+	})
+	s.Require().NoError(err)
+	_, err = s.store.ReplaceSessionElements(s.ctx, &store.ReplaceSessionElementsRequest{
+		SessionID: "claude:sess-no-search",
+		Elements: []*model.Element{
+			{Seq: 1, Type: "message", Role: "user", ContentText: "Hello world"},
+		},
+	})
+	s.Require().NoError(err)
+
+	sessionFacade := facade.NewSessionFacade(nil, s.store)
+	resp, err := sessionFacade.Search(s.ctx, &facade.SearchRequest{
+		Query: "nonexistent",
+		Limit: 10,
+	})
+	s.Require().NoError(err)
+	s.Empty(resp.Results)
+}
+
+func (s *SessionFacadeSuite) TestSearchRequiresRequest() {
+	sessionFacade := facade.NewSessionFacade(nil, s.store)
+	_, err := sessionFacade.Search(s.ctx, nil)
+	s.Error(err)
+}
+
+func (s *SessionFacadeSuite) TestGetSkipsSyncWhenRecentlySynced() {
+	codexHome := s.T().TempDir()
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.T().Setenv("CODEX_HOME", codexHome)
+	// Write a session with "Old" content
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-test-throttle.jsonl"),
+		[]byte(
+			`{"timestamp":"2026-06-20T01:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Original"}]}}`+"\n",
+		),
+		0o600,
+	))
+	// Insert session with a recent last_synced_at
+	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+		Agent: model.AgentNameCodex,
+		Sessions: []*model.Session{
+			{NativeID: "test-throttle", Title: "Throttle", UpdatedAt: "2026-06-20T01:00:00Z"},
+		},
+	})
+	s.Require().NoError(err)
+	// Pre-sync elements and set last_synced_at to now
+	_, err = s.store.ReplaceSessionElements(s.ctx, &store.ReplaceSessionElementsRequest{
+		SessionID: "codex:test-throttle",
+		Elements: []*model.Element{
+			{Seq: 1, Type: "message", Role: "user", ContentText: "Pre-synced content"},
+		},
+	})
+	s.Require().NoError(err)
+	// Set last_synced_at to now via direct DB access
+	_, err = s.store.UpdateSessionLastSyncedAt(s.ctx, &store.UpdateSessionLastSyncedAtRequest{
+		SessionID: "codex:test-throttle",
+	})
+	s.Require().NoError(err)
+
+	sessionFacade := facade.NewSessionFacade(nil, s.store)
+	resp, err := sessionFacade.Get(s.ctx, &facade.GetSessionRequest{ID: "codex:test-throttle"})
+	s.Require().NoError(err)
+	// Should return cached content, not re-sync from adapter
+	s.Require().Len(resp.Elements, 1)
+	s.Equal("Pre-synced content", resp.Elements[0].ContentText)
+}
+
+func (s *SessionFacadeSuite) TestGetSyncsWhenThrottleExpired() {
+	codexHome := s.T().TempDir()
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.T().Setenv("CODEX_HOME", codexHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-test-throttle-expired.jsonl"),
+		[]byte(
+			`{"timestamp":"2026-06-20T01:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Fresh from adapter"}]}}`+"\n",
+		),
+		0o600,
+	))
+	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+		Agent: model.AgentNameCodex,
+		Sessions: []*model.Session{
+			{NativeID: "test-throttle-expired", Title: "Throttle expired", UpdatedAt: "2026-06-20T01:00:00Z"},
+		},
+	})
+	s.Require().NoError(err)
+	// Pre-sync with old timestamp
+	_, err = s.store.ReplaceSessionElements(s.ctx, &store.ReplaceSessionElementsRequest{
+		SessionID: "codex:test-throttle-expired",
+		Elements: []*model.Element{
+			{Seq: 1, Type: "message", Role: "user", ContentText: "Old cached"},
+		},
+	})
+	s.Require().NoError(err)
+	// Set last_synced_at to 31 minutes ago — just past the 30min throttle
+	oldTime := time.Now().UTC().Add(-31 * time.Minute).Format(time.RFC3339)
+	_, err = s.store.UpdateSessionLastSyncedAt(s.ctx, &store.UpdateSessionLastSyncedAtRequest{
+		SessionID:    "codex:test-throttle-expired",
+		LastSyncedAt: oldTime,
+	})
+	s.Require().NoError(err)
+
+	sessionFacade := facade.NewSessionFacade(nil, s.store)
+	resp, err := sessionFacade.Get(s.ctx, &facade.GetSessionRequest{ID: "codex:test-throttle-expired"})
+	s.Require().NoError(err)
+	// Should re-sync from adapter, replacing cached content
+	s.Require().Len(resp.Elements, 1)
+	s.Equal("Fresh from adapter", resp.Elements[0].ContentText)
+}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -272,30 +273,87 @@ func sessionUpdatedAfter(session *model.Session, updatedSince *time.Time) bool {
 	return !updatedAt.Before(*updatedSince)
 }
 
+const (
+	syncThrottleDuration = 30 * time.Minute
+	syncTimeoutDuration  = 60 * time.Second
+)
+
 func (f *SessionFacade) syncSessionElements(
 	ctx context.Context,
 	session *model.Session,
 	option *Option,
 ) error {
-	adapter, err := f.registry.Lookup(ctx, &adaptor.LookupRequest{Name: session.Agent})
+	// Throttle check — skip if synced recently
+	if session.LastSyncedAt != "" {
+		if lastSynced, err := time.Parse(time.RFC3339, session.LastSyncedAt); err == nil {
+			if time.Since(lastSynced) < syncThrottleDuration {
+				return nil
+			}
+		}
+	}
+	// Timeout context — best-effort on timeout
+	syncCtx, cancel := context.WithTimeout(ctx, syncTimeoutDuration)
+	defer cancel()
+	adapter, err := f.registry.Lookup(syncCtx, &adaptor.LookupRequest{Name: session.Agent})
 	if err != nil {
 		return fmt.Errorf("lookup %s adapter: %w", session.Agent, err)
 	}
 	transcript, err := adapter.Adapter.GetSession(
-		ctx,
+		syncCtx,
 		&adaptor.GetSessionRequest{NativeID: session.NativeID},
 		adaptor.WithVerboseWriter(option.VerboseWriter),
 	)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil // Best-effort: timeout, skip sync
+		}
 		return fmt.Errorf("get %s session %s: %w", session.Agent, session.NativeID, err)
 	}
-	if _, err := f.store.ReplaceSessionElements(ctx, &store.ReplaceSessionElementsRequest{
+	if _, err := f.store.ReplaceSessionElements(syncCtx, &store.ReplaceSessionElementsRequest{
 		SessionID: session.ID,
 		Elements:  transcript.Elements,
 	}); err != nil {
 		return fmt.Errorf("store session elements: %w", err)
 	}
 	return nil
+}
+
+// SyncSessionAsync fires a goroutine that syncs a single session.
+// It returns immediately — the caller (hook handler) is never blocked.
+// All errors are swallowed; verbose log only.
+func (f *SessionFacade) SyncSessionAsync(agent model.AgentName, sessionID string) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), syncTimeoutDuration)
+		defer cancel()
+		session, err := f.store.FindSession(ctx, &store.FindSessionRequest{
+			ID: sessionID, Agent: agent,
+		})
+		if err != nil {
+			return
+		}
+		// Throttle check
+		if session.Session.LastSyncedAt != "" {
+			if lastSynced, err := time.Parse(time.RFC3339, session.Session.LastSyncedAt); err == nil {
+				if time.Since(lastSynced) < syncThrottleDuration {
+					return
+				}
+			}
+		}
+		adapter, err := f.registry.Lookup(ctx, &adaptor.LookupRequest{Name: agent})
+		if err != nil {
+			return
+		}
+		transcript, err := adapter.Adapter.GetSession(ctx,
+			&adaptor.GetSessionRequest{NativeID: session.Session.NativeID})
+		if err != nil {
+			return
+		}
+		_, _ = f.store.ReplaceSessionElements(ctx,
+			&store.ReplaceSessionElementsRequest{
+				SessionID: session.Session.ID,
+				Elements:  transcript.Elements,
+			})
+	}()
 }
 
 func (f *SessionFacade) syncAgentSessions(
@@ -316,6 +374,10 @@ func (f *SessionFacade) syncAgentSessions(
 	if err != nil {
 		return fmt.Errorf("list %s sessions: %w", agent, err)
 	}
+	// Sort newest-first so recent sessions are prioritised for sync
+	sort.Slice(sessions.Sessions, func(i, j int) bool {
+		return sessions.Sessions[i].UpdatedAt > sessions.Sessions[j].UpdatedAt
+	})
 	if _, err := f.store.UpsertSessions(ctx, &store.UpsertSessionsRequest{
 		Agent:    agent,
 		Sessions: sessions.Sessions,
@@ -323,4 +385,113 @@ func (f *SessionFacade) syncAgentSessions(
 		return fmt.Errorf("store %s sessions: %w", agent, err)
 	}
 	return nil
+}
+
+type SearchRequest struct {
+	Query string
+	Limit int
+}
+
+type SearchResponse struct {
+	Results []*store.SearchResult
+}
+
+func (f *SessionFacade) Search(
+	ctx context.Context,
+	req *SearchRequest,
+	opts ...func(*Option),
+) (*SearchResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("search sessions: request is required")
+	}
+	if f.store == nil {
+		return nil, fmt.Errorf("search sessions: store is required")
+	}
+	applyOptions(opts)
+	resp, err := f.store.SearchElements(ctx, &store.SearchElementsRequest{
+		Query: sanitizeFTSQuery(req.Query),
+		Limit: req.Limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("search session elements: %w", err)
+	}
+	return &SearchResponse{Results: resp.Results}, nil
+}
+
+// sanitizeFTSQuery strips FTS5-special characters that cause syntax errors
+// when passed raw to a MATCH clause. Keeps boolean operators (AND, OR, NOT)
+// and quoted phrases intact. This is a minimal port of Hermes's _sanitize_fts5_query.
+func sanitizeFTSQuery(query string) string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return ""
+	}
+	// Protect balanced double-quoted phrases.
+	var quoted []string
+	sanitized := replaceAllQuoted(query, func(m string) string {
+		quoted = append(quoted, m)
+		return fmt.Sprintf("\x00Q%d\x00", len(quoted)-1)
+	})
+	// Strip FTS5-special chars that cause parse errors.
+	sanitized = stripSpecial(sanitized)
+	// Collapse repeated * and remove leading *.
+	sanitized = strings.ReplaceAll(sanitized, "*", "")
+	// Remove dangling boolean operators at start/end.
+	sanitized = trimDanglingBooleans(sanitized)
+	// Restore preserved quoted phrases.
+	for i, q := range quoted {
+		sanitized = strings.ReplaceAll(sanitized, fmt.Sprintf("\x00Q%d\x00", i), q)
+	}
+	return strings.TrimSpace(sanitized)
+}
+
+func replaceAllQuoted(s string, fn func(string) string) string {
+	var result strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == '"' {
+			j := i + 1
+			for j < len(s) && s[j] != '"' {
+				j++
+			}
+			if j < len(s) {
+				result.WriteString(fn(s[i : j+1]))
+				i = j + 1
+				continue
+			}
+		}
+		result.WriteByte(s[i])
+		i++
+	}
+	return result.String()
+}
+
+func stripSpecial(s string) string {
+	var result strings.Builder
+	for _, ch := range s {
+		switch ch {
+		case '+', '{', '}', '(', ')', ':', '^':
+			result.WriteByte(' ')
+		default:
+			result.WriteRune(ch)
+		}
+	}
+	return result.String()
+}
+
+func trimDanglingBooleans(s string) string {
+	s = strings.TrimSpace(s)
+	// Remove leading AND/OR/NOT
+	for _, op := range []string{"AND", "OR", "NOT"} {
+		if strings.HasPrefix(strings.ToUpper(s), op+" ") {
+			s = strings.TrimSpace(s[len(op)+1:])
+		}
+	}
+	// Remove trailing AND/OR/NOT
+	for _, op := range []string{"AND", "OR", "NOT"} {
+		if strings.HasSuffix(strings.ToUpper(s), " "+op) {
+			s = strings.TrimSpace(s[:len(s)-len(op)-1])
+		}
+	}
+	return s
 }

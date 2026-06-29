@@ -182,3 +182,70 @@ func TestAgentHookSupportsHermesPreLLMCallContextOutput(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(delivered.Message), &output))
 	require.Contains(t, output["context"], "Hermes should receive this context.")
 }
+
+func TestAgentHookTurnEndEventReturnsEmptyWithoutError(t *testing.T) {
+	ctx := context.Background()
+	opened, err := store.Open(
+		ctx,
+		&store.OpenRequest{Path: filepath.Join(t.TempDir(), "paxl.sqlite")},
+	)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, opened.Store.Close())
+	}()
+	hookFacade := NewAgentHookFacade(opened.Store)
+
+	// Turn-end event with no session in store — should not error
+	resp, err := hookFacade.Run(ctx, &AgentHookRequest{
+		Agent:     model.AgentNameClaude,
+		Event:     "turn-end",
+		SessionID: "nonexistent-session",
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Empty(t, resp.Message)
+}
+
+func TestAgentHookTurnEndEventNormalizesStopAndSessionEnd(t *testing.T) {
+	ctx := context.Background()
+	opened, err := store.Open(
+		ctx,
+		&store.OpenRequest{Path: filepath.Join(t.TempDir(), "paxl.sqlite")},
+	)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, opened.Store.Close())
+	}()
+	hookFacade := NewAgentHookFacade(opened.Store)
+
+	for _, event := range []string{"Stop", "stop", "SessionEnd", "session_end", "turn-end"} {
+		resp, err := hookFacade.Run(ctx, &AgentHookRequest{
+			Agent:     model.AgentNameClaude,
+			Event:     event,
+			SessionID: "no-such-session",
+		})
+		require.NoError(t, err, "event %q should not error", event)
+		require.NotNil(t, resp)
+		require.Empty(t, resp.Message, "event %q should return empty message", event)
+	}
+}
+
+func TestAgentHookRejectsUnknownEvent(t *testing.T) {
+	ctx := context.Background()
+	opened, err := store.Open(
+		ctx,
+		&store.OpenRequest{Path: filepath.Join(t.TempDir(), "paxl.sqlite")},
+	)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, opened.Store.Close())
+	}()
+	hookFacade := NewAgentHookFacade(opened.Store)
+
+	_, err = hookFacade.Run(ctx, &AgentHookRequest{
+		Agent: model.AgentNameClaude,
+		Event: "unknown_event",
+	})
+	require.Error(t, err)
+}

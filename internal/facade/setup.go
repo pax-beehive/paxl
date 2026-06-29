@@ -289,11 +289,11 @@ func installKiroHook(command string, dryRun bool) (*SetupAdapterResult, error) {
 		Agent:   model.AgentNameKiro,
 		Status:  SetupStatusInstalled,
 		Path:    path,
-		Message: "Installed Kiro CLI userPromptSubmit hook agent and set it as default.",
+		Message: "Installed Kiro CLI userPromptSubmit and Stop hooks and set as default.",
 	}
 	if dryRun {
 		result.Status = SetupStatusPending
-		result.Message = "Would install Kiro CLI userPromptSubmit hook agent and set it as default."
+		result.Message = "Would install Kiro CLI userPromptSubmit and Stop hooks and set as default."
 		return result, nil
 	}
 	config, err := readJSONMap(path)
@@ -302,11 +302,19 @@ func installKiroHook(command string, dryRun bool) (*SetupAdapterResult, error) {
 	}
 	ensureKiroAgentDefaults(config)
 	hooks := ensureMap(config, "hooks")
-	commands := ensureSlice(hooks, "userPromptSubmit")
-	next := map[string]any{
+	// UserPromptSubmit hook (existing)
+	promptCommands := ensureSlice(hooks, "userPromptSubmit")
+	promptNext := map[string]any{
 		"command": setupHookCommand(command, model.AgentNameKiro, dbPath),
 	}
-	hooks["userPromptSubmit"] = upsertKiroUserPromptHook(commands, next)
+	hooks["userPromptSubmit"] = upsertKiroUserPromptHook(promptCommands, promptNext)
+	// Stop hook (turn-end sync)
+	stopCommands := ensureSlice(hooks, "Stop")
+	stopNext := map[string]any{
+		"command": setupHookCommandWithEvent(command, model.AgentNameKiro, dbPath, "turn-end"),
+	}
+	hooks["Stop"] = upsertKiroHookWithNeedle(stopCommands, stopNext,
+		"__agent-hook --agent kiro --event turn-end")
 	raw, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encode Kiro agent config: %w", err)
@@ -331,17 +339,18 @@ func installHermesHook(command string, dryRun bool) (*SetupAdapterResult, error)
 		Agent:   model.AgentNameHermes,
 		Status:  SetupStatusInstalled,
 		Path:    path,
-		Message: "Installed Hermes pre_llm_call shell hook.",
+		Message: "Installed Hermes pre_llm_call and session_finalize hooks.",
 	}
 	if dryRun {
 		result.Status = SetupStatusPending
-		result.Message = "Would install Hermes pre_llm_call shell hook."
+		result.Message = "Would install Hermes pre_llm_call and session_finalize hooks."
 		return result, nil
 	}
 	if err := upsertHermesConfigHook(
 		path,
 		setupHookCommandWithEvent(command, model.AgentNameHermes, dbPath, "pre_llm_call"),
 		setupEnvCommandWithEvent(command, model.AgentNameHermes, "pre_tool_call"),
+		setupHookCommandWithEvent(command, model.AgentNameHermes, dbPath, "turn-end"),
 	); err != nil {
 		return nil, err
 	}
@@ -367,11 +376,11 @@ func installCodexHook(command string, dryRun bool) (*SetupAdapterResult, error) 
 		Agent:   model.AgentNameCodex,
 		Status:  SetupStatusInstalled,
 		Path:    codexConfigPath(),
-		Message: "Installed Codex UserPromptSubmit hook.",
+		Message: "Installed Codex UserPromptSubmit and Stop hooks.",
 	}
 	if dryRun {
 		result.Status = SetupStatusPending
-		result.Message = "Would install Codex UserPromptSubmit hook."
+		result.Message = "Would install Codex UserPromptSubmit and Stop hooks."
 		return result, nil
 	}
 	if err := upsertCodexConfigHook(
@@ -392,11 +401,11 @@ func installClaudeHook(command string, dryRun bool) (*SetupAdapterResult, error)
 		Agent:   model.AgentNameClaude,
 		Status:  SetupStatusInstalled,
 		Path:    path,
-		Message: "Installed Claude Code UserPromptSubmit hook.",
+		Message: "Installed Claude Code UserPromptSubmit and Stop hooks.",
 	}
 	if dryRun {
 		result.Status = SetupStatusPending
-		result.Message = "Would install Claude Code UserPromptSubmit hook."
+		result.Message = "Would install Claude Code UserPromptSubmit and Stop hooks."
 		return result, nil
 	}
 	settings, err := readJSONMap(path)
@@ -404,8 +413,9 @@ func installClaudeHook(command string, dryRun bool) (*SetupAdapterResult, error)
 		return nil, fmt.Errorf("read Claude settings: %w", err)
 	}
 	hooks := ensureMap(settings, "hooks")
-	groups := ensureSlice(hooks, "UserPromptSubmit")
-	group := map[string]any{
+	// UserPromptSubmit hook (existing)
+	promptGroups := ensureSlice(hooks, "UserPromptSubmit")
+	promptGroup := map[string]any{
 		"hooks": []any{
 			map[string]any{
 				"type":    "command",
@@ -414,7 +424,20 @@ func installClaudeHook(command string, dryRun bool) (*SetupAdapterResult, error)
 			},
 		},
 	}
-	hooks["UserPromptSubmit"] = upsertPaxlHook(groups, model.AgentNameClaude, group)
+	hooks["UserPromptSubmit"] = upsertPaxlHook(promptGroups, model.AgentNameClaude, promptGroup)
+	// Stop hook (turn-end sync)
+	stopGroups := ensureSlice(hooks, "Stop")
+	stopGroup := map[string]any{
+		"hooks": []any{
+			map[string]any{
+				"type":    "command",
+				"command": setupHookCommandWithEvent(command, model.AgentNameClaude, "", "turn-end"),
+				"async":   false,
+			},
+		},
+	}
+	hooks["Stop"] = upsertPaxlHookWithNeedle(stopGroups, model.AgentNameClaude, stopGroup,
+		"__agent-hook --agent claude --event turn-end")
 	raw, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encode Claude settings: %w", err)
@@ -457,6 +480,10 @@ func setupEnvCommandWithEvent(command string, agent model.AgentName, event strin
 
 func upsertPaxlHook(groups []any, agent model.AgentName, next map[string]any) []any {
 	needle := "__agent-hook --agent " + string(agent) + " --event user-prompt"
+	return upsertPaxlHookWithNeedle(groups, agent, next, needle)
+}
+
+func upsertPaxlHookWithNeedle(groups []any, agent model.AgentName, next map[string]any, needle string) []any {
 	for index, rawGroup := range groups {
 		group, ok := rawGroup.(map[string]any)
 		if !ok {
@@ -504,6 +531,10 @@ func setDefault(config map[string]any, key string, value any) {
 
 func upsertKiroUserPromptHook(commands []any, next map[string]any) []any {
 	needle := "__agent-hook --agent kiro --event user-prompt"
+	return upsertKiroHookWithNeedle(commands, next, needle)
+}
+
+func upsertKiroHookWithNeedle(commands []any, next map[string]any, needle string) []any {
 	for index, rawCommand := range commands {
 		command, ok := rawCommand.(map[string]any)
 		if !ok {
@@ -536,7 +567,7 @@ func setKiroDefaultAgent(agentName string) error {
 	return nil
 }
 
-func upsertHermesConfigHook(path string, preLLMCommand string, preToolCommand string) error {
+func upsertHermesConfigHook(path string, preLLMCommand string, preToolCommand string, sessionFinalizeCommand string) error {
 	doc, err := readYAMLDocument(path)
 	if err != nil {
 		return fmt.Errorf("read Hermes config: %w", err)
@@ -554,6 +585,13 @@ func upsertHermesConfigHook(path string, preLLMCommand string, preToolCommand st
 		preToolEntries,
 		preToolCommand,
 		"__agent-env --agent hermes --event pre_tool_call",
+	)
+	// Session finalize (turn-end) hook for async session sync.
+	finalizeEntries := ensureYAMLSequence(hooks, "session_finalize")
+	upsertHermesShellHook(
+		finalizeEntries,
+		sessionFinalizeCommand,
+		"__agent-hook --agent hermes --event turn-end",
 	)
 	raw, err := marshalYAMLDocument(doc)
 	if err != nil {
@@ -770,13 +808,22 @@ func upsertCodexConfigHook(path string, command string) error {
 	} else if err != nil {
 		return fmt.Errorf("read Codex config: %w", err)
 	}
-	next := upsertTOMLMultilineEntry(
+	promptEntry := codexHookTOMLEntry(command)
+	stopEntry := codexStopHookTOMLEntry(command)
+	// Upsert both UserPromptSubmit and Stop entries in [hooks] section.
+	content := upsertTOMLMultilineEntry(
 		string(raw),
 		"hooks",
 		[]string{"UserPromptSubmit", "userPromptSubmit"},
-		codexHookTOMLEntry(command),
+		promptEntry,
 	)
-	if err := writeFile(path, []byte(next), 0o600); err != nil {
+	content = upsertTOMLMultilineEntry(
+		content,
+		"hooks",
+		[]string{"Stop", "stop"},
+		stopEntry,
+	)
+	if err := writeFile(path, []byte(content), 0o600); err != nil {
 		return fmt.Errorf("write Codex config: %w", err)
 	}
 	return nil
@@ -785,6 +832,13 @@ func upsertCodexConfigHook(path string, command string) error {
 func codexHookTOMLEntry(command string) string {
 	return "UserPromptSubmit = [{ hooks = [{ type = \"command\", command = " +
 		strconv.Quote(command) +
+		", async = false }] }]"
+}
+
+func codexStopHookTOMLEntry(command string) string {
+	stopCommand := setupHookCommandWithEvent(command, model.AgentNameCodex, "", "turn-end")
+	return "Stop = [{ hooks = [{ type = \"command\", command = " +
+		strconv.Quote(stopCommand) +
 		", async = false }] }]"
 }
 

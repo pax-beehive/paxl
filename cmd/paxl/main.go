@@ -502,6 +502,22 @@ func newSessionCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 					return sessionMirror(ctx, cmd, stdout, stderr, diagnostics)
 				},
 			},
+			{
+				Name:      "query",
+				Usage:     "Search session contents across all agents",
+				ArgsUsage: "<query>",
+				Flags: []cli.Flag{
+					&cli.IntFlag{Name: "limit", Value: 10, Usage: "Maximum results to show"},
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "table",
+						Usage: "Output format: table or jsonl",
+					},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return sessionQuery(ctx, cmd, stdout, stderr)
+				},
+			},
 		},
 	}
 }
@@ -1069,7 +1085,8 @@ func agentHook(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
 		return fmt.Errorf("open hook store: %w", err)
 	}
 	defer closeStore(opened.Store)
-	hookFacade := facade.NewAgentHookFacade(opened.Store)
+	sessionFacade := facade.NewSessionFacade(nil, opened.Store)
+	hookFacade := facade.NewAgentHookFacadeWithSession(opened.Store, sessionFacade)
 	resp, err := hookFacade.Run(ctx, &facade.AgentHookRequest{
 		Agent:       agent,
 		Event:       cmd.String("event"),
@@ -1629,6 +1646,83 @@ func sessionMirror(
 	}
 	if err := renderMirrorResult(stdout, resp, cmd.String("format")); err != nil {
 		return fmt.Errorf("render mirror result: %w", err)
+	}
+	return nil
+}
+
+func sessionQuery(
+	ctx context.Context,
+	cmd *cli.Command,
+	stdout io.Writer,
+	stderr io.Writer,
+) error {
+	query := strings.TrimSpace(cmd.Args().First())
+	if query == "" {
+		return fmt.Errorf("search query is required")
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open session store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	sessionFacade := facade.NewSessionFacade(nil, opened.Store)
+	resp, err := sessionFacade.Search(ctx, &facade.SearchRequest{
+		Query: query,
+		Limit: cmd.Int("limit"),
+	})
+	if err != nil {
+		return fmt.Errorf("search sessions: %w", err)
+	}
+	return renderSearchResults(stdout, resp, cmd.String("format"))
+}
+
+func renderSearchResults(stdout io.Writer, resp *facade.SearchResponse, format string) error {
+	if format == "jsonl" {
+		for _, r := range resp.Results {
+			obj := map[string]any{
+				"session_id":   r.SessionID,
+				"agent":        string(r.Agent),
+				"title":        r.Title,
+				"snippet":      r.Snippet,
+				"element_seq":  r.ElementSeq,
+				"role":         r.Role,
+				"content_text": r.ContentText,
+			}
+			raw, err := json.Marshal(obj)
+			if err != nil {
+				return fmt.Errorf("encode search result: %w", err)
+			}
+			if _, err := fmt.Fprintln(stdout, string(raw)); err != nil {
+				return fmt.Errorf("write search result: %w", err)
+			}
+		}
+		return nil
+	}
+	if len(resp.Results) == 0 {
+		if _, err := fmt.Fprintln(stdout, "No matching sessions found."); err != nil {
+			return fmt.Errorf("write empty result: %w", err)
+		}
+		return nil
+	}
+	for i, r := range resp.Results {
+		if i > 0 {
+			if _, err := fmt.Fprintln(stdout); err != nil {
+				return fmt.Errorf("write separator: %w", err)
+			}
+		}
+		if _, err := fmt.Fprintf(stdout, "[%d] %s — %q\n", i+1, r.SessionID, r.Title); err != nil {
+			return fmt.Errorf("write search header: %w", err)
+		}
+		snippet := r.Snippet
+		if snippet == "" {
+			snippet = r.ContentText
+			if len(snippet) > 80 {
+				snippet = snippet[:80] + "..."
+			}
+		}
+		if _, err := fmt.Fprintf(stdout, "    %s\n", snippet); err != nil {
+			return fmt.Errorf("write search snippet: %w", err)
+		}
 	}
 	return nil
 }

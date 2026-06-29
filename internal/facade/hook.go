@@ -14,8 +14,9 @@ import (
 )
 
 type AgentHookFacade struct {
-	client AuthHTTPClient
-	store  *store.Store
+	client        AuthHTTPClient
+	store         *store.Store
+	sessionFacade *SessionFacade
 }
 
 type AgentHookRequest struct {
@@ -55,6 +56,12 @@ func NewAgentHookFacade(sessionStore *store.Store) *AgentHookFacade {
 	return &AgentHookFacade{store: sessionStore}
 }
 
+// NewAgentHookFacadeWithSession creates an AgentHookFacade with a SessionFacade
+// for turn-end async sync support.
+func NewAgentHookFacadeWithSession(sessionStore *store.Store, sf *SessionFacade) *AgentHookFacade {
+	return &AgentHookFacade{store: sessionStore, sessionFacade: sf}
+}
+
 func (f *AgentHookFacade) Run(
 	ctx context.Context,
 	req *AgentHookRequest,
@@ -67,9 +74,22 @@ func (f *AgentHookFacade) Run(
 	if f.store == nil {
 		return nil, fmt.Errorf("run agent hook: store is required")
 	}
-	if normalizeHookEvent(req.Event) != "user_prompt" {
+	event := normalizeHookEvent(req.Event)
+	switch event {
+	case "user_prompt":
+		return f.handleUserPromptHook(ctx, req, option)
+	case "turn_end":
+		return f.handleTurnEndHook(ctx, req, option)
+	default:
 		return nil, fmt.Errorf("unsupported hook event %q", req.Event)
 	}
+}
+
+func (f *AgentHookFacade) handleUserPromptHook(
+	ctx context.Context,
+	req *AgentHookRequest,
+	option *Option,
+) (*AgentHookResponse, error) {
 	f.acceptPendingInboxRoutes(ctx, option.VerboseWriter)
 	claimed, err := f.store.ClaimHookKnowledgeInjection(
 		ctx,
@@ -92,6 +112,33 @@ func (f *AgentHookFacade) Run(
 		actionItemsFromJSON(claimed.Injection.ActionItemsJSON),
 	)
 	return &AgentHookResponse{Injection: claimed.Injection, Message: message}, nil
+}
+
+// handleTurnEndHook fires an async session sync for the turn-end event.
+// It returns immediately — the agent is never blocked. If the session is not
+// in the store or the session facade is not configured, it is a silent no-op.
+func (f *AgentHookFacade) handleTurnEndHook(
+	_ context.Context,
+	req *AgentHookRequest,
+	option *Option,
+) (*AgentHookResponse, error) {
+	if req.SessionID == "" || req.Agent == model.AgentNameUnknown {
+		return &AgentHookResponse{}, nil
+	}
+	if f.sessionFacade == nil {
+		return &AgentHookResponse{}, nil
+	}
+	// Check if session exists in store before firing async sync
+	session, err := f.store.FindSession(context.Background(),
+		&store.FindSessionRequest{ID: req.SessionID, Agent: req.Agent})
+	if err != nil || session == nil {
+		return &AgentHookResponse{}, nil
+	}
+	writeHookVerbose(option.VerboseWriter,
+		"Turn-end hook: firing async sync for %s session %s.",
+		req.Agent, req.SessionID)
+	f.sessionFacade.SyncSessionAsync(req.Agent, req.SessionID)
+	return &AgentHookResponse{}, nil
 }
 
 func (f *AgentHookFacade) acceptPendingInboxRoutes(ctx context.Context, verbose io.Writer) {
@@ -127,6 +174,9 @@ func normalizeHookEvent(event string) string {
 		return "user_prompt"
 	case "pre_llm_call":
 		return "user_prompt"
+	case "turn-end", "turn_end", "Stop", "stop", "SessionEnd", "session_end",
+		"on_session_finalize", "session_finalize":
+		return "turn_end"
 	default:
 		return strings.TrimSpace(event)
 	}

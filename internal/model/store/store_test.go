@@ -553,3 +553,212 @@ func (s *StoreSuite) TestClaimHookKnowledgeInjectionSupportsAnyAgentAndKeywordRo
 	s.Equal("kci_keyword", claimedKeyword.Injection.InjectionID)
 	s.Equal("claude:claude-session", claimedKeyword.Injection.TargetSessionID)
 }
+
+// ---------------------------------------------------------------------------
+// FTS5 search tests (Task 1 + Task 2 + Task 5)
+// ---------------------------------------------------------------------------
+
+func (s *StoreSuite) TestFTS5TriggersExistAfterMigration() {
+	db, err := sql.Open("sqlite", s.path)
+	s.Require().NoError(err)
+	defer func() { s.Require().NoError(db.Close()) }()
+
+	for _, name := range []string{
+		"session_elements_fts",
+		"session_elements_fts_insert",
+		"session_elements_fts_delete",
+		"session_elements_fts_update",
+	} {
+		var found string
+		err := db.QueryRow(
+			`SELECT name FROM sqlite_master WHERE name = ?`,
+			name,
+		).Scan(&found)
+		s.Require().NoError(err, "expected %s to exist after migration", name)
+		s.Equal(name, found)
+	}
+}
+
+func (s *StoreSuite) TestReplaceSessionElementsDeletesOldRows() {
+	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+		Agent: model.AgentNameCodex,
+		Sessions: []*model.Session{
+			{NativeID: "sess-replace", Title: "Replace test"},
+		},
+	})
+	s.Require().NoError(err)
+
+	// First sync: 2 elements
+	_, err = s.store.ReplaceSessionElements(s.ctx, &store.ReplaceSessionElementsRequest{
+		SessionID: "codex:sess-replace",
+		Elements: []*model.Element{
+			{Seq: 1, Type: "message", Role: "user", ContentText: "Hello"},
+			{Seq: 2, Type: "message", Role: "assistant", ContentText: "World"},
+		},
+	})
+	s.Require().NoError(err)
+
+	// Second sync: 1 element (should replace, not append)
+	_, err = s.store.ReplaceSessionElements(s.ctx, &store.ReplaceSessionElementsRequest{
+		SessionID: "codex:sess-replace",
+		Elements: []*model.Element{
+			{Seq: 1, Type: "message", Role: "user", ContentText: "Updated"},
+		},
+	})
+	s.Require().NoError(err)
+
+	found, err := s.store.FindSession(s.ctx, &store.FindSessionRequest{ID: "codex:sess-replace"})
+	s.Require().NoError(err)
+	elements, err := s.store.Elements(s.ctx, &store.ElementsRequest{Session: found.Session})
+	s.Require().NoError(err)
+
+	s.Require().Len(elements.Elements, 1, "old elements should be deleted, not accumulated")
+	s.Equal("Updated", elements.Elements[0].ContentText)
+}
+
+func (s *StoreSuite) TestSearchElementsReturnsMatchesByBM25Rank() {
+	// Insert two sessions with overlapping content
+	for _, sess := range []struct {
+		agent   model.AgentName
+		native  string
+		title   string
+		content string
+	}{
+		{model.AgentNameCodex, "sess-docker", "Docker deploy", "docker deployment pipeline configuration"},
+		{model.AgentNameClaude, "sess-k8s", "K8s deploy", "docker and kubernetes orchestration"},
+	} {
+		_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+			Agent: sess.agent,
+			Sessions: []*model.Session{
+				{NativeID: sess.native, Title: sess.title},
+			},
+		})
+		s.Require().NoError(err)
+
+		_, err = s.store.ReplaceSessionElements(s.ctx, &store.ReplaceSessionElementsRequest{
+			SessionID: string(sess.agent) + ":" + sess.native,
+			Elements: []*model.Element{
+				{Seq: 1, Type: "message", Role: "user", ContentText: sess.content},
+			},
+		})
+		s.Require().NoError(err)
+	}
+
+	resp, err := s.store.SearchElements(s.ctx, &store.SearchElementsRequest{
+		Query: "docker",
+		Limit: 10,
+	})
+	s.Require().NoError(err)
+	s.Require().Len(resp.Results, 2, "both sessions contain 'docker'")
+
+	// Results should have agent and title populated
+	for _, r := range resp.Results {
+		s.NotEmpty(r.SessionID)
+		s.NotEmpty(r.Agent)
+		s.NotEmpty(r.Title)
+		s.NotEmpty(r.Snippet)
+	}
+}
+
+func (s *StoreSuite) TestSearchElementsReturnsEmptyForNoMatches() {
+	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+		Agent: model.AgentNameCodex,
+		Sessions: []*model.Session{
+			{NativeID: "sess-no-match", Title: "No match"},
+		},
+	})
+	s.Require().NoError(err)
+
+	_, err = s.store.ReplaceSessionElements(s.ctx, &store.ReplaceSessionElementsRequest{
+		SessionID: "codex:sess-no-match",
+		Elements: []*model.Element{
+			{Seq: 1, Type: "message", Role: "user", ContentText: "Hello world"},
+		},
+	})
+	s.Require().NoError(err)
+
+	resp, err := s.store.SearchElements(s.ctx, &store.SearchElementsRequest{
+		Query: "nonexistent",
+		Limit: 10,
+	})
+	s.Require().NoError(err)
+	s.Empty(resp.Results)
+}
+
+func (s *StoreSuite) TestSearchElementsRespectsLimit() {
+	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+		Agent: model.AgentNameCodex,
+		Sessions: []*model.Session{
+			{NativeID: "sess-limit", Title: "Limit test"},
+		},
+	})
+	s.Require().NoError(err)
+
+	_, err = s.store.ReplaceSessionElements(s.ctx, &store.ReplaceSessionElementsRequest{
+		SessionID: "codex:sess-limit",
+		Elements: []*model.Element{
+			{Seq: 1, Type: "message", Role: "user", ContentText: "docker docker docker"},
+			{Seq: 2, Type: "message", Role: "assistant", ContentText: "docker docker docker"},
+			{Seq: 3, Type: "message", Role: "user", ContentText: "docker docker docker"},
+		},
+	})
+	s.Require().NoError(err)
+
+	resp, err := s.store.SearchElements(s.ctx, &store.SearchElementsRequest{
+		Query: "docker",
+		Limit: 2,
+	})
+	s.Require().NoError(err)
+	s.Len(resp.Results, 2)
+}
+
+func (s *StoreSuite) TestSearchElementsReflectsElementReplacement() {
+	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+		Agent: model.AgentNameCodex,
+		Sessions: []*model.Session{
+			{NativeID: "sess-fts-replace", Title: "FTS replace"},
+		},
+	})
+	s.Require().NoError(err)
+
+	// Insert with "alpha"
+	_, err = s.store.ReplaceSessionElements(s.ctx, &store.ReplaceSessionElementsRequest{
+		SessionID: "codex:sess-fts-replace",
+		Elements: []*model.Element{
+			{Seq: 1, Type: "message", Role: "user", ContentText: "alpha beta"},
+		},
+	})
+	s.Require().NoError(err)
+
+	// Search "alpha" — should find it
+	resp, err := s.store.SearchElements(s.ctx, &store.SearchElementsRequest{
+		Query: "alpha",
+		Limit: 10,
+	})
+	s.Require().NoError(err)
+	s.Require().Len(resp.Results, 1)
+
+	// Replace with "gamma delta" — "alpha" should be gone from FTS
+	_, err = s.store.ReplaceSessionElements(s.ctx, &store.ReplaceSessionElementsRequest{
+		SessionID: "codex:sess-fts-replace",
+		Elements: []*model.Element{
+			{Seq: 1, Type: "message", Role: "user", ContentText: "gamma delta"},
+		},
+	})
+	s.Require().NoError(err)
+
+	resp, err = s.store.SearchElements(s.ctx, &store.SearchElementsRequest{
+		Query: "alpha",
+		Limit: 10,
+	})
+	s.Require().NoError(err)
+	s.Empty(resp.Results, "old content should be removed from FTS after replacement")
+
+	// "gamma" should now be findable
+	resp, err = s.store.SearchElements(s.ctx, &store.SearchElementsRequest{
+		Query: "gamma",
+		Limit: 10,
+	})
+	s.Require().NoError(err)
+	s.Require().Len(resp.Results, 1)
+}
