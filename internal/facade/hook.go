@@ -125,6 +125,8 @@ func normalizeHookEvent(event string) string {
 	switch strings.TrimSpace(event) {
 	case "user-prompt", "user_prompt", "UserPromptSubmit":
 		return "user_prompt"
+	case "pre_llm_call":
+		return "user_prompt"
 	default:
 		return strings.TrimSpace(event)
 	}
@@ -158,10 +160,15 @@ func (f *AgentHookFacade) Deliver(
 		model.AgentNamePi,
 		model.AgentNameKiro,
 		model.AgentNameGemini,
-		model.AgentNameHermes,
 		model.AgentNameOpenClaw,
 		model.AgentNamePaxl:
 		return &DeliverAgentHookResponse{DeliveryMethod: "stdout", Message: req.Message}, nil
+	case model.AgentNameHermes:
+		message, err := renderHermesPreLLMCallHookOutput(req.Message)
+		if err != nil {
+			return nil, err
+		}
+		return &DeliverAgentHookResponse{DeliveryMethod: "stdout", Message: message}, nil
 	}
 	return &DeliverAgentHookResponse{DeliveryMethod: "stdout", Message: req.Message}, nil
 }
@@ -211,6 +218,14 @@ func renderCodexUserPromptSubmitHookOutput(message string) (string, error) {
 	raw, err := json.Marshal(output)
 	if err != nil {
 		return "", fmt.Errorf("render codex hook output: %w", err)
+	}
+	return string(raw), nil
+}
+
+func renderHermesPreLLMCallHookOutput(message string) (string, error) {
+	raw, err := json.Marshal(map[string]string{"context": message})
+	if err != nil {
+		return "", fmt.Errorf("render Hermes hook output: %w", err)
 	}
 	return string(raw), nil
 }

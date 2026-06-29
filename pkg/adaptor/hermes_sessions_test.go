@@ -24,6 +24,12 @@ func TestHermesSuite(t *testing.T) {
 	suite.Run(t, new(HermesSuite))
 }
 
+func (s *HermesSuite) SetupTest() {
+	hermesHome := s.T().TempDir()
+	s.setHermesHome(hermesHome)
+	s.disableHermesACP()
+}
+
 func (s *HermesSuite) TestAdapterListsSessionsThroughPublicInterface() {
 	withHermesHTTPClient(s.T(), func(req *http.Request) (*http.Response, error) {
 		s.Equal(http.MethodGet, req.Method)
@@ -111,7 +117,7 @@ func (s *HermesSuite) TestAdapterListsHermesHomeSessionsWhenHTTPIsOffline() {
 	hermesHome := s.T().TempDir()
 	sessionDir := filepath.Join(hermesHome, "sessions")
 	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
-	s.T().Setenv("HERMES_HOME", hermesHome)
+	s.setHermesHome(hermesHome)
 	s.Require().NoError(os.WriteFile(
 		filepath.Join(sessionDir, "sess-local.jsonl"),
 		[]byte(
@@ -139,7 +145,7 @@ func (s *HermesSuite) TestAdapterListsHermesHomeSessionsWithNumericTimestamps() 
 	hermesHome := s.T().TempDir()
 	sessionDir := filepath.Join(hermesHome, "sessions")
 	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
-	s.T().Setenv("HERMES_HOME", hermesHome)
+	s.setHermesHome(hermesHome)
 	s.Require().NoError(os.WriteFile(
 		filepath.Join(sessionDir, "sess-local.jsonl"),
 		[]byte(
@@ -162,7 +168,7 @@ func (s *HermesSuite) TestAdapterIgnoresPaxlHookDescriptorsWhenLookingForLocalSe
 	hermesHome := s.T().TempDir()
 	hookDir := filepath.Join(hermesHome, "paxl", "hooks")
 	s.Require().NoError(os.MkdirAll(hookDir, 0o700))
-	s.T().Setenv("HERMES_HOME", hermesHome)
+	s.setHermesHome(hermesHome)
 	s.Require().NoError(os.WriteFile(
 		filepath.Join(hookDir, "user-prompt.json"),
 		[]byte(`{"agent":"hermes","event":"user-prompt"}`),
@@ -225,7 +231,7 @@ func (s *HermesSuite) TestAdapterGetsHermesHomeSessionElementsWhenHTTPIsOffline(
 	hermesHome := s.T().TempDir()
 	sessionDir := filepath.Join(hermesHome, "history")
 	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
-	s.T().Setenv("HERMES_HOME", hermesHome)
+	s.setHermesHome(hermesHome)
 	s.Require().NoError(os.WriteFile(
 		filepath.Join(sessionDir, "sess-local.json"),
 		[]byte(`{
@@ -256,7 +262,7 @@ func (s *HermesSuite) TestAdapterReadsHermesHomeJSONMessageArray() {
 	hermesHome := s.T().TempDir()
 	sessionDir := filepath.Join(hermesHome, "chats")
 	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
-	s.T().Setenv("HERMES_HOME", hermesHome)
+	s.setHermesHome(hermesHome)
 	s.Require().NoError(os.WriteFile(
 		filepath.Join(sessionDir, "sess-array.json"),
 		[]byte(`[
@@ -280,7 +286,8 @@ func (s *HermesSuite) TestAdapterReadsHermesHomeJSONMessageArray() {
 func (s *HermesSuite) TestAdapterInfoShowsOfflineWithLocalSessionsWhenHTTPIsOffline() {
 	hermesHome := s.T().TempDir()
 	s.Require().NoError(os.MkdirAll(filepath.Join(hermesHome, "sessions"), 0o700))
-	s.T().Setenv("HERMES_HOME", hermesHome)
+	s.setHermesHome(hermesHome)
+	withFailingHermesHTTPClient(s.T())
 
 	resp, err := NewHermesAdapter().Info(context.Background(), &InfoRequest{})
 
@@ -432,6 +439,14 @@ func hermesSSEResponse() *http.Response {
 }
 
 func TestHermesUnavailableMatchesDefaultSessionListBehavior(t *testing.T) {
+	hermesHome := t.TempDir()
+	t.Setenv("HERMES_HOME", hermesHome)
+	t.Setenv("PAXL_HERMES_HOME", hermesHome)
+	originalCommand := hermesACPCommand
+	hermesACPCommand = []string{}
+	t.Cleanup(func() {
+		hermesACPCommand = originalCommand
+	})
 	original := hermesHTTPClient
 	hermesHTTPClient = &http.Client{
 		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -545,6 +560,19 @@ done
 		hermesACPCommand = original
 	})
 	return logPath
+}
+
+func (s *HermesSuite) disableHermesACP() {
+	original := hermesACPCommand
+	hermesACPCommand = []string{}
+	s.T().Cleanup(func() {
+		hermesACPCommand = original
+	})
+}
+
+func (s *HermesSuite) setHermesHome(path string) {
+	s.T().Setenv("HERMES_HOME", path)
+	s.T().Setenv("PAXL_HERMES_HOME", path)
 }
 
 func (s *HermesSuite) readFile(path string) string {
