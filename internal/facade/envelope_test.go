@@ -142,6 +142,64 @@ func (s *EnvelopeFacadeSuite) TestSendPostsRoutedCapsuleEnvelope() {
 	s.Equal("env_1", resp.Envelope.EnvelopeID)
 }
 
+func (s *EnvelopeFacadeSuite) TestSendWithCallerAgentPostsAgentEnvelope() {
+	s.seedCredentialWithNode("node_paxl")
+	s.seedCapsule("kcap_local")
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet &&
+			req.URL.Path == "/api/v1/user/usr_1/nodes/node_paxl/agents":
+			return jsonResponse(`{
+				"data":{
+					"agents":[{
+						"agent_id":"agent_from",
+						"node_id":"node_paxl",
+						"name":"local-codex",
+						"agent_type":"codex",
+						"status":"active"
+					}]
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/user/usr_1/envelopes":
+			body, err := io.ReadAll(req.Body)
+			s.Require().NoError(err)
+			s.Contains(string(body), `"from_agent_id":"agent_from"`)
+			s.Contains(string(body), `"to_agent_id":"agent_to"`)
+			s.NotContains(string(body), "recipient_email")
+			return jsonResponse(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"env_1",
+						"from_agent_id":"agent_from",
+						"to_agent_id":"agent_to",
+						"payload_type":"knowledge_capsule",
+						"payload_json":{},
+						"status":"pending"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected manager request: %s %s", req.Method, req.URL.Path)
+		}
+	})
+	envelopeFacade := NewEnvelopeFacade(client, s.store)
+
+	resp, err := envelopeFacade.Send(s.ctx, &SendEnvelopeRequest{
+		CapsuleID:   "kcap_local",
+		CallerAgent: model.AgentNameCodex,
+		ToAgentID:   "agent_to",
+	})
+
+	s.Require().NoError(err)
+	s.Equal("env_1", resp.Envelope.EnvelopeID)
+	s.Equal("agent_from", resp.Envelope.FromAgentID)
+	s.Equal("agent_to", resp.Envelope.ToAgentID)
+}
+
 func (s *EnvelopeFacadeSuite) TestSendRejectsInvalidRouteRequests() {
 	s.seedCapsule("kcap_local")
 	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -189,6 +247,23 @@ func (s *EnvelopeFacadeSuite) TestSendRejectsInvalidRouteRequests() {
 			s.Contains(err.Error(), tc.want)
 		})
 	}
+}
+
+func (s *EnvelopeFacadeSuite) TestSendRejectsCallerAgentWithoutTargetAgent() {
+	s.seedCapsule("kcap_local")
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("unexpected manager request: %s %s", req.Method, req.URL.Path)
+	})
+	envelopeFacade := NewEnvelopeFacade(client, s.store)
+
+	_, err := envelopeFacade.Send(s.ctx, &SendEnvelopeRequest{
+		CapsuleID:      "kcap_local",
+		RecipientEmail: "other@example.com",
+		CallerAgent:    model.AgentNameCodex,
+	})
+
+	s.Require().Error(err)
+	s.Contains(err.Error(), "caller agent delivery requires to_agent_id")
 }
 
 func (s *EnvelopeFacadeSuite) TestAcceptStoresEnvelopePayloadAsLocalCapsule() {
@@ -567,10 +642,15 @@ func (s *EnvelopeFacadeSuite) TestAcceptRejectsUnsupportedPayloadType() {
 }
 
 func (s *EnvelopeFacadeSuite) seedCredential() {
+	s.seedCredentialWithNode("")
+}
+
+func (s *EnvelopeFacadeSuite) seedCredentialWithNode(nodeID string) {
 	_, err := s.store.SaveAuthCredential(s.ctx, &store.SaveAuthCredentialRequest{
 		Credential: &model.AuthCredential{
 			ManagerURL:  "https://manager.example",
 			APIKey:      "paxu_test",
+			NodeID:      nodeID,
 			UserID:      "usr_1",
 			Email:       "cli@example.com",
 			DisplayName: "CLI",

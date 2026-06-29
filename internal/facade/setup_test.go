@@ -57,13 +57,20 @@ func (s *SetupFacadeSuite) TestInstallSetsUpAllSupportedAgentHooks() {
 	}
 
 	s.FileExists(filepath.Join(s.home, ".pax", "paxl", "hooks", "agent-hook"))
+	s.agentShimContains(model.AgentNameCodex, "PAXL_CALLER_AGENT=codex")
+	s.agentShimContains(model.AgentNameCodex, "--caller-agent codex")
+	s.agentShimContains(model.AgentNameClaude, "PAXL_CALLER_AGENT=claude")
+	s.agentShimContains(model.AgentNameHermes, "PAXL_CALLER_AGENT=hermes")
 	s.FileExists(filepath.Join(s.home, ".codex", "paxl", "hooks", "user-prompt.json"))
 	s.codexConfigContains("UserPromptSubmit")
 	s.codexConfigContains(`type = "command"`)
 	s.codexConfigContains("async = false")
-	s.codexConfigContains("paxl --db ")
+	s.codexConfigContains(
+		filepath.Join(s.home, ".pax", "paxl", "shims", "codex", "paxl") + " --db ",
+	)
 	s.codexConfigContains("__agent-hook --agent codex --event user-prompt")
 	s.hermesConfigHookContains("__agent-hook --agent hermes --event pre_llm_call")
+	s.hermesConfigHookContains("__agent-env --agent hermes --event pre_tool_call")
 	s.FileExists(filepath.Join(s.home, ".pi", "paxl", "hooks", "user-prompt.json"))
 	s.FileExists(filepath.Join(s.home, ".pi", "agent", "extensions", "paxl-hook", "index.ts"))
 	s.FileExists(filepath.Join(s.home, ".kiro", "paxl", "hooks", "user-prompt.json"))
@@ -94,10 +101,12 @@ func (s *SetupFacadeSuite) TestInstallHermesHookWritesPreLLMCallShellHook() {
 	s.Equal(model.AgentNameHermes, resp.Adapters[0].Agent)
 	s.Equal(facade.SetupStatusInstalled, resp.Adapters[0].Status)
 	s.Equal(filepath.Join(s.home, ".hermes", "config.yaml"), resp.Adapters[0].Path)
-	s.hermesConfigHookContains(`/opt/paxl test/bin/paxl`)
+	s.agentShimContains(model.AgentNameHermes, `/opt/paxl test/bin/paxl`)
+	s.hermesConfigHookContains(filepath.Join(s.home, ".pax", "paxl", "shims", "hermes", "paxl"))
 	s.hermesConfigHookContains("--db")
 	s.hermesConfigHookContains(filepath.Join(s.home, ".data", "paxl", "paxl.sqlite"))
 	s.hermesConfigHookContains("__agent-hook --agent hermes --event pre_llm_call")
+	s.hermesConfigHookContains("__agent-env --agent hermes --event pre_tool_call")
 	s.hermesConfigHookContains("post_llm_call")
 
 	_, err = facade.NewSetupFacade().Install(s.ctx, &facade.SetupRequest{
@@ -113,7 +122,7 @@ func (s *SetupFacadeSuite) TestInstallHermesHookWritesPreLLMCallShellHook() {
 	})
 	s.Require().NoError(err)
 	s.assertHermesHookCount(1)
-	s.hermesConfigHookContains("/tmp/new-paxl")
+	s.agentShimContains(model.AgentNameHermes, "/tmp/new-paxl")
 }
 
 func (s *SetupFacadeSuite) TestInstallPiHookWritesBeforeAgentStartExtension() {
@@ -148,7 +157,8 @@ func (s *SetupFacadeSuite) TestInstallPiHookWritesBeforeAgentStartExtension() {
 	s.Contains(extension, `"__agent-hook"`)
 	s.Contains(extension, `"--agent", "pi"`)
 	s.Contains(extension, filepath.Join(s.home, ".data", "paxl", "paxl.sqlite"))
-	s.Contains(extension, `/opt/paxl test/bin/paxl`)
+	s.Contains(extension, filepath.Join(s.home, ".pax", "paxl", "shims", "pi", "paxl"))
+	s.agentShimContains(model.AgentNamePi, `/opt/paxl test/bin/paxl`)
 	s.FileExists(filepath.Join(s.home, ".pi", "paxl", "hooks", "user-prompt.json"))
 }
 
@@ -279,6 +289,12 @@ func (s *SetupFacadeSuite) hermesConfigHookContains(fragment string) {
 	s.Contains(string(raw), fragment)
 }
 
+func (s *SetupFacadeSuite) agentShimContains(agent model.AgentName, fragment string) {
+	raw, err := os.ReadFile(filepath.Join(s.home, ".pax", "paxl", "shims", string(agent), "paxl"))
+	s.Require().NoError(err)
+	s.Contains(string(raw), fragment)
+}
+
 func (s *SetupFacadeSuite) assertHermesHookCount(want int) {
 	raw, err := os.ReadFile(filepath.Join(s.home, ".hermes", "config.yaml"))
 	s.Require().NoError(err)
@@ -306,7 +322,8 @@ func (s *SetupFacadeSuite) assertKiroAgentConfig(path string, wantHookCount int)
 	s.Require().True(ok)
 	command, ok := hook["command"].(string)
 	s.Require().True(ok)
-	s.Contains(command, `/opt/paxl test/bin/paxl`)
+	s.Contains(command, filepath.Join(s.home, ".pax", "paxl", "shims", "kiro", "paxl"))
+	s.agentShimContains(model.AgentNameKiro, `/opt/paxl test/bin/paxl`)
 	s.Contains(command, "--db")
 	s.Contains(command, filepath.Join(s.home, ".data", "paxl", "paxl.sqlite"))
 	s.Contains(command, "__agent-hook --agent kiro --event user-prompt")

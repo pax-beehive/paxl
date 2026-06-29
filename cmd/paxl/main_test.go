@@ -110,6 +110,55 @@ func (s *CommandSuite) TestRunWritesExecutionLogUnderPaxHome() {
 	s.Contains(string(raw), `"args":["version"]`)
 }
 
+func (s *CommandSuite) TestRunWritesCallerAgentFlagToExecutionLog() {
+	home := s.T().TempDir()
+	s.T().Setenv("HOME", home)
+
+	err := run(
+		context.Background(),
+		[]string{"--caller-agent", "codex", "version"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	raw := s.readExecutionLogs(home)
+	s.Contains(raw, `"callerAgent":"codex"`)
+}
+
+func (s *CommandSuite) TestRunWritesCallerAgentEnvToExecutionLog() {
+	home := s.T().TempDir()
+	s.T().Setenv("HOME", home)
+	s.T().Setenv("PAXL_CALLER_AGENT", "hermes")
+
+	err := run(context.Background(), []string{"version"}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	raw := s.readExecutionLogs(home)
+	s.Contains(raw, `"callerAgent":"hermes"`)
+}
+
+func (s *CommandSuite) TestAgentEnvPrintsHookEnvironmentPayload() {
+	err := run(
+		context.Background(),
+		[]string{"__agent-env", "--agent", "hermes", "--event", "pre_tool_call"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	var payload map[string]any
+	s.Require().NoError(json.Unmarshal(s.stdout.Bytes(), &payload))
+	s.Equal("paxl.agent_environment.v1", payload["schemaVersion"])
+	s.Equal("hermes", payload["agent"])
+	s.Equal("pre_tool_call", payload["event"])
+	env, ok := payload["env"].(map[string]any)
+	s.Require().True(ok)
+	s.Equal("hermes", env["PAXL_CALLER_AGENT"])
+	s.Equal("hermes", env["PAXL_AGENT"])
+	s.Contains(payload["additionalContext"], "paxl caller agent: hermes")
+}
+
 func (s *CommandSuite) TestRunWritesCommandErrorsToExecutionLog() {
 	home := s.T().TempDir()
 	s.T().Setenv("HOME", home)
@@ -1753,6 +1802,72 @@ func (s *CommandSuite) TestCapsuleSendResolvesFriendAlias() {
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), "env_1")
 	s.Contains(s.stdout.String(), "please review")
+}
+
+func (s *CommandSuite) TestCapsuleSendFromCallerAgentToTeamAgent() {
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+	capsuleID := s.createLocalCapsule(dbPath, "bridge")
+	restoreHTTPClient := s.stubDefaultHTTPClient(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet &&
+			req.URL.Path == "/api/v1/user/usr_1/nodes/node_paxl/agents":
+			return commandJSONResponse(`{
+				"data":{
+					"agents":[{
+						"agent_id":"agent_from",
+						"node_id":"node_paxl",
+						"name":"local-codex",
+						"agent_type":"codex",
+						"status":"active"
+					}]
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/user/usr_1/envelopes":
+			body, err := io.ReadAll(req.Body)
+			s.Require().NoError(err)
+			s.Contains(string(body), `"from_agent_id":"agent_from"`)
+			s.Contains(string(body), `"to_agent_id":"agent_to"`)
+			s.NotContains(string(body), "recipient_email")
+			return commandJSONResponse(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"env_1",
+						"from_agent_id":"agent_from",
+						"to_agent_id":"agent_to",
+						"payload_type":"knowledge_capsule",
+						"payload_json":{},
+						"status":"pending",
+						"created_at":"2026-06-22T00:00:00Z"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected request: %s %s", req.Method, req.URL.Path)
+		}
+	})
+	defer restoreHTTPClient()
+	s.seedManagerCredential(dbPath, "https://manager.example")
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"--caller-agent", "codex",
+			"capsule", "send", capsuleID,
+			"--to-agent-id", "agent_to",
+			"--format", "jsonl",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"fromAgentId":"agent_from"`)
+	s.Contains(s.stdout.String(), `"toAgentId":"agent_to"`)
 }
 
 func (s *CommandSuite) TestInboxCommandsUseManagerEnvelopes() {

@@ -77,6 +77,8 @@ type Envelope struct {
 	SenderEmail     string          `json:"sender_email"`
 	RecipientUserID string          `json:"recipient_user_id"`
 	RecipientEmail  string          `json:"recipient_email"`
+	FromAgentID     string          `json:"from_agent_id"`
+	ToAgentID       string          `json:"to_agent_id"`
 	PayloadType     string          `json:"payload_type"`
 	PayloadJSON     json.RawMessage `json:"payload_json"`
 	Message         string          `json:"message"`
