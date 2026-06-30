@@ -513,9 +513,16 @@ func newSessionCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 						Value: "table",
 						Usage: "Output format: table or jsonl",
 					},
+					&cli.BoolFlag{Name: "sync", Usage: "Scan local logs before searching"},
+					&cli.StringFlag{
+						Name:  "timeout",
+						Value: "30s",
+						Usage: "Adapter timeout when --sync is enabled",
+					},
+					&cli.BoolFlag{Name: "verbose", Usage: "Print session search sync details"},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					return sessionQuery(ctx, cmd, stdout, stderr)
+					return sessionQuery(ctx, cmd, stdout, stderr, diagnostics)
 				},
 			},
 		},
@@ -1655,21 +1662,32 @@ func sessionQuery(
 	cmd *cli.Command,
 	stdout io.Writer,
 	stderr io.Writer,
+	diagnostics io.Writer,
 ) error {
 	query := strings.TrimSpace(cmd.Args().First())
 	if query == "" {
 		return fmt.Errorf("search query is required")
 	}
+	runCtx, cancel, err := contextWithTimeout(ctx, cmd.String("timeout"))
+	if err != nil {
+		return fmt.Errorf("parse session query timeout: %w", err)
+	}
+	defer cancel()
 	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
 	if err != nil {
 		return fmt.Errorf("open session store: %w", err)
 	}
 	defer closeStore(opened.Store)
 	sessionFacade := facade.NewSessionFacade(nil, opened.Store)
-	resp, err := sessionFacade.Search(ctx, &facade.SearchRequest{
-		Query: query,
-		Limit: cmd.Int("limit"),
-	})
+	resp, err := sessionFacade.Search(
+		runCtx,
+		&facade.SearchRequest{
+			Query:  query,
+			Limit:  cmd.Int("limit"),
+			NoSync: !cmd.Bool("sync"),
+		},
+		facade.WithVerboseWriter(verboseWriter(cmd, stderr, diagnostics)),
+	)
 	if err != nil {
 		return fmt.Errorf("search sessions: %w", err)
 	}
@@ -1710,7 +1728,7 @@ func renderSearchResults(stdout io.Writer, resp *facade.SearchResponse, format s
 				return fmt.Errorf("write separator: %w", err)
 			}
 		}
-		if _, err := fmt.Fprintf(stdout, "[%d] %s — %q\n", i+1, r.SessionID, r.Title); err != nil {
+		if _, err := fmt.Fprintf(stdout, "[%d] %s - %q\n", i+1, r.SessionID, r.Title); err != nil {
 			return fmt.Errorf("write search header: %w", err)
 		}
 		snippet := r.Snippet

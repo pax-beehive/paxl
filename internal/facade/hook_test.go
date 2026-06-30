@@ -195,7 +195,7 @@ func TestAgentHookTurnEndEventReturnsEmptyWithoutError(t *testing.T) {
 	}()
 	hookFacade := NewAgentHookFacade(opened.Store)
 
-	// Turn-end event with no session in store — should not error
+	// Turn-end event with no session in store should not error
 	resp, err := hookFacade.Run(ctx, &AgentHookRequest{
 		Agent:     model.AgentNameClaude,
 		Event:     "turn-end",

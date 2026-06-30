@@ -312,8 +312,9 @@ func (s *SessionFacadeSuite) TestSearchReturnsResultsFromStore() {
 
 	sessionFacade := facade.NewSessionFacade(nil, s.store)
 	resp, err := sessionFacade.Search(s.ctx, &facade.SearchRequest{
-		Query: "docker",
-		Limit: 10,
+		Query:  "docker",
+		Limit:  10,
+		NoSync: true,
 	})
 	s.Require().NoError(err)
 	s.Require().Len(resp.Results, 1)
@@ -340,8 +341,9 @@ func (s *SessionFacadeSuite) TestSearchReturnsEmptyForNoMatches() {
 
 	sessionFacade := facade.NewSessionFacade(nil, s.store)
 	resp, err := sessionFacade.Search(s.ctx, &facade.SearchRequest{
-		Query: "nonexistent",
-		Limit: 10,
+		Query:  "nonexistent",
+		Limit:  10,
+		NoSync: true,
 	})
 	s.Require().NoError(err)
 	s.Empty(resp.Results)
@@ -353,12 +355,11 @@ func (s *SessionFacadeSuite) TestSearchRequiresRequest() {
 	s.Error(err)
 }
 
-func (s *SessionFacadeSuite) TestGetSkipsSyncWhenRecentlySynced() {
+func (s *SessionFacadeSuite) TestGetRefreshesWhenRecentlySynced() {
 	codexHome := s.T().TempDir()
 	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
 	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
 	s.T().Setenv("CODEX_HOME", codexHome)
-	// Write a session with "Old" content
 	s.Require().NoError(os.WriteFile(
 		filepath.Join(rolloutDir, "rollout-test-throttle.jsonl"),
 		[]byte(
@@ -366,7 +367,6 @@ func (s *SessionFacadeSuite) TestGetSkipsSyncWhenRecentlySynced() {
 		),
 		0o600,
 	))
-	// Insert session with a recent last_synced_at
 	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
 		Agent: model.AgentNameCodex,
 		Sessions: []*model.Session{
@@ -374,7 +374,6 @@ func (s *SessionFacadeSuite) TestGetSkipsSyncWhenRecentlySynced() {
 		},
 	})
 	s.Require().NoError(err)
-	// Pre-sync elements and set last_synced_at to now
 	_, err = s.store.ReplaceSessionElements(s.ctx, &store.ReplaceSessionElementsRequest{
 		SessionID: "codex:test-throttle",
 		Elements: []*model.Element{
@@ -382,7 +381,6 @@ func (s *SessionFacadeSuite) TestGetSkipsSyncWhenRecentlySynced() {
 		},
 	})
 	s.Require().NoError(err)
-	// Set last_synced_at to now via direct DB access
 	_, err = s.store.UpdateSessionLastSyncedAt(s.ctx, &store.UpdateSessionLastSyncedAtRequest{
 		SessionID: "codex:test-throttle",
 	})
@@ -391,9 +389,8 @@ func (s *SessionFacadeSuite) TestGetSkipsSyncWhenRecentlySynced() {
 	sessionFacade := facade.NewSessionFacade(nil, s.store)
 	resp, err := sessionFacade.Get(s.ctx, &facade.GetSessionRequest{ID: "codex:test-throttle"})
 	s.Require().NoError(err)
-	// Should return cached content, not re-sync from adapter
 	s.Require().Len(resp.Elements, 1)
-	s.Equal("Pre-synced content", resp.Elements[0].ContentText)
+	s.Equal("Original", resp.Elements[0].ContentText)
 }
 
 func (s *SessionFacadeSuite) TestGetSyncsWhenThrottleExpired() {
@@ -411,11 +408,14 @@ func (s *SessionFacadeSuite) TestGetSyncsWhenThrottleExpired() {
 	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
 		Agent: model.AgentNameCodex,
 		Sessions: []*model.Session{
-			{NativeID: "test-throttle-expired", Title: "Throttle expired", UpdatedAt: "2026-06-20T01:00:00Z"},
+			{
+				NativeID:  "test-throttle-expired",
+				Title:     "Throttle expired",
+				UpdatedAt: "2026-06-20T01:00:00Z",
+			},
 		},
 	})
 	s.Require().NoError(err)
-	// Pre-sync with old timestamp
 	_, err = s.store.ReplaceSessionElements(s.ctx, &store.ReplaceSessionElementsRequest{
 		SessionID: "codex:test-throttle-expired",
 		Elements: []*model.Element{
@@ -423,7 +423,6 @@ func (s *SessionFacadeSuite) TestGetSyncsWhenThrottleExpired() {
 		},
 	})
 	s.Require().NoError(err)
-	// Set last_synced_at to 31 minutes ago — just past the 30min throttle
 	oldTime := time.Now().UTC().Add(-31 * time.Minute).Format(time.RFC3339)
 	_, err = s.store.UpdateSessionLastSyncedAt(s.ctx, &store.UpdateSessionLastSyncedAtRequest{
 		SessionID:    "codex:test-throttle-expired",
@@ -432,9 +431,11 @@ func (s *SessionFacadeSuite) TestGetSyncsWhenThrottleExpired() {
 	s.Require().NoError(err)
 
 	sessionFacade := facade.NewSessionFacade(nil, s.store)
-	resp, err := sessionFacade.Get(s.ctx, &facade.GetSessionRequest{ID: "codex:test-throttle-expired"})
+	resp, err := sessionFacade.Get(
+		s.ctx,
+		&facade.GetSessionRequest{ID: "codex:test-throttle-expired"},
+	)
 	s.Require().NoError(err)
-	// Should re-sync from adapter, replacing cached content
 	s.Require().Len(resp.Elements, 1)
 	s.Equal("Fresh from adapter", resp.Elements[0].ContentText)
 }

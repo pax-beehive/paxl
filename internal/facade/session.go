@@ -283,15 +283,39 @@ func (f *SessionFacade) syncSessionElements(
 	session *model.Session,
 	option *Option,
 ) error {
-	// Throttle check — skip if synced recently
-	if session.LastSyncedAt != "" {
-		if lastSynced, err := time.Parse(time.RFC3339, session.LastSyncedAt); err == nil {
-			if time.Since(lastSynced) < syncThrottleDuration {
-				return nil
-			}
+	return f.syncSessionElementsWithPolicy(ctx, session, option, false)
+}
+
+// SyncSessionAsync fires a goroutine that syncs a single session.
+// It returns immediately; the caller (hook handler) is never blocked.
+// All errors are swallowed; verbose log only.
+func (f *SessionFacade) SyncSessionAsync(
+	ctx context.Context,
+	agent model.AgentName,
+	sessionID string,
+) {
+	go func() {
+		syncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), syncTimeoutDuration)
+		defer cancel()
+		session, err := f.store.FindSession(syncCtx, &store.FindSessionRequest{
+			ID: sessionID, Agent: agent,
+		})
+		if err != nil {
+			return
 		}
+		_ = f.syncSessionElementsWithPolicy(syncCtx, session.Session, &Option{}, true)
+	}()
+}
+
+func (f *SessionFacade) syncSessionElementsWithPolicy(
+	ctx context.Context,
+	session *model.Session,
+	option *Option,
+	throttle bool,
+) error {
+	if throttle && recentlySynced(session.LastSyncedAt) {
+		return nil
 	}
-	// Timeout context — best-effort on timeout
 	syncCtx, cancel := context.WithTimeout(ctx, syncTimeoutDuration)
 	defer cancel()
 	adapter, err := f.registry.Lookup(syncCtx, &adaptor.LookupRequest{Name: session.Agent})
@@ -305,7 +329,7 @@ func (f *SessionFacade) syncSessionElements(
 	)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			return nil // Best-effort: timeout, skip sync
+			return nil
 		}
 		return fmt.Errorf("get %s session %s: %w", session.Agent, session.NativeID, err)
 	}
@@ -318,42 +342,15 @@ func (f *SessionFacade) syncSessionElements(
 	return nil
 }
 
-// SyncSessionAsync fires a goroutine that syncs a single session.
-// It returns immediately — the caller (hook handler) is never blocked.
-// All errors are swallowed; verbose log only.
-func (f *SessionFacade) SyncSessionAsync(agent model.AgentName, sessionID string) {
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), syncTimeoutDuration)
-		defer cancel()
-		session, err := f.store.FindSession(ctx, &store.FindSessionRequest{
-			ID: sessionID, Agent: agent,
-		})
-		if err != nil {
-			return
-		}
-		// Throttle check
-		if session.Session.LastSyncedAt != "" {
-			if lastSynced, err := time.Parse(time.RFC3339, session.Session.LastSyncedAt); err == nil {
-				if time.Since(lastSynced) < syncThrottleDuration {
-					return
-				}
-			}
-		}
-		adapter, err := f.registry.Lookup(ctx, &adaptor.LookupRequest{Name: agent})
-		if err != nil {
-			return
-		}
-		transcript, err := adapter.Adapter.GetSession(ctx,
-			&adaptor.GetSessionRequest{NativeID: session.Session.NativeID})
-		if err != nil {
-			return
-		}
-		_, _ = f.store.ReplaceSessionElements(ctx,
-			&store.ReplaceSessionElementsRequest{
-				SessionID: session.Session.ID,
-				Elements:  transcript.Elements,
-			})
-	}()
+func recentlySynced(lastSyncedAt string) bool {
+	if lastSyncedAt == "" {
+		return false
+	}
+	lastSynced, err := time.Parse(time.RFC3339, lastSyncedAt)
+	if err != nil {
+		return false
+	}
+	return time.Since(lastSynced) < syncThrottleDuration
 }
 
 func (f *SessionFacade) syncAgentSessions(
@@ -388,8 +385,9 @@ func (f *SessionFacade) syncAgentSessions(
 }
 
 type SearchRequest struct {
-	Query string
-	Limit int
+	Query  string
+	Limit  int
+	NoSync bool
 }
 
 type SearchResponse struct {
@@ -407,7 +405,12 @@ func (f *SessionFacade) Search(
 	if f.store == nil {
 		return nil, fmt.Errorf("search sessions: store is required")
 	}
-	applyOptions(opts)
+	option := applyOptions(opts)
+	if !req.NoSync {
+		if err := f.syncSearchSessions(ctx, req.Limit, option); err != nil {
+			return nil, fmt.Errorf("sync search sessions: %w", err)
+		}
+	}
 	resp, err := f.store.SearchElements(ctx, &store.SearchElementsRequest{
 		Query: sanitizeFTSQuery(req.Query),
 		Limit: req.Limit,
@@ -416,6 +419,23 @@ func (f *SessionFacade) Search(
 		return nil, fmt.Errorf("search session elements: %w", err)
 	}
 	return &SearchResponse{Results: resp.Results}, nil
+}
+
+func (f *SessionFacade) syncSearchSessions(ctx context.Context, limit int, option *Option) error {
+	if err := f.syncSessions(ctx, &ListSessionsRequest{Limit: limit}, option); err != nil {
+		return err
+	}
+	resp, err := f.store.ListSessions(ctx, &store.ListSessionsRequest{Limit: limit})
+	if err != nil {
+		return fmt.Errorf("list sessions for search sync: %w", err)
+	}
+	for _, session := range resp.Sessions {
+		if session == nil {
+			continue
+		}
+		_ = f.syncSessionElementsWithPolicy(ctx, session, option, true)
+	}
+	return nil
 }
 
 // sanitizeFTSQuery strips FTS5-special characters that cause syntax errors

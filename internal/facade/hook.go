@@ -115,10 +115,10 @@ func (f *AgentHookFacade) handleUserPromptHook(
 }
 
 // handleTurnEndHook fires an async session sync for the turn-end event.
-// It returns immediately — the agent is never blocked. If the session is not
+// It returns immediately; the agent is never blocked. If the session is not
 // in the store or the session facade is not configured, it is a silent no-op.
 func (f *AgentHookFacade) handleTurnEndHook(
-	_ context.Context,
+	ctx context.Context,
 	req *AgentHookRequest,
 	option *Option,
 ) (*AgentHookResponse, error) {
@@ -128,16 +128,18 @@ func (f *AgentHookFacade) handleTurnEndHook(
 	if f.sessionFacade == nil {
 		return &AgentHookResponse{}, nil
 	}
-	// Check if session exists in store before firing async sync
-	session, err := f.store.FindSession(context.Background(),
+	session, err := f.store.FindSession(ctx,
 		&store.FindSessionRequest{ID: req.SessionID, Agent: req.Agent})
-	if err != nil || session == nil {
+	if errors.Is(err, sql.ErrNoRows) || session == nil {
 		return &AgentHookResponse{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find turn-end session: %w", err)
 	}
 	writeHookVerbose(option.VerboseWriter,
 		"Turn-end hook: firing async sync for %s session %s.",
 		req.Agent, req.SessionID)
-	f.sessionFacade.SyncSessionAsync(req.Agent, req.SessionID)
+	f.sessionFacade.SyncSessionAsync(ctx, req.Agent, req.SessionID)
 	return &AgentHookResponse{}, nil
 }
 

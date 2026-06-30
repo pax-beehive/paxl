@@ -418,7 +418,7 @@ func (s *Store) ReplaceSessionElements(
 	}
 	defer rollbackTx(tx)
 	// Delete old elements for this session (all sync versions) before inserting
-	// new ones. This eliminates ghost rows and keeps the FTS5 index clean — the
+	// new ones. This eliminates ghost rows and keeps the FTS5 index clean; the
 	// delete trigger fires automatically.
 	if _, err := tx.ExecContext(
 		ctx,
@@ -918,6 +918,12 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	`)
 	if err != nil {
 		return err
+	}
+	if _, err := db.ExecContext(
+		ctx,
+		`INSERT INTO session_elements_fts(session_elements_fts) VALUES ('rebuild')`,
+	); err != nil {
+		return fmt.Errorf("rebuild session element search index: %w", err)
 	}
 	columns := []struct {
 		table      string

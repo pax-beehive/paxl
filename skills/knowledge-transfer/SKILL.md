@@ -75,6 +75,23 @@ Use cached metadata only when explicitly wanted:
 paxl session list --no-sync
 ```
 
+Search indexed session content without scanning local logs. This is the default
+fast path when the user remembers a keyword but not the session ID:
+
+```sh
+paxl session query "keyword or phrase"
+paxl session query "keyword or phrase" --limit 20
+paxl session query "keyword or phrase" --format jsonl
+```
+
+If search misses content that may only exist in fresh local logs, explicitly
+refresh recent session indexes before searching:
+
+```sh
+paxl session query "keyword or phrase" --sync
+paxl session query "keyword or phrase" --sync --timeout 10s
+```
+
 User-facing session IDs are typed:
 
 ```text

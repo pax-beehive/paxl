@@ -570,13 +570,82 @@ func (s *StoreSuite) TestFTS5TriggersExistAfterMigration() {
 		"session_elements_fts_update",
 	} {
 		var found string
-		err := db.QueryRow(
+		err := db.QueryRowContext(
+			s.ctx,
 			`SELECT name FROM sqlite_master WHERE name = ?`,
 			name,
 		).Scan(&found)
 		s.Require().NoError(err, "expected %s to exist after migration", name)
 		s.Equal(name, found)
 	}
+}
+
+func (s *StoreSuite) TestMigrationBackfillsFTS5ForExistingElements() {
+	dbPath := filepath.Join(s.T().TempDir(), "old.sqlite")
+	db, err := sql.Open("sqlite", dbPath)
+	s.Require().NoError(err)
+	_, err = db.ExecContext(s.ctx, `
+		CREATE TABLE sessions (
+			id TEXT PRIMARY KEY,
+			agent TEXT NOT NULL,
+			native_id TEXT NOT NULL,
+			title TEXT,
+			status TEXT,
+			preview TEXT,
+			project_id TEXT,
+			workspace_roots_json TEXT,
+			last_active TEXT,
+			updated_at TEXT,
+			last_listed_at TEXT NOT NULL,
+			last_synced_at TEXT,
+			current_sync_version INTEGER DEFAULT 0,
+			raw_json TEXT,
+			UNIQUE(agent, native_id)
+		);
+		CREATE TABLE session_elements (
+			session_id TEXT NOT NULL,
+			sync_version INTEGER NOT NULL,
+			seq INTEGER NOT NULL,
+			type TEXT NOT NULL,
+			role TEXT,
+			model TEXT,
+			started_at TEXT,
+			completed_at TEXT,
+			duration_ms INTEGER DEFAULT 0,
+			usage_json TEXT,
+			content_text TEXT,
+			normalized_json TEXT,
+			raw_json TEXT,
+			PRIMARY KEY(session_id, sync_version, seq)
+		);
+		INSERT INTO sessions (
+			id, agent, native_id, title, last_listed_at, current_sync_version
+		) VALUES (
+			'codex:old-search', 'codex', 'old-search', 'Old searchable session',
+			'2026-06-29T00:00:00Z', 1
+		);
+		INSERT INTO session_elements (
+			session_id, sync_version, seq, type, role, content_text
+		) VALUES (
+			'codex:old-search', 1, 1, 'message', 'user', 'legacy searchable content'
+		);
+	`)
+	s.Require().NoError(err)
+	s.Require().NoError(db.Close())
+
+	opened, err := store.Open(s.ctx, &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	defer func() {
+		s.Require().NoError(opened.Store.Close())
+	}()
+
+	resp, err := opened.Store.SearchElements(s.ctx, &store.SearchElementsRequest{
+		Query: "legacy",
+		Limit: 10,
+	})
+	s.Require().NoError(err)
+	s.Require().Len(resp.Results, 1)
+	s.Equal("codex:old-search", resp.Results[0].SessionID)
 }
 
 func (s *StoreSuite) TestReplaceSessionElementsDeletesOldRows() {
@@ -730,7 +799,7 @@ func (s *StoreSuite) TestSearchElementsReflectsElementReplacement() {
 	})
 	s.Require().NoError(err)
 
-	// Search "alpha" — should find it
+	// Search "alpha"; should find it
 	resp, err := s.store.SearchElements(s.ctx, &store.SearchElementsRequest{
 		Query: "alpha",
 		Limit: 10,
@@ -738,7 +807,7 @@ func (s *StoreSuite) TestSearchElementsReflectsElementReplacement() {
 	s.Require().NoError(err)
 	s.Require().Len(resp.Results, 1)
 
-	// Replace with "gamma delta" — "alpha" should be gone from FTS
+	// Replace with "gamma delta"; "alpha" should be gone from FTS
 	_, err = s.store.ReplaceSessionElements(s.ctx, &store.ReplaceSessionElementsRequest{
 		SessionID: "codex:sess-fts-replace",
 		Elements: []*model.Element{

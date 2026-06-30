@@ -72,6 +72,53 @@ func TestRenderApplyUpdateJSON(t *testing.T) {
 	}
 }
 
+func TestRenderSearchResultsTableEmpty(t *testing.T) {
+	var stdout bytes.Buffer
+
+	err := renderSearchResults(&stdout, &facade.SearchResponse{}, "table")
+
+	if err != nil {
+		t.Fatalf("renderSearchResults() error = %v", err)
+	}
+	if got := stdout.String(); got != "No matching sessions found.\n" {
+		t.Fatalf("rendered empty search = %q", got)
+	}
+}
+
+func TestRenderSearchResultsTableSnippets(t *testing.T) {
+	var stdout bytes.Buffer
+	longContent := strings.Repeat("x", 90)
+
+	err := renderSearchResults(&stdout, &facade.SearchResponse{
+		Results: []*store.SearchResult{
+			{
+				SessionID: "codex:first",
+				Title:     "First",
+				Snippet:   "matched snippet",
+			},
+			{
+				SessionID:   "claude:second",
+				Title:       "Second",
+				ContentText: longContent,
+			},
+		},
+	}, "table")
+
+	if err != nil {
+		t.Fatalf("renderSearchResults() error = %v", err)
+	}
+	got := stdout.String()
+	if !strings.Contains(got, `[1] codex:first - "First"`) {
+		t.Fatalf("rendered search missing first header: %q", got)
+	}
+	if !strings.Contains(got, "matched snippet") {
+		t.Fatalf("rendered search missing snippet: %q", got)
+	}
+	if !strings.Contains(got, strings.Repeat("x", 80)+"...") {
+		t.Fatalf("rendered search missing truncated fallback: %q", got)
+	}
+}
+
 func TestDownloadUpdateBinaryRejectsSizeMismatch(t *testing.T) {
 	client := commandRoundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -1287,7 +1334,7 @@ func (s *CommandSuite) TestPluralTopLevelCommandsAreNotSupported() {
 }
 
 func (s *CommandSuite) TestSingularSessionCommandExposesMigratedSubcommands() {
-	cases := []string{"list", "get", "mirror"}
+	cases := []string{"list", "get", "mirror", "query"}
 	command := findCommand(newCommand(&s.stdout, &s.stderr), "session")
 	s.Require().NotNil(command)
 
@@ -1451,6 +1498,75 @@ func (s *CommandSuite) TestSessionListAcceptsCommaSeparatedAgents() {
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), `"id":"codex:codex-one"`)
 	s.Contains(s.stdout.String(), `"id":"claude:claude-one"`)
+}
+
+func (s *CommandSuite) TestSessionQuerySearchesCachedSessionElements() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	s.seedStoredSessions(dbPath, []*model.Session{
+		{NativeID: "query-one", Title: "Searchable session"},
+	})
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	_, err = opened.Store.ReplaceSessionElements(
+		context.Background(),
+		&store.ReplaceSessionElementsRequest{
+			SessionID: "codex:query-one",
+			Elements: []*model.Element{
+				{Seq: 1, Type: "message", Role: "user", ContentText: "docker rollout plan"},
+			},
+		},
+	)
+	s.Require().NoError(err)
+	s.Require().NoError(opened.Store.Close())
+
+	err = run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"session", "query", "docker",
+			"--format", "jsonl",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"session_id":"codex:query-one"`)
+	s.Contains(s.stdout.String(), `"agent":"codex"`)
+	s.Contains(s.stdout.String(), `"content_text":"docker rollout plan"`)
+}
+
+func (s *CommandSuite) TestSessionQuerySyncsCodexBeforeSearching() {
+	codexHome := s.T().TempDir()
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "29")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.T().Setenv("CODEX_HOME", codexHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-smoke-query-sync.jsonl"),
+		[]byte(
+			`{"type":"session_meta","payload":{"id":"smoke-query-sync","timestamp":"2026-06-29T01:00:00Z","cwd":"/tmp/project"}}`+"\n"+
+				`{"timestamp":"2026-06-29T01:01:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"needlequery sync transcript"}]}}`+"\n",
+		),
+		0o600,
+	))
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"session", "query", "needlequery",
+			"--sync",
+			"--format", "jsonl",
+			"--timeout", "10s",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"session_id":"codex:smoke-query-sync"`)
+	s.Contains(s.stdout.String(), `"content_text":"needlequery sync transcript"`)
 }
 
 func (s *CommandSuite) TestSessionListFiltersUpdatedSinceAndRendersHTML() {

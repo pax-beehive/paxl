@@ -386,6 +386,7 @@ func installCodexHook(command string, dryRun bool) (*SetupAdapterResult, error) 
 	if err := upsertCodexConfigHook(
 		codexConfigPath(),
 		setupHookCommand(command, model.AgentNameCodex, dbPath),
+		setupHookCommandWithEvent(command, model.AgentNameCodex, dbPath, "turn-end"),
 	); err != nil {
 		return nil, err
 	}
@@ -430,13 +431,18 @@ func installClaudeHook(command string, dryRun bool) (*SetupAdapterResult, error)
 	stopGroup := map[string]any{
 		"hooks": []any{
 			map[string]any{
-				"type":    "command",
-				"command": setupHookCommandWithEvent(command, model.AgentNameClaude, "", "turn-end"),
-				"async":   false,
+				"type": "command",
+				"command": setupHookCommandWithEvent(
+					command,
+					model.AgentNameClaude,
+					"",
+					"turn-end",
+				),
+				"async": false,
 			},
 		},
 	}
-	hooks["Stop"] = upsertPaxlHookWithNeedle(stopGroups, model.AgentNameClaude, stopGroup,
+	hooks["Stop"] = upsertPaxlHookWithNeedle(stopGroups, stopGroup,
 		"__agent-hook --agent claude --event turn-end")
 	raw, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
@@ -480,10 +486,14 @@ func setupEnvCommandWithEvent(command string, agent model.AgentName, event strin
 
 func upsertPaxlHook(groups []any, agent model.AgentName, next map[string]any) []any {
 	needle := "__agent-hook --agent " + string(agent) + " --event user-prompt"
-	return upsertPaxlHookWithNeedle(groups, agent, next, needle)
+	return upsertPaxlHookWithNeedle(groups, next, needle)
 }
 
-func upsertPaxlHookWithNeedle(groups []any, agent model.AgentName, next map[string]any, needle string) []any {
+func upsertPaxlHookWithNeedle(
+	groups []any,
+	next map[string]any,
+	needle string,
+) []any {
 	for index, rawGroup := range groups {
 		group, ok := rawGroup.(map[string]any)
 		if !ok {
@@ -567,7 +577,12 @@ func setKiroDefaultAgent(agentName string) error {
 	return nil
 }
 
-func upsertHermesConfigHook(path string, preLLMCommand string, preToolCommand string, sessionFinalizeCommand string) error {
+func upsertHermesConfigHook(
+	path string,
+	preLLMCommand string,
+	preToolCommand string,
+	sessionFinalizeCommand string,
+) error {
 	doc, err := readYAMLDocument(path)
 	if err != nil {
 		return fmt.Errorf("read Hermes config: %w", err)
@@ -801,15 +816,15 @@ export default function (pi: ExtensionAPI) {
 `, strconv.Quote(strings.TrimSpace(command)), strconv.Quote(strings.TrimSpace(dbPath)))
 }
 
-func upsertCodexConfigHook(path string, command string) error {
+func upsertCodexConfigHook(path string, promptCommand string, stopCommand string) error {
 	raw, err := os.ReadFile(path) // #nosec G304
 	if os.IsNotExist(err) {
 		raw = nil
 	} else if err != nil {
 		return fmt.Errorf("read Codex config: %w", err)
 	}
-	promptEntry := codexHookTOMLEntry(command)
-	stopEntry := codexStopHookTOMLEntry(command)
+	promptEntry := codexHookTOMLEntry(promptCommand)
+	stopEntry := codexStopHookTOMLEntry(stopCommand)
 	// Upsert both UserPromptSubmit and Stop entries in [hooks] section.
 	content := upsertTOMLMultilineEntry(
 		string(raw),
@@ -835,8 +850,7 @@ func codexHookTOMLEntry(command string) string {
 		", async = false }] }]"
 }
 
-func codexStopHookTOMLEntry(command string) string {
-	stopCommand := setupHookCommandWithEvent(command, model.AgentNameCodex, "", "turn-end")
+func codexStopHookTOMLEntry(stopCommand string) string {
 	return "Stop = [{ hooks = [{ type = \"command\", command = " +
 		strconv.Quote(stopCommand) +
 		", async = false }] }]"
