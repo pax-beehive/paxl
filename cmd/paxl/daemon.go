@@ -46,9 +46,17 @@ func newDaemonUpdateCommand(stdout io.Writer) *cli.Command {
 		Usage: "Update the paxd daemon binary",
 		Flags: []cli.Flag{
 			&cli.BoolFlag{Name: "dry-run", Usage: "Show update actions without writing files"},
-			&cli.StringFlag{Name: "resolver-url", Value: facade.DefaultDaemonResolverURL, Usage: "Artifact resolver URL"},
+			&cli.StringFlag{
+				Name:  "resolver-url",
+				Value: facade.DefaultDaemonResolverURL,
+				Usage: "Artifact resolver URL",
+			},
 			&cli.StringFlag{Name: "platform", Usage: "Release platform override like darwin/arm64"},
-			&cli.StringFlag{Name: "tag", Value: facade.DefaultUpdateTag, Usage: "Release tag to install"},
+			&cli.StringFlag{
+				Name:  "tag",
+				Value: facade.DefaultUpdateTag,
+				Usage: "Release tag to install",
+			},
 			&cli.StringFlag{Name: "install-dir", Usage: "Directory to install paxd into"},
 			&cli.StringFlag{Name: "format", Value: "text", Usage: "Output format: text or json"},
 		},
@@ -74,9 +82,17 @@ func newDaemonInstallCommand(stdout io.Writer) *cli.Command {
 		Usage: "Install the paxd daemon binary",
 		Flags: []cli.Flag{
 			&cli.BoolFlag{Name: "dry-run", Usage: "Show install actions without writing files"},
-			&cli.StringFlag{Name: "resolver-url", Value: facade.DefaultDaemonResolverURL, Usage: "Artifact resolver URL"},
+			&cli.StringFlag{
+				Name:  "resolver-url",
+				Value: facade.DefaultDaemonResolverURL,
+				Usage: "Artifact resolver URL",
+			},
 			&cli.StringFlag{Name: "platform", Usage: "Release platform override like darwin/arm64"},
-			&cli.StringFlag{Name: "tag", Value: facade.DefaultUpdateTag, Usage: "Release tag to install"},
+			&cli.StringFlag{
+				Name:  "tag",
+				Value: facade.DefaultUpdateTag,
+				Usage: "Release tag to install",
+			},
 			&cli.StringFlag{Name: "install-dir", Usage: "Directory to install paxd into"},
 			&cli.StringFlag{Name: "format", Value: "text", Usage: "Output format: text or json"},
 		},
@@ -103,10 +119,21 @@ func newDaemonSetupCommand(stdout io.Writer) *cli.Command {
 		Flags: []cli.Flag{
 			&cli.BoolFlag{Name: "dry-run", Usage: "Show setup actions without writing files"},
 			&cli.StringFlag{Name: "cloud-url", Usage: "Pax cloud API URL"},
-			&cli.StringFlag{Name: "resolver-url", Value: facade.DefaultDaemonResolverURL, Usage: "Artifact resolver URL used when paxd is missing"},
+			&cli.StringFlag{
+				Name:  "resolver-url",
+				Value: facade.DefaultDaemonResolverURL,
+				Usage: "Artifact resolver URL used when paxd is missing",
+			},
 			&cli.StringFlag{Name: "platform", Usage: "Release platform override like darwin/arm64"},
-			&cli.StringFlag{Name: "tag", Value: facade.DefaultUpdateTag, Usage: "Release tag to install when paxd is missing"},
-			&cli.StringFlag{Name: "install-dir", Usage: "Directory to install paxd into when missing"},
+			&cli.StringFlag{
+				Name:  "tag",
+				Value: facade.DefaultUpdateTag,
+				Usage: "Release tag to install when paxd is missing",
+			},
+			&cli.StringFlag{
+				Name:  "install-dir",
+				Usage: "Directory to install paxd into when missing",
+			},
 			&cli.StringFlag{Name: "format", Value: "text", Usage: "Output format: text or json"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -133,10 +160,14 @@ func newDaemonServiceCommand(stdout io.Writer) *cli.Command {
 		action := action
 		commands = append(commands, &cli.Command{
 			Name:  action,
-			Usage: strings.Title(action) + " the paxd background service",
+			Usage: daemonServiceUsage(action),
 			Flags: []cli.Flag{
 				&cli.BoolFlag{Name: "dry-run", Usage: "Show service action without running paxd"},
-				&cli.StringFlag{Name: "format", Value: "text", Usage: "Output format: text or json"},
+				&cli.StringFlag{
+					Name:  "format",
+					Value: "text",
+					Usage: "Output format: text or json",
+				},
 			},
 			Action: func(ctx context.Context, cmd *cli.Command) error {
 				resp, err := newDaemonLifecycleFacade().Service(ctx, &facade.DaemonServiceRequest{
@@ -184,7 +215,11 @@ func newDaemonRemoteCommand(stdout io.Writer) *cli.Command {
 				Usage: "List configured remotes",
 				Flags: []cli.Flag{
 					&cli.BoolFlag{Name: "all", Usage: "Include disabled remotes"},
-					&cli.StringFlag{Name: "format", Value: "table", Usage: "Output format: table or jsonl"},
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "table",
+						Usage: "Output format: table or jsonl",
+					},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					resp, err := newDaemonFacade().ListRemotes(ctx, &facade.ListDaemonRemotesRequest{
@@ -204,9 +239,16 @@ func newDaemonRemoteCommand(stdout io.Writer) *cli.Command {
 					&cli.StringFlag{Name: "name", Usage: "Remote display name"},
 					&cli.StringFlag{Name: "cloud-url", Usage: "Pax cloud API URL"},
 					&cli.StringFlag{Name: "node-id", Usage: "Pax node id"},
-					&cli.StringFlag{Name: "api-key-ref", Usage: "Secret reference for the node API key"},
+					&cli.StringFlag{
+						Name:  "api-key-ref",
+						Usage: "Secret reference for the node API key",
+					},
 					&cli.BoolFlag{Name: "disabled", Usage: "Create the remote disabled"},
-					&cli.StringFlag{Name: "format", Value: "text", Usage: "Output format: text or json"},
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "text",
+						Usage: "Output format: text or json",
+					},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					resp, err := newDaemonFacade().CreateRemote(ctx, &facade.CreateDaemonRemoteRequest{
@@ -220,7 +262,12 @@ func newDaemonRemoteCommand(stdout io.Writer) *cli.Command {
 					if err != nil {
 						return fmt.Errorf("create daemon remote: %w", err)
 					}
-					return renderDaemonAck(stdout, "Remote create requested.", resp, cmd.String("format"))
+					return renderDaemonAck(
+						stdout,
+						"Remote create requested.",
+						resp,
+						cmd.String("format"),
+					)
 				},
 			},
 			{
@@ -231,10 +278,17 @@ func newDaemonRemoteCommand(stdout io.Writer) *cli.Command {
 					&cli.StringFlag{Name: "name", Usage: "Remote display name"},
 					&cli.StringFlag{Name: "cloud-url", Usage: "Pax cloud API URL"},
 					&cli.StringFlag{Name: "node-id", Usage: "Pax node id"},
-					&cli.StringFlag{Name: "api-key-ref", Usage: "Secret reference for the node API key"},
+					&cli.StringFlag{
+						Name:  "api-key-ref",
+						Usage: "Secret reference for the node API key",
+					},
 					&cli.BoolFlag{Name: "enabled", Usage: "Enable the remote"},
 					&cli.BoolFlag{Name: "disabled", Usage: "Disable the remote"},
-					&cli.StringFlag{Name: "format", Value: "text", Usage: "Output format: text or json"},
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "text",
+						Usage: "Output format: text or json",
+					},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					req := &facade.UpdateDaemonRemoteRequest{RemoteID: cmd.Args().First()}
@@ -255,7 +309,9 @@ func newDaemonRemoteCommand(stdout io.Writer) *cli.Command {
 						req.CloudAPIKeyRef = &value
 					}
 					if cmd.Bool("enabled") && cmd.Bool("disabled") {
-						return fmt.Errorf("remote update: --enabled and --disabled are mutually exclusive")
+						return fmt.Errorf(
+							"remote update: --enabled and --disabled are mutually exclusive",
+						)
 					}
 					if cmd.Bool("enabled") || cmd.Bool("disabled") {
 						value := cmd.Bool("enabled")
@@ -265,12 +321,21 @@ func newDaemonRemoteCommand(stdout io.Writer) *cli.Command {
 					if err != nil {
 						return fmt.Errorf("update daemon remote: %w", err)
 					}
-					return renderDaemonAck(stdout, "Remote update requested.", resp, cmd.String("format"))
+					return renderDaemonAck(
+						stdout,
+						"Remote update requested.",
+						resp,
+						cmd.String("format"),
+					)
 				},
 			},
 			daemonRemoteActionCommand("restart", "Restart a remote control connection", stdout),
 			daemonRemoteActionCommand("disconnect", "Disable a remote", stdout),
-			daemonRemoteActionCommand("remove", "Remove a remote and its local agent connections", stdout),
+			daemonRemoteActionCommand(
+				"remove",
+				"Remove a remote and its local agent connections",
+				stdout,
+			),
 		},
 	}
 }
@@ -315,7 +380,11 @@ func newDaemonAgentCommand(stdout io.Writer) *cli.Command {
 				Usage: "List local agent connections",
 				Flags: []cli.Flag{
 					&cli.BoolFlag{Name: "all", Usage: "Include disabled/deleted connections"},
-					&cli.StringFlag{Name: "format", Value: "table", Usage: "Output format: table or jsonl"},
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "table",
+						Usage: "Output format: table or jsonl",
+					},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					resp, err := newDaemonFacade().ListAgents(ctx, &facade.ListDaemonAgentsRequest{
@@ -334,12 +403,19 @@ func newDaemonAgentCommand(stdout io.Writer) *cli.Command {
 					&cli.StringFlag{Name: "remote", Usage: "Remote id"},
 					&cli.StringFlag{Name: "name", Usage: "Agent connection name"},
 					&cli.StringFlag{Name: "harness", Usage: "Harness to run"},
-					&cli.StringSliceFlag{Name: "command", Usage: "Command argv element. Repeat for multiple elements."},
+					&cli.StringSliceFlag{
+						Name:  "command",
+						Usage: "Command argv element. Repeat for multiple elements.",
+					},
 					&cli.StringFlag{Name: "cloud-agent-id", Usage: "Existing cloud agent id"},
 					&cli.StringFlag{Name: "instance-id", Usage: "Agent instance id"},
 					&cli.StringFlag{Name: "agent-type", Usage: "Cloud agent type"},
 					&cli.StringFlag{Name: "working-dir", Usage: "Working directory"},
-					&cli.StringFlag{Name: "format", Value: "text", Usage: "Output format: text or json"},
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "text",
+						Usage: "Output format: text or json",
+					},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					resp, err := newDaemonFacade().CreateAgent(ctx, &facade.CreateDaemonAgentRequest{
@@ -355,7 +431,12 @@ func newDaemonAgentCommand(stdout io.Writer) *cli.Command {
 					if err != nil {
 						return fmt.Errorf("create daemon agent: %w", err)
 					}
-					return renderDaemonAck(stdout, "Agent create requested.", resp, cmd.String("format"))
+					return renderDaemonAck(
+						stdout,
+						"Agent create requested.",
+						resp,
+						cmd.String("format"),
+					)
 				},
 			},
 			{
@@ -365,15 +446,25 @@ func newDaemonAgentCommand(stdout io.Writer) *cli.Command {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "name", Usage: "Agent connection name"},
 					&cli.StringFlag{Name: "harness", Usage: "Harness to run"},
-					&cli.StringSliceFlag{Name: "command", Usage: "Command argv element. Repeat for multiple elements."},
+					&cli.StringSliceFlag{
+						Name:  "command",
+						Usage: "Command argv element. Repeat for multiple elements.",
+					},
 					&cli.StringFlag{Name: "cloud-agent-id", Usage: "Existing cloud agent id"},
 					&cli.StringFlag{Name: "instance-id", Usage: "Agent instance id"},
 					&cli.StringFlag{Name: "agent-type", Usage: "Cloud agent type"},
 					&cli.StringFlag{Name: "working-dir", Usage: "Working directory"},
-					&cli.StringFlag{Name: "desired-state", Usage: "Desired state: running, stopped, or deleted"},
+					&cli.StringFlag{
+						Name:  "desired-state",
+						Usage: "Desired state: running, stopped, or deleted",
+					},
 					&cli.BoolFlag{Name: "enabled", Usage: "Enable the agent connection"},
 					&cli.BoolFlag{Name: "disabled", Usage: "Disable the agent connection"},
-					&cli.StringFlag{Name: "format", Value: "text", Usage: "Output format: text or json"},
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "text",
+						Usage: "Output format: text or json",
+					},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					req, err := parseDaemonAgentUpdateRequest(cmd)
@@ -384,7 +475,12 @@ func newDaemonAgentCommand(stdout io.Writer) *cli.Command {
 					if err != nil {
 						return fmt.Errorf("update daemon agent: %w", err)
 					}
-					return renderDaemonAck(stdout, "Agent update requested.", resp, cmd.String("format"))
+					return renderDaemonAck(
+						stdout,
+						"Agent update requested.",
+						resp,
+						cmd.String("format"),
+					)
 				},
 			},
 			daemonAgentActionCommand("restart", "Restart a local agent connection", stdout),
@@ -434,7 +530,11 @@ func newDaemonHarnessCommand(stdout io.Writer) *cli.Command {
 				Usage: "List known harnesses",
 				Flags: []cli.Flag{
 					&cli.BoolFlag{Name: "all", Usage: "Include missing harnesses"},
-					&cli.StringFlag{Name: "format", Value: "table", Usage: "Output format: table or jsonl"},
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "table",
+						Usage: "Output format: table or jsonl",
+					},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					resp, err := newDaemonFacade().ListHarnesses(ctx, &facade.ListDaemonHarnessesRequest{
@@ -452,7 +552,11 @@ func newDaemonHarnessCommand(stdout io.Writer) *cli.Command {
 				ArgsUsage: "[harness...]",
 				Flags: []cli.Flag{
 					&cli.BoolFlag{Name: "probe", Usage: "Probe live reachability where supported"},
-					&cli.StringFlag{Name: "format", Value: "table", Usage: "Output format: table or jsonl"},
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "table",
+						Usage: "Output format: table or jsonl",
+					},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					resp, err := newDaemonFacade().DiscoverHarnesses(ctx, &facade.DiscoverDaemonHarnessesRequest{
@@ -478,7 +582,11 @@ func newDaemonLocalCommand(stdout io.Writer) *cli.Command {
 				Name:  "overview",
 				Usage: "Show local paxd overview",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "format", Value: "table", Usage: "Output format: table or jsonl"},
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "table",
+						Usage: "Output format: table or jsonl",
+					},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					resp, err := newDaemonFacade().LocalOverview(ctx, &facade.DaemonLocalOverviewRequest{})
@@ -498,7 +606,11 @@ func newDaemonLocalCommand(stdout io.Writer) *cli.Command {
 						Flags: []cli.Flag{
 							&cli.StringFlag{Name: "agent", Usage: "Agent filter"},
 							&cli.IntFlag{Name: "limit", Usage: "Maximum sessions to show"},
-							&cli.StringFlag{Name: "format", Value: "table", Usage: "Output format: table or jsonl"},
+							&cli.StringFlag{
+								Name:  "format",
+								Value: "table",
+								Usage: "Output format: table or jsonl",
+							},
 						},
 						Action: func(ctx context.Context, cmd *cli.Command) error {
 							resp, err := newDaemonFacade().ListLocalSessions(ctx, &facade.ListDaemonLocalSessionsRequest{
@@ -508,7 +620,11 @@ func newDaemonLocalCommand(stdout io.Writer) *cli.Command {
 							if err != nil {
 								return fmt.Errorf("list daemon local sessions: %w", err)
 							}
-							return renderDaemonLocalSessions(stdout, resp.Sessions, cmd.String("format"))
+							return renderDaemonLocalSessions(
+								stdout,
+								resp.Sessions,
+								cmd.String("format"),
+							)
 						},
 					},
 					{
@@ -518,7 +634,11 @@ func newDaemonLocalCommand(stdout io.Writer) *cli.Command {
 							&cli.StringFlag{Name: "agent", Usage: "Agent filter"},
 							&cli.IntFlag{Name: "limit", Usage: "Maximum sessions to sync"},
 							&cli.StringFlag{Name: "timeout", Value: "10s", Usage: "Sync timeout"},
-							&cli.StringFlag{Name: "format", Value: "text", Usage: "Output format: text or json"},
+							&cli.StringFlag{
+								Name:  "format",
+								Value: "text",
+								Usage: "Output format: text or json",
+							},
 						},
 						Action: func(ctx context.Context, cmd *cli.Command) error {
 							timeout, err := time.ParseDuration(cmd.String("timeout"))
@@ -591,6 +711,8 @@ func parseDaemonAgentUpdateRequest(cmd *cli.Command) (*facade.UpdateDaemonAgentR
 
 func parseDaemonDesiredState(raw string) (model.DaemonDesiredState, error) {
 	switch model.DaemonDesiredState(strings.TrimSpace(raw)) {
+	case model.DaemonDesiredStateUnknown:
+		return model.DaemonDesiredStateUnknown, fmt.Errorf("unsupported desired state %q", raw)
 	case model.DaemonDesiredStateRunning:
 		return model.DaemonDesiredStateRunning, nil
 	case model.DaemonDesiredStateStopped:
@@ -612,12 +734,28 @@ func renderDaemonStatus(
 	}
 	switch format {
 	case "table":
-		fmt.Fprintf(stdout, "DAEMON\t%s\n", firstNonEmpty(resp.Status.Phase, "unknown"))
+		if _, err := fmt.Fprintf(
+			stdout,
+			"DAEMON\t%s\n",
+			firstNonEmpty(resp.Status.Phase, "unknown"),
+		); err != nil {
+			return err
+		}
 		if len(resp.Status.Remotes) > 0 {
 			tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(tw, "REMOTE\tPHASE\tERROR")
+			if _, err := fmt.Fprintln(tw, "REMOTE\tPHASE\tERROR"); err != nil {
+				return err
+			}
 			for _, item := range resp.Status.Remotes {
-				fmt.Fprintf(tw, "%s\t%s\t%s\n", item.RemoteID, firstNonEmpty(item.Phase, "-"), firstNonEmpty(item.LastErrorMessage, "-"))
+				if _, err := fmt.Fprintf(
+					tw,
+					"%s\t%s\t%s\n",
+					item.RemoteID,
+					firstNonEmpty(item.Phase, "-"),
+					firstNonEmpty(item.LastErrorMessage, "-"),
+				); err != nil {
+					return err
+				}
 			}
 			if err := tw.Flush(); err != nil {
 				return err
@@ -625,9 +763,19 @@ func renderDaemonStatus(
 		}
 		if len(resp.Status.AgentConnections) > 0 {
 			tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(tw, "AGENT\tPHASE\tERROR")
+			if _, err := fmt.Fprintln(tw, "AGENT\tPHASE\tERROR"); err != nil {
+				return err
+			}
 			for _, item := range resp.Status.AgentConnections {
-				fmt.Fprintf(tw, "%s\t%s\t%s\n", item.ConnectionID, firstNonEmpty(item.Phase, "-"), firstNonEmpty(item.LastErrorMessage, "-"))
+				if _, err := fmt.Fprintf(
+					tw,
+					"%s\t%s\t%s\n",
+					item.ConnectionID,
+					firstNonEmpty(item.Phase, "-"),
+					firstNonEmpty(item.LastErrorMessage, "-"),
+				); err != nil {
+					return err
+				}
 			}
 			return tw.Flush()
 		}
@@ -651,7 +799,9 @@ func renderDaemonRemotes(
 	switch format {
 	case "table":
 		tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(tw, "REMOTE\tNAME\tURL\tENABLED\tPHASE")
+		if _, err := fmt.Fprintln(tw, "REMOTE\tNAME\tURL\tENABLED\tPHASE"); err != nil {
+			return err
+		}
 		for _, item := range items {
 			enabled := true
 			if item.Remote.Enabled != nil {
@@ -661,7 +811,17 @@ func renderDaemonRemotes(
 			if item.Status != nil {
 				phase = firstNonEmpty(item.Status.Phase, "-")
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%t\t%s\n", item.Remote.ID, item.Remote.Name, item.Remote.CloudAPIURL, enabled, phase)
+			if _, err := fmt.Fprintf(
+				tw,
+				"%s\t%s\t%s\t%t\t%s\n",
+				item.Remote.ID,
+				item.Remote.Name,
+				item.Remote.CloudAPIURL,
+				enabled,
+				phase,
+			); err != nil {
+				return err
+			}
 		}
 		return tw.Flush()
 	case "jsonl":
@@ -683,13 +843,26 @@ func renderDaemonAgents(
 	switch format {
 	case "table":
 		tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(tw, "AGENT\tREMOTE\tNAME\tHARNESS\tDESIRED\tPHASE")
+		if _, err := fmt.Fprintln(tw, "AGENT\tREMOTE\tNAME\tHARNESS\tDESIRED\tPHASE"); err != nil {
+			return err
+		}
 		for _, item := range items {
 			phase := "-"
 			if item.Status != nil {
 				phase = firstNonEmpty(item.Status.Phase, "-")
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", item.ID, item.RemoteID, item.Name, item.Harness, item.DesiredState, phase)
+			if _, err := fmt.Fprintf(
+				tw,
+				"%s\t%s\t%s\t%s\t%s\t%s\n",
+				item.ID,
+				item.RemoteID,
+				item.Name,
+				item.Harness,
+				item.DesiredState,
+				phase,
+			); err != nil {
+				return err
+			}
 		}
 		return tw.Flush()
 	case "jsonl":
@@ -711,14 +884,26 @@ func renderDaemonHarnesses(
 	switch format {
 	case "table":
 		tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(tw, "HARNESS\tSTATE\tCOMMAND\tSOURCE\tNOTE")
+		if _, err := fmt.Fprintln(tw, "HARNESS\tSTATE\tCOMMAND\tSOURCE\tNOTE"); err != nil {
+			return err
+		}
 		for _, item := range items {
 			command := "-"
 			if len(item.Command) > 0 {
 				command = strings.Join(item.Command, " ")
 			}
 			note := firstNonEmpty(item.LastError, item.InstallHint, "-")
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", item.Harness, firstNonEmpty(item.State, "-"), command, firstNonEmpty(item.Source, "-"), note)
+			if _, err := fmt.Fprintf(
+				tw,
+				"%s\t%s\t%s\t%s\t%s\n",
+				item.Harness,
+				firstNonEmpty(item.State, "-"),
+				command,
+				firstNonEmpty(item.Source, "-"),
+				note,
+			); err != nil {
+				return err
+			}
 		}
 		return tw.Flush()
 	case "jsonl":
@@ -739,8 +924,12 @@ func renderDaemonLocalOverview(
 	}
 	switch format {
 	case "table":
-		fmt.Fprintf(stdout, "SESSIONS\t%d\n", len(overview.Sessions))
-		fmt.Fprintf(stdout, "HARNESSES\t%d\n", len(overview.Harnesses))
+		if _, err := fmt.Fprintf(stdout, "SESSIONS\t%d\n", len(overview.Sessions)); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(stdout, "HARNESSES\t%d\n", len(overview.Harnesses)); err != nil {
+			return err
+		}
 		return nil
 	case "jsonl":
 		return json.NewEncoder(stdout).Encode(overview)
@@ -757,9 +946,20 @@ func renderDaemonLocalSessions(
 	switch format {
 	case "table":
 		tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(tw, "ID\tAGENT\tUPDATED\tTITLE")
+		if _, err := fmt.Fprintln(tw, "ID\tAGENT\tUPDATED\tTITLE"); err != nil {
+			return err
+		}
 		for _, item := range items {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", item.ID, item.Agent, firstNonEmpty(item.UpdatedAt, "-"), firstNonEmpty(item.Title, item.Preview, "-"))
+			if _, err := fmt.Fprintf(
+				tw,
+				"%s\t%s\t%s\t%s\n",
+				item.ID,
+				item.Agent,
+				firstNonEmpty(item.UpdatedAt, "-"),
+				firstNonEmpty(item.Title, item.Preview, "-"),
+			); err != nil {
+				return err
+			}
 		}
 		return tw.Flush()
 	case "jsonl":
@@ -780,8 +980,13 @@ func renderDaemonLocalSessionSync(
 	}
 	switch format {
 	case "text":
-		fmt.Fprintf(stdout, "Synced %d local sessions with %d failures.\n", sync.Synced, sync.Failed)
-		return nil
+		_, err := fmt.Fprintf(
+			stdout,
+			"Synced %d local sessions with %d failures.\n",
+			sync.Synced,
+			sync.Failed,
+		)
+		return err
 	case "json":
 		return json.NewEncoder(stdout).Encode(sync)
 	default:
@@ -806,6 +1011,13 @@ func renderDaemonLifecycle(
 	default:
 		return fmt.Errorf("unsupported format %q", format)
 	}
+}
+
+func daemonServiceUsage(action string) string {
+	if action == "" {
+		return "Manage the paxd background service"
+	}
+	return strings.ToUpper(action[:1]) + action[1:] + " the paxd background service"
 }
 
 func renderDaemonAck(

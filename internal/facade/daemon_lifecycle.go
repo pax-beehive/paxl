@@ -111,9 +111,11 @@ func (f *DaemonLifecycleFacade) Install(
 	}
 	binaryName := daemonBinaryName(req.BinaryName)
 	path := filepath.Join(installDir, binaryName)
+	// #nosec G301 -- bin dirs must be searchable.
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create install dir: %w", err)
 	}
+	// #nosec G306 -- paxd must be executable.
 	if err := os.WriteFile(path, binary, 0o755); err != nil {
 		return nil, fmt.Errorf("write paxd binary: %w", err)
 	}
@@ -131,7 +133,7 @@ func (f *DaemonLifecycleFacade) Update(
 	req *DaemonUpdateRequest,
 	opts ...func(*Option),
 ) (*DaemonLifecycleResponse, error) {
-	resp, err := f.Install(ctx, (*DaemonInstallRequest)(req), opts...)
+	resp, err := f.Install(ctx, req, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +218,9 @@ func (f *DaemonLifecycleFacade) Service(
 	}
 	path, err := f.runner.LookPath("paxd")
 	if err != nil {
-		return nil, fmt.Errorf("control paxd service: paxd is not installed; run `paxl daemon install` first")
+		return nil, fmt.Errorf(
+			"control paxd service: paxd is not installed; run `paxl daemon install` first",
+		)
 	}
 	if err := f.runner.Run(ctx, path, []string{"service", action}); err != nil {
 		return nil, fmt.Errorf("run paxd service %s: %w", action, err)
@@ -235,7 +239,7 @@ func (defaultDaemonLifecycleRunner) LookPath(file string) (string, error) {
 }
 
 func (defaultDaemonLifecycleRunner) Run(ctx context.Context, name string, args []string) error {
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(ctx, name, args...) // #nosec G204 -- paxl intentionally runs paxd.
 	return cmd.Run()
 }
 
@@ -256,7 +260,12 @@ func (f *DaemonLifecycleFacade) resolveDaemonArtifact(
 	query.Set("platform", platform)
 	query.Set("tags", tag)
 	endpoint.RawQuery = query.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil) // #nosec G107
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		endpoint.String(),
+		nil,
+	) // #nosec G107
 	if err != nil {
 		return nil, fmt.Errorf("create resolver request: %w", err)
 	}
@@ -309,7 +318,11 @@ func (f *DaemonLifecycleFacade) downloadDaemonArtifact(
 		return nil, fmt.Errorf("read download: %w", err)
 	}
 	if artifact.Size > 0 && int64(len(binary)) != artifact.Size {
-		return nil, fmt.Errorf("download size %d does not match expected %d", len(binary), artifact.Size)
+		return nil, fmt.Errorf(
+			"download size %d does not match expected %d",
+			len(binary),
+			artifact.Size,
+		)
 	}
 	return binary, nil
 }

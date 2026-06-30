@@ -37,7 +37,11 @@ func TestDaemonRemoteCommandsUseDaemonFacade(t *testing.T) {
 		ack: &model.DaemonCommandAck{OK: true, Status: model.DaemonCommandStatusReceived},
 		remotes: &model.DaemonQueryResult{Remotes: &model.DaemonListRemotesResult{
 			Items: []*model.DaemonRemoteView{{
-				Remote: model.DaemonRemote{ID: "prod", Name: "Prod", CloudAPIURL: "https://api.test"},
+				Remote: model.DaemonRemote{
+					ID:          "prod",
+					Name:        "Prod",
+					CloudAPIURL: "https://api.test",
+				},
 			}},
 		}},
 	}
@@ -45,7 +49,12 @@ func TestDaemonRemoteCommandsUseDaemonFacade(t *testing.T) {
 	defer restore()
 
 	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{"daemon", "remote", "list", "--all"}, &stdout, &stderr)
+	err := run(
+		context.Background(),
+		[]string{"daemon", "remote", "list", "--all"},
+		&stdout,
+		&stderr,
+	)
 	require.NoError(t, err)
 	assert.True(t, client.includeDisabled)
 	assert.Contains(t, stdout.String(), "prod")
@@ -72,24 +81,44 @@ func TestDaemonRemoteCommandsUseDaemonFacade(t *testing.T) {
 	assert.Equal(t, "Staging", *client.updatedRemote.Remote.Name)
 
 	stdout.Reset()
-	err = run(context.Background(), []string{"daemon", "remote", "restart", "staging"}, &stdout, &stderr)
+	err = run(
+		context.Background(),
+		[]string{"daemon", "remote", "restart", "staging"},
+		&stdout,
+		&stderr,
+	)
 	require.NoError(t, err)
 	assert.Equal(t, "staging", client.restartedRemoteID)
 
 	stdout.Reset()
-	err = run(context.Background(), []string{"daemon", "remote", "disconnect", "staging"}, &stdout, &stderr)
+	err = run(
+		context.Background(),
+		[]string{"daemon", "remote", "disconnect", "staging"},
+		&stdout,
+		&stderr,
+	)
 	require.NoError(t, err)
 	assert.Equal(t, "staging", client.deletedRemoteID)
 	assert.False(t, client.deletedRemoteCascade)
 
 	stdout.Reset()
-	err = run(context.Background(), []string{"daemon", "remote", "remove", "staging"}, &stdout, &stderr)
+	err = run(
+		context.Background(),
+		[]string{"daemon", "remote", "remove", "staging"},
+		&stdout,
+		&stderr,
+	)
 	require.NoError(t, err)
 	assert.Equal(t, "staging", client.deletedRemoteID)
 	assert.True(t, client.deletedRemoteCascade)
 
 	stdout.Reset()
-	err = run(context.Background(), []string{"daemon", "remote", "list", "--format", "jsonl"}, &stdout, &stderr)
+	err = run(
+		context.Background(),
+		[]string{"daemon", "remote", "list", "--format", "jsonl"},
+		&stdout,
+		&stderr,
+	)
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), `"id":"prod"`)
 }
@@ -107,12 +136,16 @@ func TestDaemonAgentHarnessAndLocalCommandsUseDaemonFacade(t *testing.T) {
 			}},
 		}},
 		harnesses: &model.DaemonQueryResult{Harnesses: &model.DaemonListHarnessesResult{
-			Items: []*model.DaemonHarnessView{{Harness: "codex", State: "available", Command: []string{"codex-acp"}}},
+			Items: []*model.DaemonHarnessView{
+				{Harness: "codex", State: "available", Command: []string{"codex-acp"}},
+			},
 		}},
 		localSessions: &model.DaemonQueryResult{LocalSessions: &model.DaemonListLocalSessionsResult{
 			Items: []*model.DaemonLocalSessionView{{ID: "codex:1", Agent: "codex", Title: "Work"}},
 		}},
-		localSync: &model.DaemonQueryResult{LocalSessionSync: &model.DaemonLocalSessionSyncResult{Synced: 1}},
+		localSync: &model.DaemonQueryResult{
+			LocalSessionSync: &model.DaemonLocalSessionSyncResult{Synced: 1},
+		},
 	}
 	restore := stubDaemonFacade(t, client)
 	defer restore()
@@ -154,29 +187,54 @@ func TestDaemonAgentHarnessAndLocalCommandsUseDaemonFacade(t *testing.T) {
 	assert.Equal(t, []string{"codex-acp"}, *client.updatedAgent.Command)
 
 	stdout.Reset()
-	err = run(context.Background(), []string{"daemon", "agent", "restart", "conn_work"}, &stdout, &stderr)
+	err = run(
+		context.Background(),
+		[]string{"daemon", "agent", "restart", "conn_work"},
+		&stdout,
+		&stderr,
+	)
 	require.NoError(t, err)
 	assert.Equal(t, "conn_work", client.restartedAgentID)
 
 	stdout.Reset()
-	err = run(context.Background(), []string{"daemon", "agent", "stop", "conn_work"}, &stdout, &stderr)
+	err = run(
+		context.Background(),
+		[]string{"daemon", "agent", "stop", "conn_work"},
+		&stdout,
+		&stderr,
+	)
 	require.NoError(t, err)
 	assert.Equal(t, model.DaemonDesiredStateStopped, *client.updatedAgent.DesiredState)
 
 	stdout.Reset()
-	err = run(context.Background(), []string{"daemon", "agent", "remove", "conn_work"}, &stdout, &stderr)
+	err = run(
+		context.Background(),
+		[]string{"daemon", "agent", "remove", "conn_work"},
+		&stdout,
+		&stderr,
+	)
 	require.NoError(t, err)
 	assert.Equal(t, "conn_work", client.deletedAgentID)
 
 	stdout.Reset()
-	err = run(context.Background(), []string{"daemon", "harness", "discover", "--probe", "codex"}, &stdout, &stderr)
+	err = run(
+		context.Background(),
+		[]string{"daemon", "harness", "discover", "--probe", "codex"},
+		&stdout,
+		&stderr,
+	)
 	require.NoError(t, err)
 	assert.True(t, client.probe)
 	assert.Equal(t, []string{"codex"}, client.discoverNames)
 	assert.Contains(t, stdout.String(), "codex-acp")
 
 	stdout.Reset()
-	err = run(context.Background(), []string{"daemon", "harness", "list", "--format", "jsonl"}, &stdout, &stderr)
+	err = run(
+		context.Background(),
+		[]string{"daemon", "harness", "list", "--format", "jsonl"},
+		&stdout,
+		&stderr,
+	)
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), `"harness":"codex"`)
 
@@ -186,19 +244,34 @@ func TestDaemonAgentHarnessAndLocalCommandsUseDaemonFacade(t *testing.T) {
 	assert.Contains(t, stdout.String(), "SESSIONS")
 
 	stdout.Reset()
-	err = run(context.Background(), []string{"daemon", "local", "session", "list", "--agent", "codex"}, &stdout, &stderr)
+	err = run(
+		context.Background(),
+		[]string{"daemon", "local", "session", "list", "--agent", "codex"},
+		&stdout,
+		&stderr,
+	)
 	require.NoError(t, err)
 	assert.Equal(t, "codex", client.localAgent)
 	assert.Contains(t, stdout.String(), "codex:1")
 
 	stdout.Reset()
-	err = run(context.Background(), []string{"daemon", "local", "session", "sync", "--timeout", "1s"}, &stdout, &stderr)
+	err = run(
+		context.Background(),
+		[]string{"daemon", "local", "session", "sync", "--timeout", "1s"},
+		&stdout,
+		&stderr,
+	)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1000), client.syncTimeoutMillis)
 	assert.Contains(t, stdout.String(), "Synced 1")
 
 	stdout.Reset()
-	err = run(context.Background(), []string{"daemon", "local", "session", "sync", "--format", "json"}, &stdout, &stderr)
+	err = run(
+		context.Background(),
+		[]string{"daemon", "local", "session", "sync", "--format", "json"},
+		&stdout,
+		&stderr,
+	)
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), `"synced":1`)
 }
@@ -236,7 +309,11 @@ func TestParseDaemonDesiredStateAcceptsKnownStates(t *testing.T) {
 
 func TestDaemonCommandsRenderJSONOutputs(t *testing.T) {
 	client := &cmdFakeDaemonControlClient{
-		ack: &model.DaemonCommandAck{OK: true, Status: model.DaemonCommandStatusReceived, TargetID: "prod"},
+		ack: &model.DaemonCommandAck{
+			OK:       true,
+			Status:   model.DaemonCommandStatusReceived,
+			TargetID: "prod",
+		},
 		status: &model.DaemonQueryResult{Status: &model.DaemonStatus{
 			Phase: "running",
 		}},
@@ -248,22 +325,42 @@ func TestDaemonCommandsRenderJSONOutputs(t *testing.T) {
 	defer restore()
 
 	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{"daemon", "status", "--format", "jsonl"}, &stdout, &stderr)
+	err := run(
+		context.Background(),
+		[]string{"daemon", "status", "--format", "jsonl"},
+		&stdout,
+		&stderr,
+	)
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), `"phase":"running"`)
 
 	stdout.Reset()
-	err = run(context.Background(), []string{"daemon", "remote", "restart", "prod", "--format", "json"}, &stdout, &stderr)
+	err = run(
+		context.Background(),
+		[]string{"daemon", "remote", "restart", "prod", "--format", "json"},
+		&stdout,
+		&stderr,
+	)
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), `"target_id":"prod"`)
 
 	stdout.Reset()
-	err = run(context.Background(), []string{"daemon", "local", "overview", "--format", "jsonl"}, &stdout, &stderr)
+	err = run(
+		context.Background(),
+		[]string{"daemon", "local", "overview", "--format", "jsonl"},
+		&stdout,
+		&stderr,
+	)
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), `"sessions"`)
 
 	stdout.Reset()
-	err = run(context.Background(), []string{"daemon", "local", "session", "list", "--format", "jsonl"}, &stdout, &stderr)
+	err = run(
+		context.Background(),
+		[]string{"daemon", "local", "session", "list", "--format", "jsonl"},
+		&stdout,
+		&stderr,
+	)
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), `"id":"codex:1"`)
 }
@@ -303,7 +400,12 @@ func TestDaemonLifecycleCommandsSupportDryRun(t *testing.T) {
 	assert.Contains(t, stdout.String(), "Would set up paxd")
 
 	stdout.Reset()
-	err = run(context.Background(), []string{"daemon", "service", "restart", "--dry-run"}, &stdout, &stderr)
+	err = run(
+		context.Background(),
+		[]string{"daemon", "service", "restart", "--dry-run"},
+		&stdout,
+		&stderr,
+	)
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), "Would run paxd service restart")
 }
@@ -352,81 +454,140 @@ func (c *cmdFakeDaemonControlClient) GetStatus(context.Context) (*model.DaemonQu
 	return firstCmdDaemonQuery(c.status), nil
 }
 
-func (c *cmdFakeDaemonControlClient) ListRemotes(_ context.Context, includeDisabled bool) (*model.DaemonQueryResult, error) {
+func (c *cmdFakeDaemonControlClient) ListRemotes(
+	_ context.Context,
+	includeDisabled bool,
+) (*model.DaemonQueryResult, error) {
 	c.includeDisabled = includeDisabled
 	return firstCmdDaemonQuery(c.remotes), nil
 }
 
-func (c *cmdFakeDaemonControlClient) CreateRemote(_ context.Context, _ string, cmd *model.DaemonCreateRemoteCommand) (*model.DaemonCommandAck, error) {
+func (c *cmdFakeDaemonControlClient) CreateRemote(
+	_ context.Context,
+	_ string,
+	cmd *model.DaemonCreateRemoteCommand,
+) (*model.DaemonCommandAck, error) {
 	c.createdRemote = cmd
 	return firstCmdDaemonAck(c.ack), nil
 }
 
-func (c *cmdFakeDaemonControlClient) UpdateRemote(_ context.Context, _ string, remoteID string, cmd *model.DaemonUpdateRemoteCommand) (*model.DaemonCommandAck, error) {
+func (c *cmdFakeDaemonControlClient) UpdateRemote(
+	_ context.Context,
+	_ string,
+	remoteID string,
+	cmd *model.DaemonUpdateRemoteCommand,
+) (*model.DaemonCommandAck, error) {
 	c.updatedRemoteID = remoteID
 	c.updatedRemote = cmd
 	return firstCmdDaemonAck(c.ack), nil
 }
 
-func (c *cmdFakeDaemonControlClient) RestartRemote(_ context.Context, _ string, remoteID string) (*model.DaemonCommandAck, error) {
+func (c *cmdFakeDaemonControlClient) RestartRemote(
+	_ context.Context,
+	_ string,
+	remoteID string,
+) (*model.DaemonCommandAck, error) {
 	c.restartedRemoteID = remoteID
 	return firstCmdDaemonAck(c.ack), nil
 }
 
-func (c *cmdFakeDaemonControlClient) DeleteRemote(_ context.Context, _ string, remoteID string, cascade bool) (*model.DaemonCommandAck, error) {
+func (c *cmdFakeDaemonControlClient) DeleteRemote(
+	_ context.Context,
+	_ string,
+	remoteID string,
+	cascade bool,
+) (*model.DaemonCommandAck, error) {
 	c.deletedRemoteID = remoteID
 	c.deletedRemoteCascade = cascade
 	return firstCmdDaemonAck(c.ack), nil
 }
 
-func (c *cmdFakeDaemonControlClient) ListAgentConnections(context.Context, bool) (*model.DaemonQueryResult, error) {
+func (c *cmdFakeDaemonControlClient) ListAgentConnections(
+	context.Context,
+	bool,
+) (*model.DaemonQueryResult, error) {
 	return firstCmdDaemonQuery(c.agents), nil
 }
 
-func (c *cmdFakeDaemonControlClient) CreateAgentConnection(_ context.Context, _ string, cmd *model.DaemonCreateAgentConnectionCommand) (*model.DaemonCommandAck, error) {
+func (c *cmdFakeDaemonControlClient) CreateAgentConnection(
+	_ context.Context,
+	_ string,
+	cmd *model.DaemonCreateAgentConnectionCommand,
+) (*model.DaemonCommandAck, error) {
 	c.createdAgent = cmd
 	return firstCmdDaemonAck(c.ack), nil
 }
 
-func (c *cmdFakeDaemonControlClient) UpdateAgentConnection(_ context.Context, _ string, connectionID string, cmd *model.DaemonUpdateAgentConnectionCommand) (*model.DaemonCommandAck, error) {
+func (c *cmdFakeDaemonControlClient) UpdateAgentConnection(
+	_ context.Context,
+	_ string,
+	connectionID string,
+	cmd *model.DaemonUpdateAgentConnectionCommand,
+) (*model.DaemonCommandAck, error) {
 	c.updatedAgentID = connectionID
 	c.updatedAgent = cmd
 	return firstCmdDaemonAck(c.ack), nil
 }
 
-func (c *cmdFakeDaemonControlClient) RestartAgentConnection(_ context.Context, _ string, connectionID string) (*model.DaemonCommandAck, error) {
+func (c *cmdFakeDaemonControlClient) RestartAgentConnection(
+	_ context.Context,
+	_ string,
+	connectionID string,
+) (*model.DaemonCommandAck, error) {
 	c.restartedAgentID = connectionID
 	return firstCmdDaemonAck(c.ack), nil
 }
 
-func (c *cmdFakeDaemonControlClient) DeleteAgentConnection(_ context.Context, _ string, connectionID string) (*model.DaemonCommandAck, error) {
+func (c *cmdFakeDaemonControlClient) DeleteAgentConnection(
+	_ context.Context,
+	_ string,
+	connectionID string,
+) (*model.DaemonCommandAck, error) {
 	c.deletedAgentID = connectionID
 	return firstCmdDaemonAck(c.ack), nil
 }
 
-func (c *cmdFakeDaemonControlClient) ListHarnesses(context.Context, bool) (*model.DaemonQueryResult, error) {
+func (c *cmdFakeDaemonControlClient) ListHarnesses(
+	context.Context,
+	bool,
+) (*model.DaemonQueryResult, error) {
 	return firstCmdDaemonQuery(c.harnesses), nil
 }
 
-func (c *cmdFakeDaemonControlClient) DiscoverHarnesses(_ context.Context, probe bool, names []string) (*model.DaemonQueryResult, error) {
+func (c *cmdFakeDaemonControlClient) DiscoverHarnesses(
+	_ context.Context,
+	probe bool,
+	names []string,
+) (*model.DaemonQueryResult, error) {
 	c.probe = probe
 	c.discoverNames = append([]string(nil), names...)
 	return firstCmdDaemonQuery(c.harnesses), nil
 }
 
-func (c *cmdFakeDaemonControlClient) GetLocalOverview(context.Context) (*model.DaemonQueryResult, error) {
+func (c *cmdFakeDaemonControlClient) GetLocalOverview(
+	context.Context,
+) (*model.DaemonQueryResult, error) {
 	return &model.DaemonQueryResult{LocalOverview: &model.DaemonLocalOverview{
 		Sessions: []*model.DaemonLocalSessionView{{ID: "codex:1"}},
 	}}, nil
 }
 
-func (c *cmdFakeDaemonControlClient) ListLocalSessions(_ context.Context, agent string, limit int) (*model.DaemonQueryResult, error) {
+func (c *cmdFakeDaemonControlClient) ListLocalSessions(
+	_ context.Context,
+	agent string,
+	limit int,
+) (*model.DaemonQueryResult, error) {
 	c.localAgent = agent
 	_ = limit
 	return firstCmdDaemonQuery(c.localSessions), nil
 }
 
-func (c *cmdFakeDaemonControlClient) SyncLocalSessions(_ context.Context, agent string, limit int, timeoutMillis int64) (*model.DaemonQueryResult, error) {
+func (c *cmdFakeDaemonControlClient) SyncLocalSessions(
+	_ context.Context,
+	agent string,
+	limit int,
+	timeoutMillis int64,
+) (*model.DaemonQueryResult, error) {
 	_ = agent
 	_ = limit
 	c.syncTimeoutMillis = timeoutMillis

@@ -243,12 +243,29 @@ func newSetupCommand(stdout io.Writer) *cli.Command {
 				Usage: "Output format: table or jsonl",
 			},
 			&cli.BoolFlag{Name: "dry-run", Usage: "Show setup actions without writing files"},
-			&cli.BoolFlag{Name: "with-daemon", Usage: "Install and set up paxd after local agent integrations"},
+			&cli.BoolFlag{
+				Name:  "with-daemon",
+				Usage: "Install and set up paxd after local agent integrations",
+			},
 			&cli.StringFlag{Name: "cloud-url", Usage: "Pax cloud API URL for --with-daemon"},
-			&cli.StringFlag{Name: "daemon-resolver-url", Value: facade.DefaultDaemonResolverURL, Usage: "paxd artifact resolver URL for --with-daemon"},
-			&cli.StringFlag{Name: "daemon-platform", Usage: "paxd release platform override like darwin/arm64"},
-			&cli.StringFlag{Name: "daemon-tag", Value: facade.DefaultUpdateTag, Usage: "paxd release tag for --with-daemon"},
-			&cli.StringFlag{Name: "daemon-install-dir", Usage: "Directory to install paxd into for --with-daemon"},
+			&cli.StringFlag{
+				Name:  "daemon-resolver-url",
+				Value: facade.DefaultDaemonResolverURL,
+				Usage: "paxd artifact resolver URL for --with-daemon",
+			},
+			&cli.StringFlag{
+				Name:  "daemon-platform",
+				Usage: "paxd release platform override like darwin/arm64",
+			},
+			&cli.StringFlag{
+				Name:  "daemon-tag",
+				Value: facade.DefaultUpdateTag,
+				Usage: "paxd release tag for --with-daemon",
+			},
+			&cli.StringFlag{
+				Name:  "daemon-install-dir",
+				Usage: "Directory to install paxd into for --with-daemon",
+			},
 			&cli.StringFlag{
 				Name:   "paxl-command",
 				Usage:  "paxl command path to write into installed hooks",

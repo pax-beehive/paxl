@@ -99,7 +99,9 @@ func TestDaemonLifecycleInstallRejectsChecksumMismatch(t *testing.T) {
 	client := roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		switch r.URL.Path {
 		case "/resolve":
-			return jsonResponse(`{"data":{"url":"https://download.test/download/paxd","sha256":"bad","size_bytes":4,"version":"0.2.0"}}`), nil
+			return jsonResponse(
+				`{"data":{"url":"https://download.test/download/paxd","sha256":"bad","size_bytes":4,"version":"0.2.0"}}`,
+			), nil
 		case "/download/paxd":
 			return &http.Response{StatusCode: http.StatusOK, Body: ioNopCloser([]byte("paxd"))}, nil
 		default:
@@ -215,7 +217,9 @@ func TestDaemonLifecycleInstallReturnsDownloadHTTPError(t *testing.T) {
 	lifecycle.client = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		switch r.URL.Path {
 		case "/resolve":
-			return jsonResponse(`{"data":{"url":"https://download.test/download/paxd","sha256":"abc123","size_bytes":1,"version":"0.2.0"}}`), nil
+			return jsonResponse(
+				`{"data":{"url":"https://download.test/download/paxd","sha256":"abc123","size_bytes":1,"version":"0.2.0"}}`,
+			), nil
 		case "/download/paxd":
 			return &http.Response{StatusCode: http.StatusBadGateway, Body: ioNopCloser(nil)}, nil
 		default:
@@ -291,7 +295,9 @@ func TestDaemonLifecycleSetupReturnsInstallErrorWhenAutoInstallFails(t *testing.
 func TestDaemonLifecycleServiceRunsPaxdServiceAction(t *testing.T) {
 	runner := &fakeDaemonLifecycleRunner{path: "/usr/local/bin/paxd"}
 
-	resp, err := NewDaemonLifecycleFacade(runner).Service(context.Background(), &DaemonServiceRequest{
+	resp, err := NewDaemonLifecycleFacade(
+		runner,
+	).Service(context.Background(), &DaemonServiceRequest{
 		Action: "restart",
 	})
 
@@ -335,7 +341,11 @@ func TestDefaultDaemonLifecycleRunnerInheritsCloudflareEnv(t *testing.T) {
 	path, err := runner.LookPath("sh")
 	require.NoError(t, err)
 
-	err = runner.Run(context.Background(), path, []string{"-c", `test "$PAX_CLOUD_CF_CLIENT_ID" = "cf-client"`})
+	err = runner.Run(
+		context.Background(),
+		path,
+		[]string{"-c", `test "$PAX_CLOUD_CF_CLIENT_ID" = "cf-client"`},
+	)
 
 	require.NoError(t, err)
 }
@@ -367,7 +377,7 @@ type fakeDaemonLifecycleRunner struct {
 	args []string
 }
 
-func (r *fakeDaemonLifecycleRunner) LookPath(file string) (string, error) {
+func (r *fakeDaemonLifecycleRunner) LookPath(_ string) (string, error) {
 	if r.path == "" {
 		return "", os.ErrNotExist
 	}

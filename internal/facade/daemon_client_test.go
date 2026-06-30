@@ -27,24 +27,38 @@ func TestDaemonLocalAPIClientUsesExpectedQueryRoutes(t *testing.T) {
 		case "/v1/remotes":
 			body = model.DaemonQueryResult{Remotes: &model.DaemonListRemotesResult{}}
 		case "/v1/agent-connections":
-			body = model.DaemonQueryResult{AgentConnections: &model.DaemonListAgentConnectionsResult{}}
+			body = model.DaemonQueryResult{
+				AgentConnections: &model.DaemonListAgentConnectionsResult{},
+			}
 		case "/v1/harnesses":
 			body = model.DaemonQueryResult{Harnesses: &model.DaemonListHarnessesResult{}}
 		case "/v1/harnesses/discover":
 			var body map[string]any
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 			assert.Equal(t, true, body["probe"])
-			return daemonJSONResponse(t, status, model.DaemonQueryResult{Harnesses: &model.DaemonListHarnessesResult{}}), nil
+			return daemonJSONResponse(
+				t,
+				status,
+				model.DaemonQueryResult{Harnesses: &model.DaemonListHarnessesResult{}},
+			), nil
 		case "/v1/local/overview":
 			body = model.DaemonQueryResult{LocalOverview: &model.DaemonLocalOverview{}}
 		case "/v1/local/sessions/sync":
 			var body map[string]any
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 			assert.Equal(t, "codex", body["agent"])
-			return daemonJSONResponse(t, status, model.DaemonQueryResult{LocalSessionSync: &model.DaemonLocalSessionSyncResult{Synced: 1}}), nil
+			return daemonJSONResponse(
+				t,
+				status,
+				model.DaemonQueryResult{
+					LocalSessionSync: &model.DaemonLocalSessionSyncResult{Synced: 1},
+				},
+			), nil
 		case "/v1/local/sessions":
 			if r.Method == http.MethodGet {
-				body = model.DaemonQueryResult{LocalSessions: &model.DaemonListLocalSessionsResult{}}
+				body = model.DaemonQueryResult{
+					LocalSessions: &model.DaemonListLocalSessionsResult{},
+				}
 				break
 			}
 		default:
@@ -86,7 +100,11 @@ func TestDaemonLocalAPIClientUsesExpectedCommandRoutes(t *testing.T) {
 	client := daemonRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		seen = append(seen, r.Method+" "+r.URL.RequestURI())
 		assert.NotEmpty(t, r.Header.Get("X-Pax-Command-ID"))
-		return daemonJSONResponse(t, http.StatusOK, model.DaemonCommandAck{OK: true, Status: model.DaemonCommandStatusReceived}), nil
+		return daemonJSONResponse(
+			t,
+			http.StatusOK,
+			model.DaemonCommandAck{OK: true, Status: model.DaemonCommandStatusReceived},
+		), nil
 	})
 
 	api := facade.NewDaemonHTTPClient("https://paxd.test", client)
@@ -94,15 +112,29 @@ func TestDaemonLocalAPIClientUsesExpectedCommandRoutes(t *testing.T) {
 		Remote: model.DaemonRemote{ID: "prod", CloudAPIURL: "https://api.test"},
 	})
 	require.NoError(t, err)
-	_, err = api.UpdateRemote(context.Background(), "cmd_2", "prod", &model.DaemonUpdateRemoteCommand{})
+	_, err = api.UpdateRemote(
+		context.Background(),
+		"cmd_2",
+		"prod",
+		&model.DaemonUpdateRemoteCommand{},
+	)
 	require.NoError(t, err)
 	_, err = api.RestartRemote(context.Background(), "cmd_3", "prod")
 	require.NoError(t, err)
 	_, err = api.DeleteRemote(context.Background(), "cmd_4", "prod", true)
 	require.NoError(t, err)
-	_, err = api.CreateAgentConnection(context.Background(), "cmd_5", &model.DaemonCreateAgentConnectionCommand{Name: "work"})
+	_, err = api.CreateAgentConnection(
+		context.Background(),
+		"cmd_5",
+		&model.DaemonCreateAgentConnectionCommand{Name: "work"},
+	)
 	require.NoError(t, err)
-	_, err = api.UpdateAgentConnection(context.Background(), "cmd_6", "conn_work", &model.DaemonUpdateAgentConnectionCommand{})
+	_, err = api.UpdateAgentConnection(
+		context.Background(),
+		"cmd_6",
+		"conn_work",
+		&model.DaemonUpdateAgentConnectionCommand{},
+	)
 	require.NoError(t, err)
 	_, err = api.RestartAgentConnection(context.Background(), "cmd_7", "conn_work")
 	require.NoError(t, err)
@@ -122,13 +154,14 @@ func TestDaemonLocalAPIClientUsesExpectedCommandRoutes(t *testing.T) {
 }
 
 func TestDaemonLocalAPIClientReturnsHTTPStatusErrors(t *testing.T) {
-	client := daemonRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+	client := daemonRoundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return daemonJSONResponse(t, http.StatusServiceUnavailable, model.DaemonQueryResult{
 			Error: &model.DaemonControlError{Code: "unavailable"},
 		}), nil
 	})
 
-	_, err := facade.NewDaemonHTTPClient("https://paxd.test", client).GetStatus(context.Background())
+	_, err := facade.NewDaemonHTTPClient("https://paxd.test", client).
+		GetStatus(context.Background())
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "503")

@@ -24,14 +24,21 @@ type DaemonControlClient interface {
 		remoteID string,
 		cmd *model.DaemonUpdateRemoteCommand,
 	) (*model.DaemonCommandAck, error)
-	RestartRemote(ctx context.Context, commandID string, remoteID string) (*model.DaemonCommandAck, error)
+	RestartRemote(
+		ctx context.Context,
+		commandID string,
+		remoteID string,
+	) (*model.DaemonCommandAck, error)
 	DeleteRemote(
 		ctx context.Context,
 		commandID string,
 		remoteID string,
 		cascadeAgentConnections bool,
 	) (*model.DaemonCommandAck, error)
-	ListAgentConnections(ctx context.Context, includeDisabled bool) (*model.DaemonQueryResult, error)
+	ListAgentConnections(
+		ctx context.Context,
+		includeDisabled bool,
+	) (*model.DaemonQueryResult, error)
 	CreateAgentConnection(
 		ctx context.Context,
 		commandID string,
@@ -43,12 +50,28 @@ type DaemonControlClient interface {
 		connectionID string,
 		cmd *model.DaemonUpdateAgentConnectionCommand,
 	) (*model.DaemonCommandAck, error)
-	RestartAgentConnection(ctx context.Context, commandID string, connectionID string) (*model.DaemonCommandAck, error)
-	DeleteAgentConnection(ctx context.Context, commandID string, connectionID string) (*model.DaemonCommandAck, error)
+	RestartAgentConnection(
+		ctx context.Context,
+		commandID string,
+		connectionID string,
+	) (*model.DaemonCommandAck, error)
+	DeleteAgentConnection(
+		ctx context.Context,
+		commandID string,
+		connectionID string,
+	) (*model.DaemonCommandAck, error)
 	ListHarnesses(ctx context.Context, includeMissing bool) (*model.DaemonQueryResult, error)
-	DiscoverHarnesses(ctx context.Context, probe bool, names []string) (*model.DaemonQueryResult, error)
+	DiscoverHarnesses(
+		ctx context.Context,
+		probe bool,
+		names []string,
+	) (*model.DaemonQueryResult, error)
 	GetLocalOverview(ctx context.Context) (*model.DaemonQueryResult, error)
-	ListLocalSessions(ctx context.Context, agent string, limit int) (*model.DaemonQueryResult, error)
+	ListLocalSessions(
+		ctx context.Context,
+		agent string,
+		limit int,
+	) (*model.DaemonQueryResult, error)
 	SyncLocalSessions(
 		ctx context.Context,
 		agent string,
@@ -257,15 +280,20 @@ func (f *DaemonFacade) UpdateRemote(
 	if req == nil || strings.TrimSpace(req.RemoteID) == "" {
 		return nil, fmt.Errorf("update daemon remote: remote id is required")
 	}
-	ack, err := f.client.UpdateRemote(ctx, newDaemonCommandID(), strings.TrimSpace(req.RemoteID), &model.DaemonUpdateRemoteCommand{
-		Remote: model.DaemonRemotePatch{
-			Name:        req.Name,
-			CloudAPIURL: req.CloudAPIURL,
-			NodeID:      req.NodeID,
-			Enabled:     req.Enabled,
+	ack, err := f.client.UpdateRemote(
+		ctx,
+		newDaemonCommandID(),
+		strings.TrimSpace(req.RemoteID),
+		&model.DaemonUpdateRemoteCommand{
+			Remote: model.DaemonRemotePatch{
+				Name:        req.Name,
+				CloudAPIURL: req.CloudAPIURL,
+				NodeID:      req.NodeID,
+				Enabled:     req.Enabled,
+			},
+			CloudAPIKeyRef: req.CloudAPIKeyRef,
 		},
-		CloudAPIKeyRef: req.CloudAPIKeyRef,
-	})
+	)
 	return daemonCommandResponse("update daemon remote", ack, err)
 }
 
@@ -354,18 +382,22 @@ func (f *DaemonFacade) CreateAgent(
 	if strings.TrimSpace(req.Harness) == "" {
 		return nil, fmt.Errorf("create daemon agent: harness is required")
 	}
-	ack, err := f.client.CreateAgentConnection(ctx, newDaemonCommandID(), &model.DaemonCreateAgentConnectionCommand{
-		RemoteID:     strings.TrimSpace(req.RemoteID),
-		Name:         strings.TrimSpace(req.Name),
-		CloudAgentID: strings.TrimSpace(req.CloudAgentID),
-		InstanceID:   firstNonEmpty(req.InstanceID, req.Name),
-		AgentType:    firstNonEmpty(req.AgentType, req.Harness),
-		Harness:      strings.TrimSpace(req.Harness),
-		Command:      append([]string(nil), req.Command...),
-		WorkingDir:   strings.TrimSpace(req.WorkingDir),
-		Env:          req.Env,
-		DesiredState: model.DaemonDesiredStateRunning,
-	})
+	ack, err := f.client.CreateAgentConnection(
+		ctx,
+		newDaemonCommandID(),
+		&model.DaemonCreateAgentConnectionCommand{
+			RemoteID:     strings.TrimSpace(req.RemoteID),
+			Name:         strings.TrimSpace(req.Name),
+			CloudAgentID: strings.TrimSpace(req.CloudAgentID),
+			InstanceID:   firstNonEmpty(req.InstanceID, req.Name),
+			AgentType:    firstNonEmpty(req.AgentType, req.Harness),
+			Harness:      strings.TrimSpace(req.Harness),
+			Command:      append([]string(nil), req.Command...),
+			WorkingDir:   strings.TrimSpace(req.WorkingDir),
+			Env:          req.Env,
+			DesiredState: model.DaemonDesiredStateRunning,
+		},
+	)
 	return daemonCommandResponse("create daemon agent", ack, err)
 }
 
@@ -579,7 +611,10 @@ func ackOK(ack *model.DaemonCommandAck) error {
 	if ack.Error != nil {
 		return ack.Error
 	}
-	return fmt.Errorf("local daemon API command failed: %s", firstNonEmpty(string(ack.Status), "unknown"))
+	return fmt.Errorf(
+		"local daemon API command failed: %s",
+		firstNonEmpty(string(ack.Status), "unknown"),
+	)
 }
 
 func daemonAPIGuidance(err error) error {

@@ -148,7 +148,12 @@ func (c *DaemonLocalAPIClient) UpdateAgentConnection(
 		cmd = &model.DaemonUpdateAgentConnectionCommand{}
 	}
 	cmd.ConnectionID = connectionID
-	return c.patchCommand(ctx, "/v1/agent-connections/"+url.PathEscape(connectionID), cmd, commandID)
+	return c.patchCommand(
+		ctx,
+		"/v1/agent-connections/"+url.PathEscape(connectionID),
+		cmd,
+		commandID,
+	)
 }
 
 func (c *DaemonLocalAPIClient) RestartAgentConnection(
@@ -156,7 +161,12 @@ func (c *DaemonLocalAPIClient) RestartAgentConnection(
 	commandID string,
 	connectionID string,
 ) (*model.DaemonCommandAck, error) {
-	return c.postCommand(ctx, "/v1/agent-connections/"+url.PathEscape(connectionID)+"/restart", nil, commandID)
+	return c.postCommand(
+		ctx,
+		"/v1/agent-connections/"+url.PathEscape(connectionID)+"/restart",
+		nil,
+		commandID,
+	)
 }
 
 func (c *DaemonLocalAPIClient) DeleteAgentConnection(
@@ -319,7 +329,7 @@ func (c *DaemonLocalAPIClient) doQuery(
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer closeBody(resp.Body)
 	var result model.DaemonQueryResult
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, err
@@ -341,7 +351,7 @@ func (c *DaemonLocalAPIClient) doCommand(
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer closeBody(resp.Body)
 	var ack model.DaemonCommandAck
 	if err := json.NewDecoder(resp.Body).Decode(&ack); err != nil {
 		return nil, err
