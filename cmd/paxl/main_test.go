@@ -72,6 +72,53 @@ func TestRenderApplyUpdateJSON(t *testing.T) {
 	}
 }
 
+func TestRenderSearchResultsTableEmpty(t *testing.T) {
+	var stdout bytes.Buffer
+
+	err := renderSearchResults(&stdout, &facade.SearchResponse{}, "table")
+
+	if err != nil {
+		t.Fatalf("renderSearchResults() error = %v", err)
+	}
+	if got := stdout.String(); got != "No matching sessions found.\n" {
+		t.Fatalf("rendered empty search = %q", got)
+	}
+}
+
+func TestRenderSearchResultsTableSnippets(t *testing.T) {
+	var stdout bytes.Buffer
+	longContent := strings.Repeat("x", 90)
+
+	err := renderSearchResults(&stdout, &facade.SearchResponse{
+		Results: []*store.SearchResult{
+			{
+				SessionID: "codex:first",
+				Title:     "First",
+				Snippet:   "matched snippet",
+			},
+			{
+				SessionID:   "claude:second",
+				Title:       "Second",
+				ContentText: longContent,
+			},
+		},
+	}, "table")
+
+	if err != nil {
+		t.Fatalf("renderSearchResults() error = %v", err)
+	}
+	got := stdout.String()
+	if !strings.Contains(got, `[1] codex:first - "First"`) {
+		t.Fatalf("rendered search missing first header: %q", got)
+	}
+	if !strings.Contains(got, "matched snippet") {
+		t.Fatalf("rendered search missing snippet: %q", got)
+	}
+	if !strings.Contains(got, strings.Repeat("x", 80)+"...") {
+		t.Fatalf("rendered search missing truncated fallback: %q", got)
+	}
+}
+
 func TestDownloadUpdateBinaryRejectsSizeMismatch(t *testing.T) {
 	client := commandRoundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -914,6 +961,16 @@ func (s *CommandSuite) TestAuthRenderersSupportJSONAndRejectUnknownFormats() {
 	s.NotContains(s.stdout.String(), "paxu_secret")
 	s.NotContains(s.stdout.String(), "APIKey")
 	s.stdout.Reset()
+	s.Require().NoError(renderLogin(&s.stdout, login, "text"))
+	s.Contains(s.stdout.String(), "manager https://manager.example")
+	s.Contains(
+		s.stdout.String(),
+		"verification https://manager.example/paxl-login.html?code=ABC123",
+	)
+	s.Contains(s.stdout.String(), "code ABC123")
+	s.Contains(s.stdout.String(), "waiting for browser approval")
+	s.Contains(s.stdout.String(), "logged in cli@example.com")
+	s.stdout.Reset()
 
 	whoami := &facade.WhoamiResponse{
 		ManagerURL: "https://manager.example",
@@ -1265,6 +1322,21 @@ func (s *CommandSuite) TestUpdateRejectsBadDownloadSHA() {
 	s.Contains(err.Error(), "verify update")
 }
 
+func (s *CommandSuite) TestUpdateStatusTextCoversKnownStatuses() {
+	cases := map[facade.UpdateStatus]string{
+		facade.UpdateStatusUnknown:     "Unknown",
+		facade.UpdateStatusAvailable:   "Update available",
+		facade.UpdateStatusUpToDate:    "Up to date",
+		facade.UpdateStatusAhead:       "Current build is newer than latest stable",
+		facade.UpdateStatusDevelopment: "Development build; latest stable shown",
+		facade.UpdateStatus("other"):   "Unknown",
+	}
+
+	for status, want := range cases {
+		s.Equal(want, updateStatusText(status))
+	}
+}
+
 func (s *CommandSuite) TestUpdateCheckRejectsUnknownFormat() {
 	err := run(
 		context.Background(),
@@ -1287,7 +1359,7 @@ func (s *CommandSuite) TestPluralTopLevelCommandsAreNotSupported() {
 }
 
 func (s *CommandSuite) TestSingularSessionCommandExposesMigratedSubcommands() {
-	cases := []string{"list", "get", "mirror"}
+	cases := []string{"list", "get", "mirror", "query"}
 	command := findCommand(newCommand(&s.stdout, &s.stderr), "session")
 	s.Require().NotNil(command)
 
@@ -1451,6 +1523,128 @@ func (s *CommandSuite) TestSessionListAcceptsCommaSeparatedAgents() {
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), `"id":"codex:codex-one"`)
 	s.Contains(s.stdout.String(), `"id":"claude:claude-one"`)
+}
+
+func (s *CommandSuite) TestSessionQuerySearchesCachedSessionElements() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	s.seedStoredSessions(dbPath, []*model.Session{
+		{NativeID: "query-one", Title: "Searchable session"},
+	})
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	_, err = opened.Store.ReplaceSessionElements(
+		context.Background(),
+		&store.ReplaceSessionElementsRequest{
+			SessionID: "codex:query-one",
+			Elements: []*model.Element{
+				{Seq: 1, Type: "message", Role: "user", ContentText: "docker rollout plan"},
+			},
+		},
+	)
+	s.Require().NoError(err)
+	s.Require().NoError(opened.Store.Close())
+
+	err = run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"session", "query", "docker",
+			"--format", "jsonl",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"session_id":"codex:query-one"`)
+	s.Contains(s.stdout.String(), `"agent":"codex"`)
+	s.Contains(s.stdout.String(), `"content_text":"docker rollout plan"`)
+}
+
+func (s *CommandSuite) TestSessionQueryFiltersCachedResultsByAgent() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	for _, sess := range []struct {
+		agent  model.AgentName
+		native string
+	}{
+		{model.AgentNameCodex, "query-filter-codex"},
+		{model.AgentNameHermes, "query-filter-hermes"},
+	} {
+		_, err = opened.Store.UpsertSessions(context.Background(), &store.UpsertSessionsRequest{
+			Agent: sess.agent,
+			Sessions: []*model.Session{
+				{NativeID: sess.native, Title: "Query filter"},
+			},
+		})
+		s.Require().NoError(err)
+		_, err = opened.Store.ReplaceSessionElements(
+			context.Background(),
+			&store.ReplaceSessionElementsRequest{
+				SessionID: string(sess.agent) + ":" + sess.native,
+				Elements: []*model.Element{
+					{
+						Seq:         1,
+						Type:        "message",
+						Role:        "user",
+						ContentText: "sharedtoken query content",
+					},
+				},
+			},
+		)
+		s.Require().NoError(err)
+	}
+	s.Require().NoError(opened.Store.Close())
+
+	err = run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"session", "query", "sharedtoken",
+			"--agent", "hermes",
+			"--format", "jsonl",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"session_id":"hermes:query-filter-hermes"`)
+	s.NotContains(s.stdout.String(), `"session_id":"codex:query-filter-codex"`)
+}
+
+func (s *CommandSuite) TestSessionQuerySyncsCodexBeforeSearching() {
+	codexHome := s.T().TempDir()
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "29")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.T().Setenv("CODEX_HOME", codexHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-smoke-query-sync.jsonl"),
+		[]byte(
+			`{"type":"session_meta","payload":{"id":"smoke-query-sync","timestamp":"2026-06-29T01:00:00Z","cwd":"/tmp/project"}}`+"\n"+
+				`{"timestamp":"2026-06-29T01:01:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"needlequery sync transcript"}]}}`+"\n",
+		),
+		0o600,
+	))
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"session", "query", "needlequery",
+			"--sync",
+			"--format", "jsonl",
+			"--timeout", "10s",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"session_id":"codex:smoke-query-sync"`)
+	s.Contains(s.stdout.String(), `"content_text":"needlequery sync transcript"`)
 }
 
 func (s *CommandSuite) TestSessionListFiltersUpdatedSinceAndRendersHTML() {
@@ -2727,16 +2921,11 @@ func (s *CommandSuite) TestCapsuleCreateRejectsInvalidDebugStackAfter() {
 	s.Error(err)
 }
 
-func (s *CommandSuite) TestCapsuleInjectDeliversHandoffAndListsInjection() {
-	if runtime.GOOS == "windows" {
-		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
-	}
+func (s *CommandSuite) TestCapsuleInjectQueuesTargetSessionAndHookDeliversHandoff() {
 	s.T().Setenv("PAXL_NODE_ID", "local-node")
 	dbPath := s.seedCodexSessionWithKeyword("bridge")
 	capsuleID := s.createLocalCapsule(dbPath, "bridge")
 	s.seedCodexTargetSession(dbPath)
-	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
-	s.installFakeCodex(capturePath)
 
 	err := run(
 		context.Background(),
@@ -2745,11 +2934,7 @@ func (s *CommandSuite) TestCapsuleInjectDeliversHandoffAndListsInjection() {
 		&s.stderr,
 	)
 	s.Require().NoError(err)
-	s.Contains(s.stdout.String(), "Injected")
-	rawPrompt, err := os.ReadFile(capturePath)
-	s.Require().NoError(err)
-	s.Contains(string(rawPrompt), "system_handoff")
-	s.Contains(string(rawPrompt), "Bridge context")
+	s.Contains(s.stdout.String(), "Queued")
 
 	s.SetupTest()
 	err = run(
@@ -2774,17 +2959,33 @@ func (s *CommandSuite) TestCapsuleInjectDeliversHandoffAndListsInjection() {
 	s.Contains(s.stdout.String(), `"sourceSessionId":"codex:sess-1"`)
 	s.Contains(s.stdout.String(), `"capsuleId":"`+capsuleID+`"`)
 	s.Contains(s.stdout.String(), `"actionItems":null`)
+	s.Contains(s.stdout.String(), `"deliveryMethod":"hook"`)
+	s.Contains(s.stdout.String(), `"status":"pending"`)
+	s.Contains(s.stdout.String(), `"routeMatchType":"session"`)
+	s.Contains(s.stdout.String(), `"routeMatchValue":"codex:target"`)
+
+	s.SetupTest()
+	s.withStdinJSON(map[string]string{
+		"sessionId":  "target",
+		"userPrompt": "continue",
+		"projectId":  "/tmp/project",
+	}, func() {
+		err = run(
+			context.Background(),
+			[]string{"--db", dbPath, "__agent-hook", "--agent", "codex", "--event", "user-prompt"},
+			&s.stdout,
+			&s.stderr,
+		)
+	})
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "system_handoff")
+	s.Contains(s.stdout.String(), "Bridge context")
 }
 
 func (s *CommandSuite) TestCapsuleInjectIncludesActionItemsFlag() {
-	if runtime.GOOS == "windows" {
-		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
-	}
 	dbPath := s.seedCodexSessionWithKeyword("bridge")
 	capsuleID := s.createLocalCapsule(dbPath, "bridge")
 	s.seedCodexTargetSession(dbPath)
-	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
-	s.installFakeCodex(capturePath)
 
 	err := run(
 		context.Background(),
@@ -2799,12 +3000,23 @@ func (s *CommandSuite) TestCapsuleInjectIncludesActionItemsFlag() {
 	)
 
 	s.Require().NoError(err)
-	rawPrompt, err := os.ReadFile(capturePath)
+	s.SetupTest()
+	s.withStdinJSON(map[string]string{
+		"sessionId":  "target",
+		"userPrompt": "continue",
+	}, func() {
+		err = run(
+			context.Background(),
+			[]string{"--db", dbPath, "__agent-hook", "--agent", "codex", "--event", "user-prompt"},
+			&s.stdout,
+			&s.stderr,
+		)
+	})
 	s.Require().NoError(err)
-	s.Contains(string(rawPrompt), "ACTION ITEMS")
-	s.Contains(string(rawPrompt), "1. run go test ./...")
-	s.Contains(string(rawPrompt), "2. open a PR")
-	s.NotContains(string(rawPrompt), "NO ACTIONABLE ITEMS")
+	s.Contains(s.stdout.String(), "ACTION ITEMS")
+	s.Contains(s.stdout.String(), "1. run go test ./...")
+	s.Contains(s.stdout.String(), "2. open a PR")
+	s.NotContains(s.stdout.String(), "NO ACTIONABLE ITEMS")
 }
 
 func (s *CommandSuite) TestCapsuleInjectQueuesMatchedActionItems() {
@@ -2909,16 +3121,11 @@ func (s *CommandSuite) TestCapsuleInjectStartsNewKiroTargetSession() {
 	s.Contains(string(rawArgs), "Bridge context")
 }
 
-func (s *CommandSuite) TestCapsuleInjectWritesDeliveredHandoffToOutputPath() {
-	if runtime.GOOS == "windows" {
-		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
-	}
+func (s *CommandSuite) TestCapsuleInjectRejectsOutputPathForQueuedTargetSession() {
 	dbPath := s.seedCodexSessionWithKeyword("bridge")
 	capsuleID := s.createLocalCapsule(dbPath, "bridge")
 	s.seedCodexTargetSession(dbPath)
-	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
 	outputPath := filepath.Join(s.T().TempDir(), "handoff.txt")
-	s.installFakeCodex(capturePath)
 
 	err := run(
 		context.Background(),
@@ -2931,12 +3138,8 @@ func (s *CommandSuite) TestCapsuleInjectWritesDeliveredHandoffToOutputPath() {
 		&s.stderr,
 	)
 
-	s.Require().NoError(err)
-	s.Contains(s.stdout.String(), "and wrote "+outputPath)
-	rawOutput, err := os.ReadFile(outputPath)
-	s.Require().NoError(err)
-	s.Contains(string(rawOutput), "system_handoff")
-	s.Contains(string(rawOutput), "Bridge context")
+	s.Error(err)
+	s.NoFileExists(outputPath)
 }
 
 func (s *CommandSuite) TestCapsuleInjectionListSupportsTableFormat() {
@@ -2946,8 +3149,6 @@ func (s *CommandSuite) TestCapsuleInjectionListSupportsTableFormat() {
 	dbPath := s.seedCodexSessionWithKeyword("bridge")
 	capsuleID := s.createLocalCapsule(dbPath, "bridge")
 	s.seedCodexTargetSession(dbPath)
-	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
-	s.installFakeCodex(capturePath)
 	s.Require().NoError(run(
 		context.Background(),
 		[]string{"--db", dbPath, "capsule", "inject", capsuleID, "codex:target"},

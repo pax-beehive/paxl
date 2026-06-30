@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/pax-oss/paxl/internal/model"
+	_ "modernc.org/sqlite"
 )
 
 const defaultHermesURL = "http://localhost:8642"
@@ -55,7 +57,7 @@ func hermesCLIAvailable() bool {
 }
 
 func hermesSessionsAvailable() bool {
-	return hermesLocalSessionsAvailable() || hermesCLIAvailable()
+	return hermesStateDBAvailable() || hermesLocalSessionsAvailable() || hermesCLIAvailable()
 }
 
 func hermesOnlineAvailable() bool {
@@ -98,6 +100,14 @@ func listHermesSessions(
 	ctx context.Context,
 	req *ListSessionsRequest,
 ) (*ListSessionsResponse, error) {
+	stateDB, err := listHermesStateDBSessions(ctx, req)
+	if err == nil {
+		if len(stateDB.Sessions) > 0 || hermesStateDBAvailable() {
+			return stateDB, nil
+		}
+	} else if !errors.Is(err, errHermesLocalNotFound) {
+		return nil, fmt.Errorf("list hermes state database sessions: %w", err)
+	}
 	local, err := listHermesLocalSessions(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("list local hermes sessions: %w", err)
@@ -129,6 +139,13 @@ func listHermesSessions(
 func getHermesSession(ctx context.Context, req *GetSessionRequest) (*GetSessionResponse, error) {
 	if req == nil || req.NativeID == "" {
 		return nil, fmt.Errorf("native session id is required")
+	}
+	stateDB, err := getHermesStateDBSession(ctx, req.NativeID)
+	if err == nil {
+		return stateDB, nil
+	}
+	if err != nil && !errors.Is(err, errHermesLocalNotFound) {
+		return nil, fmt.Errorf("get hermes state database session %s: %w", req.NativeID, err)
 	}
 	local, err := getHermesLocalSession(ctx, req.NativeID)
 	if err == nil {
@@ -282,6 +299,235 @@ type hermesLocalSession struct {
 	elements []*model.Element
 }
 
+func listHermesStateDBSessions(
+	ctx context.Context,
+	req *ListSessionsRequest,
+) (*ListSessionsResponse, error) {
+	db, err := openHermesStateDB()
+	if err != nil {
+		return nil, err
+	}
+	defer closeDB(db)
+	rows, err := db.QueryContext(ctx, `
+SELECT
+	s.id,
+	s.source,
+	s.model,
+	s.title,
+	s.cwd,
+	s.started_at,
+	s.ended_at,
+	s.message_count,
+	s.input_tokens,
+	s.output_tokens,
+	(
+		SELECT m.content
+		FROM messages m
+		WHERE m.session_id = s.id
+			AND COALESCE(m.active, 1) = 1
+			AND TRIM(COALESCE(m.content, '')) != ''
+		ORDER BY m.timestamp, m.id
+		LIMIT 1
+	) AS preview,
+	(
+		SELECT MAX(m.timestamp)
+		FROM messages m
+		WHERE m.session_id = s.id
+			AND COALESCE(m.active, 1) = 1
+	) AS last_message_at
+FROM sessions s
+WHERE COALESCE(s.archived, 0) = 0`)
+	if err != nil {
+		return nil, fmt.Errorf("query sessions: %w", err)
+	}
+	defer closeRows(rows)
+	sessions := map[string]*model.Session{}
+	for rows.Next() {
+		info, err := scanHermesStateSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		session := hermesModelSession(info)
+		if session.ID != "" {
+			sessions[session.ID] = session
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sessions: %w", err)
+	}
+	return sortedSessions(sessions, req), nil
+}
+
+func getHermesStateDBSession(ctx context.Context, nativeID string) (*GetSessionResponse, error) {
+	db, err := openHermesStateDB()
+	if err != nil {
+		return nil, err
+	}
+	defer closeDB(db)
+	var exists int
+	if err := db.QueryRowContext(
+		ctx,
+		`SELECT 1 FROM sessions WHERE id = ? LIMIT 1`,
+		nativeID,
+	).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errHermesLocalNotFound
+		}
+		return nil, fmt.Errorf("query session: %w", err)
+	}
+	rows, err := db.QueryContext(ctx, `
+SELECT id, role, content, timestamp, token_count
+FROM messages
+WHERE session_id = ?
+	AND COALESCE(active, 1) = 1
+ORDER BY timestamp, id`, nativeID)
+	if err != nil {
+		return nil, fmt.Errorf("query messages: %w", err)
+	}
+	defer closeRows(rows)
+	var elements []*model.Element
+	for rows.Next() {
+		element, err := scanHermesStateElement(rows, nativeID, int64(len(elements)+1))
+		if err != nil {
+			return nil, err
+		}
+		elements = append(elements, element)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate messages: %w", err)
+	}
+	return &GetSessionResponse{Elements: elements}, nil
+}
+
+func scanHermesStateSession(rows *sql.Rows) (*hermesSessionInfo, error) {
+	var (
+		id            string
+		source        string
+		modelName     sql.NullString
+		title         sql.NullString
+		cwd           sql.NullString
+		startedAt     float64
+		endedAt       sql.NullFloat64
+		messageCount  sql.NullInt64
+		inputTokens   sql.NullInt64
+		outputTokens  sql.NullInt64
+		preview       sql.NullString
+		lastMessageAt sql.NullFloat64
+	)
+	if err := rows.Scan(
+		&id,
+		&source,
+		&modelName,
+		&title,
+		&cwd,
+		&startedAt,
+		&endedAt,
+		&messageCount,
+		&inputTokens,
+		&outputTokens,
+		&preview,
+		&lastMessageAt,
+	); err != nil {
+		return nil, fmt.Errorf("scan session: %w", err)
+	}
+	updatedAt := hermesNumericTimestamp(startedAt)
+	if endedAt.Valid {
+		updatedAt = hermesNumericTimestamp(endedAt.Float64)
+	}
+	if lastMessageAt.Valid {
+		updatedAt = hermesNumericTimestamp(lastMessageAt.Float64)
+	}
+	raw := map[string]any{
+		"id":             id,
+		"source":         source,
+		"model":          nullStringValue(modelName),
+		"title":          nullStringValue(title),
+		"cwd":            nullStringValue(cwd),
+		"started_at":     startedAt,
+		"message_count":  nullInt64Value(messageCount),
+		"input_tokens":   nullInt64Value(inputTokens),
+		"output_tokens":  nullInt64Value(outputTokens),
+		"last_active":    updatedAt,
+		"preview":        nullStringValue(preview),
+		"hermes_storage": "state.db",
+	}
+	rawJSON, _ := json.Marshal(raw)
+	return &hermesSessionInfo{
+		SessionID:  id,
+		NativeID:   id,
+		AgentType:  "hermes",
+		Name:       firstNonEmpty(nullStringValue(title), titleCandidate(nullStringValue(preview))),
+		ProjectID:  nullStringValue(cwd),
+		LastActive: updatedAt,
+		Preview:    titleCandidate(nullStringValue(preview)),
+		Status:     "available",
+		TokenUsage: nullInt64Value(inputTokens) + nullInt64Value(outputTokens),
+		UpdatedAt:  updatedAt,
+		RawJSON:    string(rawJSON),
+	}, nil
+}
+
+func scanHermesStateElement(rows *sql.Rows, nativeID string, seq int64) (*model.Element, error) {
+	var (
+		id         int64
+		role       string
+		content    sql.NullString
+		timestamp  float64
+		tokenCount sql.NullInt64
+	)
+	if err := rows.Scan(&id, &role, &content, &timestamp, &tokenCount); err != nil {
+		return nil, fmt.Errorf("scan message: %w", err)
+	}
+	raw := map[string]any{
+		"id":          id,
+		"session_id":  nativeID,
+		"role":        role,
+		"content":     nullStringValue(content),
+		"timestamp":   timestamp,
+		"token_count": nullInt64Value(tokenCount),
+	}
+	rawJSON, _ := json.Marshal(raw)
+	startedAt := hermesNumericTimestamp(timestamp)
+	return &model.Element{
+		SessionID:   "hermes:" + nativeID,
+		Seq:         seq,
+		Type:        "message",
+		Role:        role,
+		StartedAt:   startedAt,
+		CompletedAt: startedAt,
+		ContentText: strings.TrimSpace(nullStringValue(content)),
+		RawJSON:     string(rawJSON),
+	}, nil
+}
+
+func openHermesStateDB() (*sql.DB, error) {
+	path, err := hermesStateDBPath()
+	if err != nil {
+		return nil, err
+	}
+	if !pathExists(path) {
+		return nil, errHermesLocalNotFound
+	}
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, fmt.Errorf("open state database: %w", err)
+	}
+	return db, nil
+}
+
+func hermesStateDBAvailable() bool {
+	path, err := hermesStateDBPath()
+	return err == nil && pathExists(path)
+}
+
+func hermesStateDBPath() (string, error) {
+	root, err := hermesRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "state.db"), nil
+}
+
 func listHermesLocalSessions(
 	ctx context.Context,
 	req *ListSessionsRequest,
@@ -384,6 +630,9 @@ func hermesJSONPaths(ctx context.Context, root string) ([]string, error) {
 			}
 			return nil
 		}
+		if isHermesRoutingIndexPath(path) {
+			return nil
+		}
 		switch filepath.Ext(entry.Name()) {
 		case ".json", ".jsonl":
 			paths = append(paths, path)
@@ -391,6 +640,10 @@ func hermesJSONPaths(ctx context.Context, root string) ([]string, error) {
 		return nil
 	})
 	return paths, err
+}
+
+func isHermesRoutingIndexPath(path string) bool {
+	return filepath.Base(filepath.Dir(path)) == "sessions" && filepath.Base(path) == "sessions.json"
 }
 
 func readHermesLocalSession(path string) (*hermesLocalSession, error) {
@@ -709,6 +962,28 @@ func firstNonEmptyBytes(values ...[]byte) []byte {
 		}
 	}
 	return nil
+}
+
+func nullStringValue(value sql.NullString) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.String
+}
+
+func nullInt64Value(value sql.NullInt64) int64 {
+	if !value.Valid {
+		return 0
+	}
+	return value.Int64
+}
+
+func closeRows(rows *sql.Rows) {
+	_ = rows.Close()
+}
+
+func closeDB(db *sql.DB) {
+	_ = db.Close()
 }
 
 func hermesRoot() (string, error) {

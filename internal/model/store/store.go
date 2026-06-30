@@ -153,6 +153,33 @@ type GetAuthCredentialResponse struct {
 
 type DeleteAuthCredentialResponse struct{}
 
+type SearchElementsRequest struct {
+	Query string
+	Limit int
+	Agent model.AgentName
+}
+
+type SearchElementsResponse struct {
+	Results []*SearchResult
+}
+
+type SearchResult struct {
+	SessionID   string
+	Agent       model.AgentName
+	Title       string
+	Snippet     string
+	ElementSeq  int64
+	Role        string
+	ContentText string
+}
+
+type UpdateSessionLastSyncedAtRequest struct {
+	SessionID    string
+	LastSyncedAt string // empty = use now()
+}
+
+type UpdateSessionLastSyncedAtResponse struct{}
+
 func Open(ctx context.Context, req *OpenRequest) (*OpenResponse, error) {
 	if req == nil {
 		return nil, fmt.Errorf("open store: request is required")
@@ -391,6 +418,16 @@ func (s *Store) ReplaceSessionElements(
 		return nil, fmt.Errorf("begin replace session elements: %w", err)
 	}
 	defer rollbackTx(tx)
+	// Delete old elements for this session (all sync versions) before inserting
+	// new ones. This eliminates ghost rows and keeps the FTS5 index clean; the
+	// delete trigger fires automatically.
+	if _, err := tx.ExecContext(
+		ctx,
+		`DELETE FROM session_elements WHERE session_id = ?`,
+		req.SessionID,
+	); err != nil {
+		return nil, fmt.Errorf("delete old session elements: %w", err)
+	}
 	for _, element := range req.Elements {
 		if element == nil {
 			continue
@@ -438,6 +475,92 @@ func (s *Store) Elements(ctx context.Context, req *ElementsRequest) (*ElementsRe
 		return nil, fmt.Errorf("scan session elements: %w", err)
 	}
 	return &ElementsResponse{Elements: elements}, nil
+}
+
+func (s *Store) SearchElements(
+	ctx context.Context,
+	req *SearchElementsRequest,
+) (*SearchElementsResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("search elements: request is required")
+	}
+	query := strings.TrimSpace(req.Query)
+	if query == "" {
+		return &SearchElementsResponse{}, nil
+	}
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	queryText := `
+		SELECT
+			se.session_id,
+			s.agent,
+			COALESCE(s.title, '') AS title,
+			snippet(session_elements_fts, 0, '>>>', '<<<', '...', 40) AS snippet,
+			se.seq,
+			COALESCE(se.role, '') AS role,
+			COALESCE(se.content_text, '') AS content_text
+		FROM session_elements_fts
+		JOIN session_elements se ON se.rowid = session_elements_fts.rowid
+		JOIN sessions s ON s.id = se.session_id
+		WHERE session_elements_fts MATCH ?
+	`
+	args := []any{query}
+	if req.Agent != "" && req.Agent != model.AgentNameUnknown {
+		queryText += ` AND s.agent = ?`
+		args = append(args, string(req.Agent))
+	}
+	queryText += `
+		ORDER BY rank
+		LIMIT ?
+	`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, queryText, args...)
+	if err != nil {
+		return nil, fmt.Errorf("search elements: %w", err)
+	}
+	defer closeRows(rows)
+	var results []*SearchResult
+	for rows.Next() {
+		var r SearchResult
+		var agent string
+		if err := rows.Scan(
+			&r.SessionID,
+			&agent,
+			&r.Title,
+			&r.Snippet,
+			&r.ElementSeq,
+			&r.Role,
+			&r.ContentText,
+		); err != nil {
+			return nil, fmt.Errorf("scan search result: %w", err)
+		}
+		r.Agent = model.AgentName(agent)
+		results = append(results, &r)
+	}
+	return &SearchElementsResponse{Results: results}, nil
+}
+
+func (s *Store) UpdateSessionLastSyncedAt(
+	ctx context.Context,
+	req *UpdateSessionLastSyncedAtRequest,
+) (*UpdateSessionLastSyncedAtResponse, error) {
+	if req == nil || req.SessionID == "" {
+		return nil, fmt.Errorf("update last synced at: session id is required")
+	}
+	ts := req.LastSyncedAt
+	if ts == "" {
+		ts = time.Now().UTC().Format(time.RFC3339)
+	}
+	if _, err := s.db.ExecContext(
+		ctx,
+		`UPDATE sessions SET last_synced_at = ? WHERE id = ?`,
+		ts, req.SessionID,
+	); err != nil {
+		return nil, fmt.Errorf("update last synced at: %w", err)
+	}
+	return &UpdateSessionLastSyncedAtResponse{}, nil
 }
 
 func (s *Store) CreateKnowledgeCapsule(
@@ -724,6 +847,35 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		PRIMARY KEY(session_id, sync_version, seq)
 	);
 
+	-- FTS5 full-text search index on session element content.
+	-- External content table: indexes content_text without duplicating it.
+	CREATE VIRTUAL TABLE IF NOT EXISTS session_elements_fts USING fts5(
+		content_text,
+		content='session_elements',
+		content_rowid='rowid'
+	);
+
+	-- Triggers keep FTS index in sync with session_elements.
+	CREATE TRIGGER IF NOT EXISTS session_elements_fts_insert
+	AFTER INSERT ON session_elements BEGIN
+		INSERT INTO session_elements_fts(rowid, content_text)
+		VALUES (new.rowid, COALESCE(new.content_text, ''));
+	END;
+
+	CREATE TRIGGER IF NOT EXISTS session_elements_fts_delete
+	AFTER DELETE ON session_elements BEGIN
+		INSERT INTO session_elements_fts(session_elements_fts, rowid, content_text)
+		VALUES ('delete', old.rowid, COALESCE(old.content_text, ''));
+	END;
+
+	CREATE TRIGGER IF NOT EXISTS session_elements_fts_update
+	AFTER UPDATE ON session_elements BEGIN
+		INSERT INTO session_elements_fts(session_elements_fts, rowid, content_text)
+		VALUES ('delete', old.rowid, COALESCE(old.content_text, ''));
+		INSERT INTO session_elements_fts(rowid, content_text)
+		VALUES (new.rowid, COALESCE(new.content_text, ''));
+	END;
+
 	CREATE TABLE IF NOT EXISTS knowledge_capsules (
 		capsule_id TEXT PRIMARY KEY,
 		source_session_id TEXT NOT NULL,
@@ -776,6 +928,12 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	`)
 	if err != nil {
 		return err
+	}
+	if _, err := db.ExecContext(
+		ctx,
+		`INSERT INTO session_elements_fts(session_elements_fts) VALUES ('rebuild')`,
+	); err != nil {
+		return fmt.Errorf("rebuild session element search index: %w", err)
 	}
 	columns := []struct {
 		table      string
@@ -1248,6 +1406,10 @@ func hookInjectionMatches(
 	switch strings.TrimSpace(injection.RouteMatchType) {
 	case "any":
 		return true
+	case "session":
+		hookSessionID := hookTargetSessionID(req.Agent, req.SessionID, "")
+		return hookSessionID != "" &&
+			hookSessionID == strings.TrimSpace(injection.RouteMatchValue)
 	case "project":
 		return filepath.Base(req.ProjectPath) == strings.TrimSpace(injection.RouteMatchValue)
 	case "keyword":

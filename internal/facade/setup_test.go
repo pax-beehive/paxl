@@ -69,7 +69,11 @@ func (s *SetupFacadeSuite) TestInstallSetsUpAllSupportedAgentHooks() {
 		filepath.Join(s.home, ".pax", "paxl", "shims", "codex", "paxl") + " --db ",
 	)
 	s.codexConfigContains("__agent-hook --agent codex --event user-prompt")
+	s.codexConfigContains("Stop")
+	s.codexConfigContains("__agent-hook --agent codex --event turn-end")
+	s.codexConfigNotContains("__agent-hook --agent codex --event user-prompt' __agent-hook")
 	s.hermesConfigHookContains("__agent-hook --agent hermes --event pre_llm_call")
+	s.hermesConfigHookContains("__agent-hook --agent hermes --event turn-end")
 	s.hermesConfigHookContains("__agent-env --agent hermes --event pre_tool_call")
 	s.FileExists(filepath.Join(s.home, ".pi", "paxl", "hooks", "user-prompt.json"))
 	s.FileExists(filepath.Join(s.home, ".pi", "agent", "extensions", "paxl-hook", "index.ts"))
@@ -262,6 +266,12 @@ func (s *SetupFacadeSuite) codexConfigContains(fragment string) {
 	raw, err := os.ReadFile(filepath.Join(s.home, ".codex", "config.toml"))
 	s.Require().NoError(err)
 	s.Contains(string(raw), fragment)
+}
+
+func (s *SetupFacadeSuite) codexConfigNotContains(fragment string) {
+	raw, err := os.ReadFile(filepath.Join(s.home, ".codex", "config.toml"))
+	s.Require().NoError(err)
+	s.NotContains(string(raw), fragment)
 }
 
 func (s *SetupFacadeSuite) claudeHookCommandContains(fragment string) {

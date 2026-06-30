@@ -231,7 +231,8 @@ func (f *CapsuleFacade) Inject(
 		return nil, fmt.Errorf("inject capsule: store is required")
 	}
 	option := applyOptions(opts)
-	if strings.TrimSpace(req.MatchType) != "" {
+	if strings.TrimSpace(req.MatchType) != "" ||
+		(!req.NewSession && strings.TrimSpace(req.TargetSessionID) != "") {
 		return f.queueHookInjection(ctx, req)
 	}
 	capsule, target, err := f.loadInjectionInputs(ctx, req)
@@ -318,6 +319,10 @@ func (f *CapsuleFacade) queueHookInjection(
 	if err != nil {
 		return nil, fmt.Errorf("get capsule %q: %w", req.CapsuleID, err)
 	}
+	route, err := injectionHookRoute(req)
+	if err != nil {
+		return nil, err
+	}
 	injectionID, err := newLocalID("kci")
 	if err != nil {
 		return nil, fmt.Errorf("create injection id: %w", err)
@@ -329,13 +334,13 @@ func (f *CapsuleFacade) queueHookInjection(
 		SourceAgent:         capsule.SourceAgent,
 		SourceSessionID:     capsule.SourceSessionID,
 		TargetNodeID:        localNodeID(),
-		TargetSessionID:     "",
-		TargetAgent:         req.Agent,
+		TargetSessionID:     route.TargetSessionID,
+		TargetAgent:         route.Agent,
 		DeliveryMethod:      "hook",
 		DeliveryMessageType: "system_handoff",
 		Status:              "pending",
-		RouteMatchType:      strings.TrimSpace(req.MatchType),
-		RouteMatchValue:     strings.TrimSpace(req.MatchValue),
+		RouteMatchType:      route.MatchType,
+		RouteMatchValue:     route.MatchValue,
 		ActionItemsJSON:     actionItemsJSON(req.ActionItems),
 	}
 	created, err := f.store.CreateKnowledgeInjection(
@@ -346,6 +351,37 @@ func (f *CapsuleFacade) queueHookInjection(
 		return nil, fmt.Errorf("store hook knowledge injection: %w", err)
 	}
 	return &InjectCapsuleResponse{Injection: created.Injection}, nil
+}
+
+type injectionRoute struct {
+	Agent           model.AgentName
+	TargetSessionID string
+	MatchType       string
+	MatchValue      string
+}
+
+func injectionHookRoute(req *InjectCapsuleRequest) (*injectionRoute, error) {
+	if strings.TrimSpace(req.MatchType) != "" {
+		return &injectionRoute{
+			Agent:      req.Agent,
+			MatchType:  strings.TrimSpace(req.MatchType),
+			MatchValue: strings.TrimSpace(req.MatchValue),
+		}, nil
+	}
+	agent, nativeID, ok, err := resolveSessionLookup(req.TargetSessionID, req.Agent)
+	if err != nil {
+		return nil, err
+	}
+	if !ok || nativeID == "" || agent == model.AgentNameUnknown || agent == "" {
+		return nil, fmt.Errorf("agent is required for target session hook injection")
+	}
+	targetSessionID := string(agent) + ":" + nativeID
+	return &injectionRoute{
+		Agent:           agent,
+		TargetSessionID: targetSessionID,
+		MatchType:       "session",
+		MatchValue:      targetSessionID,
+	}, nil
 }
 
 func (f *CapsuleFacade) buildSourceGeneratedCapsule(
