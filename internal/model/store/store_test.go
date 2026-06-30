@@ -236,6 +236,28 @@ func (s *StoreSuite) TestReplaceAndReadSessionElements() {
 	s.Equal("Hello", elements.Elements[0].ContentText)
 }
 
+func (s *StoreSuite) TestUpdateSessionLastSyncedAt() {
+	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+		Agent: model.AgentNameCodex,
+		Sessions: []*model.Session{
+			{NativeID: "sess-sync", Title: "Sync"},
+		},
+	})
+	s.Require().NoError(err)
+
+	_, err = s.store.UpdateSessionLastSyncedAt(s.ctx, &store.UpdateSessionLastSyncedAtRequest{
+		SessionID:    "codex:sess-sync",
+		LastSyncedAt: "2026-06-20T01:02:03Z",
+	})
+	s.Require().NoError(err)
+	found, err := s.store.FindSession(s.ctx, &store.FindSessionRequest{ID: "codex:sess-sync"})
+	s.Require().NoError(err)
+	s.Equal("2026-06-20T01:02:03Z", found.Session.LastSyncedAt)
+
+	_, err = s.store.UpdateSessionLastSyncedAt(s.ctx, nil)
+	s.Error(err)
+}
+
 func (s *StoreSuite) TestElementsReturnsEmptyForUnsyncedSession() {
 	resp, err := s.store.Elements(
 		s.ctx,
@@ -727,6 +749,43 @@ func (s *StoreSuite) TestSearchElementsReturnsMatchesByBM25Rank() {
 		s.NotEmpty(r.Title)
 		s.NotEmpty(r.Snippet)
 	}
+}
+
+func (s *StoreSuite) TestSearchElementsFiltersByAgent() {
+	for _, sess := range []struct {
+		agent  model.AgentName
+		native string
+	}{
+		{model.AgentNameCodex, "sess-agent-codex"},
+		{model.AgentNameHermes, "sess-agent-hermes"},
+	} {
+		_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+			Agent: sess.agent,
+			Sessions: []*model.Session{
+				{NativeID: sess.native, Title: "Agent filter"},
+			},
+		})
+		s.Require().NoError(err)
+
+		_, err = s.store.ReplaceSessionElements(s.ctx, &store.ReplaceSessionElementsRequest{
+			SessionID: string(sess.agent) + ":" + sess.native,
+			Elements: []*model.Element{
+				{Seq: 1, Type: "message", Role: "user", ContentText: "shared query token"},
+			},
+		})
+		s.Require().NoError(err)
+	}
+
+	resp, err := s.store.SearchElements(s.ctx, &store.SearchElementsRequest{
+		Query: "shared",
+		Limit: 10,
+		Agent: model.AgentNameHermes,
+	})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Results, 1)
+	s.Equal("hermes:sess-agent-hermes", resp.Results[0].SessionID)
+	s.Equal(model.AgentNameHermes, resp.Results[0].Agent)
 }
 
 func (s *StoreSuite) TestSearchElementsReturnsEmptyForNoMatches() {

@@ -417,6 +417,44 @@ func (s *SessionFacadeSuite) TestSearchReturnsResultsFromStore() {
 	s.Equal("Docker deploy", resp.Results[0].Title)
 }
 
+func (s *SessionFacadeSuite) TestSearchFiltersResultsByAgent() {
+	for _, sess := range []struct {
+		agent  model.AgentName
+		native string
+	}{
+		{model.AgentNameCodex, "sess-search-codex"},
+		{model.AgentNameHermes, "sess-search-hermes"},
+	} {
+		_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+			Agent: sess.agent,
+			Sessions: []*model.Session{
+				{NativeID: sess.native, Title: "Search filter"},
+			},
+		})
+		s.Require().NoError(err)
+		_, err = s.store.ReplaceSessionElements(s.ctx, &store.ReplaceSessionElementsRequest{
+			SessionID: string(sess.agent) + ":" + sess.native,
+			Elements: []*model.Element{
+				{Seq: 1, Type: "message", Role: "user", ContentText: "needle agent filter"},
+			},
+		})
+		s.Require().NoError(err)
+	}
+
+	sessionFacade := facade.NewSessionFacade(nil, s.store)
+	resp, err := sessionFacade.Search(s.ctx, &facade.SearchRequest{
+		Query:  "needle",
+		Limit:  10,
+		NoSync: true,
+		Agent:  model.AgentNameHermes,
+	})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Results, 1)
+	s.Equal("hermes:sess-search-hermes", resp.Results[0].SessionID)
+	s.Equal(model.AgentNameHermes, resp.Results[0].Agent)
+}
+
 func (s *SessionFacadeSuite) TestSearchReturnsEmptyForNoMatches() {
 	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
 		Agent: model.AgentNameClaude,

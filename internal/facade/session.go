@@ -399,6 +399,7 @@ type SearchRequest struct {
 	Query  string
 	Limit  int
 	NoSync bool
+	Agent  model.AgentName
 }
 
 type SearchResponse struct {
@@ -418,13 +419,19 @@ func (f *SessionFacade) Search(
 	}
 	option := applyOptions(opts)
 	if !req.NoSync {
-		if err := f.syncSearchSessions(ctx, req.Limit, option); err != nil {
+		if err := f.syncSearchSessions(
+			ctx,
+			req.Agent,
+			searchSyncLimit(req.Limit),
+			option,
+		); err != nil {
 			return nil, fmt.Errorf("sync search sessions: %w", err)
 		}
 	}
 	resp, err := f.store.SearchElements(ctx, &store.SearchElementsRequest{
 		Query: sanitizeFTSQuery(req.Query),
 		Limit: req.Limit,
+		Agent: req.Agent,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("search session elements: %w", err)
@@ -432,8 +439,26 @@ func (f *SessionFacade) Search(
 	return &SearchResponse{Results: resp.Results}, nil
 }
 
-func (f *SessionFacade) syncSearchSessions(ctx context.Context, limit int, option *Option) error {
-	sessions, err := f.syncSessions(ctx, &ListSessionsRequest{Limit: limit}, option)
+const defaultSearchSyncLimit = 50
+
+func searchSyncLimit(resultLimit int) int {
+	if resultLimit > defaultSearchSyncLimit {
+		return resultLimit
+	}
+	return defaultSearchSyncLimit
+}
+
+func (f *SessionFacade) syncSearchSessions(
+	ctx context.Context,
+	agent model.AgentName,
+	limit int,
+	option *Option,
+) error {
+	var agents []model.AgentName
+	if agent != "" && agent != model.AgentNameUnknown {
+		agents = []model.AgentName{agent}
+	}
+	sessions, err := f.syncSessions(ctx, &ListSessionsRequest{Agents: agents, Limit: limit}, option)
 	if err != nil {
 		return err
 	}

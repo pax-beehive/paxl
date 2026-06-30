@@ -961,6 +961,16 @@ func (s *CommandSuite) TestAuthRenderersSupportJSONAndRejectUnknownFormats() {
 	s.NotContains(s.stdout.String(), "paxu_secret")
 	s.NotContains(s.stdout.String(), "APIKey")
 	s.stdout.Reset()
+	s.Require().NoError(renderLogin(&s.stdout, login, "text"))
+	s.Contains(s.stdout.String(), "manager https://manager.example")
+	s.Contains(
+		s.stdout.String(),
+		"verification https://manager.example/paxl-login.html?code=ABC123",
+	)
+	s.Contains(s.stdout.String(), "code ABC123")
+	s.Contains(s.stdout.String(), "waiting for browser approval")
+	s.Contains(s.stdout.String(), "logged in cli@example.com")
+	s.stdout.Reset()
 
 	whoami := &facade.WhoamiResponse{
 		ManagerURL: "https://manager.example",
@@ -1312,6 +1322,21 @@ func (s *CommandSuite) TestUpdateRejectsBadDownloadSHA() {
 	s.Contains(err.Error(), "verify update")
 }
 
+func (s *CommandSuite) TestUpdateStatusTextCoversKnownStatuses() {
+	cases := map[facade.UpdateStatus]string{
+		facade.UpdateStatusUnknown:     "Unknown",
+		facade.UpdateStatusAvailable:   "Update available",
+		facade.UpdateStatusUpToDate:    "Up to date",
+		facade.UpdateStatusAhead:       "Current build is newer than latest stable",
+		facade.UpdateStatusDevelopment: "Development build; latest stable shown",
+		facade.UpdateStatus("other"):   "Unknown",
+	}
+
+	for status, want := range cases {
+		s.Equal(want, updateStatusText(status))
+	}
+}
+
 func (s *CommandSuite) TestUpdateCheckRejectsUnknownFormat() {
 	err := run(
 		context.Background(),
@@ -1534,6 +1559,59 @@ func (s *CommandSuite) TestSessionQuerySearchesCachedSessionElements() {
 	s.Contains(s.stdout.String(), `"session_id":"codex:query-one"`)
 	s.Contains(s.stdout.String(), `"agent":"codex"`)
 	s.Contains(s.stdout.String(), `"content_text":"docker rollout plan"`)
+}
+
+func (s *CommandSuite) TestSessionQueryFiltersCachedResultsByAgent() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	for _, sess := range []struct {
+		agent  model.AgentName
+		native string
+	}{
+		{model.AgentNameCodex, "query-filter-codex"},
+		{model.AgentNameHermes, "query-filter-hermes"},
+	} {
+		_, err = opened.Store.UpsertSessions(context.Background(), &store.UpsertSessionsRequest{
+			Agent: sess.agent,
+			Sessions: []*model.Session{
+				{NativeID: sess.native, Title: "Query filter"},
+			},
+		})
+		s.Require().NoError(err)
+		_, err = opened.Store.ReplaceSessionElements(
+			context.Background(),
+			&store.ReplaceSessionElementsRequest{
+				SessionID: string(sess.agent) + ":" + sess.native,
+				Elements: []*model.Element{
+					{
+						Seq:         1,
+						Type:        "message",
+						Role:        "user",
+						ContentText: "sharedtoken query content",
+					},
+				},
+			},
+		)
+		s.Require().NoError(err)
+	}
+	s.Require().NoError(opened.Store.Close())
+
+	err = run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"session", "query", "sharedtoken",
+			"--agent", "hermes",
+			"--format", "jsonl",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"session_id":"hermes:query-filter-hermes"`)
+	s.NotContains(s.stdout.String(), `"session_id":"codex:query-filter-codex"`)
 }
 
 func (s *CommandSuite) TestSessionQuerySyncsCodexBeforeSearching() {

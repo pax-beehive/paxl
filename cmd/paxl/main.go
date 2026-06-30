@@ -514,6 +514,7 @@ func newSessionCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 						Usage: "Output format: table or jsonl",
 					},
 					&cli.BoolFlag{Name: "sync", Usage: "Scan local logs before searching"},
+					&cli.StringFlag{Name: "agent", Usage: "Filter search results by agent"},
 					&cli.StringFlag{
 						Name:  "timeout",
 						Value: "30s",
@@ -1678,6 +1679,14 @@ func sessionQuery(
 		return fmt.Errorf("open session store: %w", err)
 	}
 	defer closeStore(opened.Store)
+	var agent model.AgentName
+	if rawAgent := strings.TrimSpace(cmd.String("agent")); rawAgent != "" {
+		parsed, err := model.ParseAgentName(rawAgent)
+		if err != nil {
+			return fmt.Errorf("parse query agent: %w", err)
+		}
+		agent = parsed
+	}
 	sessionFacade := facade.NewSessionFacade(nil, opened.Store)
 	resp, err := sessionFacade.Search(
 		runCtx,
@@ -1685,6 +1694,7 @@ func sessionQuery(
 			Query:  query,
 			Limit:  cmd.Int("limit"),
 			NoSync: !cmd.Bool("sync"),
+			Agent:  agent,
 		},
 		facade.WithVerboseWriter(verboseWriter(cmd, stderr, diagnostics)),
 	)

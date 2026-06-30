@@ -255,6 +255,25 @@ func (s *CapsuleFacadeSuite) TestCreateManualCapsuleRejectsSourceSession() {
 	s.Error(err)
 }
 
+func (s *CapsuleFacadeSuite) TestCreateProvidedCapsuleLoadsSourceSession() {
+	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
+
+	resp, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
+		SourceSessionID: "codex:sess",
+		Keyword:         "handoff",
+		Title:           "Prepared handoff",
+		Summary:         "Prepared summary",
+		Content:         "Prepared context for the target session.",
+	})
+
+	s.Require().NoError(err)
+	s.Equal("codex:sess", resp.Capsule.SourceSessionID)
+	s.Equal(model.AgentNameCodex, resp.Capsule.SourceAgent)
+	s.Equal("Prepared handoff", resp.Capsule.Title)
+	s.Equal("Prepared summary", resp.Capsule.Summary)
+	s.Equal("Prepared context for the target session.", resp.Capsule.Content)
+}
+
 func (s *CapsuleFacadeSuite) TestInjectQueuesTargetSessionForHookDelivery() {
 	s.T().Setenv("PAXL_NODE_ID", "local-node")
 	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)

@@ -156,6 +156,7 @@ type DeleteAuthCredentialResponse struct{}
 type SearchElementsRequest struct {
 	Query string
 	Limit int
+	Agent model.AgentName
 }
 
 type SearchElementsResponse struct {
@@ -491,7 +492,7 @@ func (s *Store) SearchElements(
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	queryText := `
 		SELECT
 			se.session_id,
 			s.agent,
@@ -504,9 +505,18 @@ func (s *Store) SearchElements(
 		JOIN session_elements se ON se.rowid = session_elements_fts.rowid
 		JOIN sessions s ON s.id = se.session_id
 		WHERE session_elements_fts MATCH ?
+	`
+	args := []any{query}
+	if req.Agent != "" && req.Agent != model.AgentNameUnknown {
+		queryText += ` AND s.agent = ?`
+		args = append(args, string(req.Agent))
+	}
+	queryText += `
 		ORDER BY rank
 		LIMIT ?
-	`, query, limit)
+	`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, queryText, args...)
 	if err != nil {
 		return nil, fmt.Errorf("search elements: %w", err)
 	}
