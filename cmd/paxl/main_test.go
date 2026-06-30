@@ -289,6 +289,24 @@ func (s *CommandSuite) TestSetupInstallsDescriptorForGenericAgentHook() {
 	s.Contains(string(raw), "__agent-hook --agent pi --event user-prompt")
 }
 
+func (s *CommandSuite) TestSetupWithDaemonDryRunRendersDaemonPlan() {
+	codexHome := filepath.Join(s.T().TempDir(), ".codex")
+	s.T().Setenv("CODEX_HOME", codexHome)
+
+	err := run(
+		context.Background(),
+		[]string{"setup", "--agent", "codex", "--with-daemon", "--dry-run", "--format", "jsonl"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"schemaVersion":"paxl.setup.daemon.v1"`)
+	s.Contains(s.stdout.String(), `"binary":"paxd"`)
+	s.Contains(s.stdout.String(), "Would set up paxd")
+	s.NoFileExists(filepath.Join(codexHome, "paxl", "hooks", "user-prompt.json"))
+}
+
 func (s *CommandSuite) TestHiddenAgentHookConsumesMatchingInjectionOnce() {
 	dbPath := s.seedCodexSessionWithKeyword("bridge")
 	capsuleID := s.createLocalCapsule(dbPath, "bridge")
