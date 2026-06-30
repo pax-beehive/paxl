@@ -254,6 +254,22 @@ func (s *SetupFacadeSuite) TestInstallSupportsDryRun() {
 	s.NoFileExists(filepath.Join(s.home, ".codex", "paxl", "hooks", "user-prompt.json"))
 }
 
+func (s *SetupFacadeSuite) TestInstallWithDaemonDryRunPlansDaemonSetup() {
+	s.T().Setenv("CODEX_HOME", filepath.Join(s.home, ".codex"))
+
+	resp, err := facade.NewSetupFacade().Install(s.ctx, &facade.SetupRequest{
+		Agents:     []model.AgentName{model.AgentNameCodex},
+		DryRun:     true,
+		WithDaemon: true,
+	})
+
+	s.Require().NoError(err)
+	s.Require().NotNil(resp.Daemon)
+	s.Equal(facade.SetupStatusPending, resp.Daemon.Status)
+	s.Equal("paxd", resp.Daemon.Binary)
+	s.Contains(resp.Daemon.Message, "Would set up paxd")
+}
+
 func (s *SetupFacadeSuite) readClaudeSettings() map[string]any {
 	raw, err := os.ReadFile(filepath.Join(s.home, ".claude", "settings.json"))
 	s.Require().NoError(err)

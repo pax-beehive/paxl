@@ -31,10 +31,17 @@ type SetupRequest struct {
 	Agents      []model.AgentName
 	PaxlCommand string
 	DryRun      bool
+	WithDaemon  bool
+	CloudURL    string
+	ResolverURL string
+	Platform    string
+	Tag         string
+	InstallDir  string
 }
 
 type SetupResponse struct {
 	Adapters []*SetupAdapterResult
+	Daemon   *DaemonLifecycleResponse
 }
 
 type SetupAdapterResult struct {
@@ -91,7 +98,22 @@ func (f *SetupFacade) Install(
 		}
 		results = append(results, result)
 	}
-	return &SetupResponse{Adapters: results}, nil
+	resp := &SetupResponse{Adapters: results}
+	if req.WithDaemon {
+		daemon, err := NewDaemonLifecycleFacade(nil).Setup(ctx, &DaemonSetupRequest{
+			DryRun:      req.DryRun,
+			CloudURL:    req.CloudURL,
+			ResolverURL: req.ResolverURL,
+			Platform:    req.Platform,
+			Tag:         req.Tag,
+			InstallDir:  req.InstallDir,
+		})
+		if err != nil {
+			return nil, err
+		}
+		resp.Daemon = daemon
+	}
+	return resp, nil
 }
 
 func (f *SetupFacade) installAgentHook(
