@@ -74,6 +74,35 @@ func (s *SessionFacadeSuite) TestListCanUseCachedStoreWithoutSyncing() {
 	s.Equal("claude:cached", resp.Sessions[0].ID)
 }
 
+func (s *SessionFacadeSuite) TestListReturnsCurrentSyncResultsInsteadOfStaleCache() {
+	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+		Agent: model.AgentNameHermes,
+		Sessions: []*model.Session{
+			{
+				NativeID:  "sessions",
+				Title:     "Stale routing index",
+				UpdatedAt: "2026-06-30T00:00:00Z",
+			},
+		},
+	})
+	s.Require().NoError(err)
+	hermesHome := s.T().TempDir()
+	s.T().Setenv("HERMES_HOME", hermesHome)
+	s.T().Setenv("PAXL_HERMES_HOME", hermesHome)
+	s.writeHermesStateDB(hermesHome)
+	sessionFacade := facade.NewSessionFacade(nil, s.store)
+
+	resp, err := sessionFacade.List(s.ctx, &facade.ListSessionsRequest{
+		Agents: []model.AgentName{model.AgentNameHermes},
+		Limit:  10,
+	})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Sessions, 1)
+	s.Equal("hermes:state-session", resp.Sessions[0].ID)
+	s.Equal("State DB Session", resp.Sessions[0].Title)
+}
+
 func (s *SessionFacadeSuite) TestListFiltersCachedSessionsByUpdatedSince() {
 	now := time.Now().UTC()
 	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
@@ -105,6 +134,47 @@ func (s *SessionFacadeSuite) TestListFiltersCachedSessionsByUpdatedSince() {
 	s.Equal("codex:fresh", resp.Sessions[0].ID)
 }
 
+func (s *SessionFacadeSuite) writeHermesStateDB(hermesHome string) {
+	db, err := sql.Open("sqlite", filepath.Join(hermesHome, "state.db"))
+	s.Require().NoError(err)
+	defer func() {
+		s.Require().NoError(db.Close())
+	}()
+	_, err = db.ExecContext(s.ctx, `
+CREATE TABLE sessions (
+	id TEXT PRIMARY KEY,
+	source TEXT NOT NULL,
+	model TEXT,
+	started_at REAL NOT NULL,
+	ended_at REAL,
+	message_count INTEGER DEFAULT 0,
+	input_tokens INTEGER DEFAULT 0,
+	output_tokens INTEGER DEFAULT 0,
+	cwd TEXT,
+	title TEXT,
+	archived INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE messages (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	session_id TEXT NOT NULL,
+	role TEXT NOT NULL,
+	content TEXT,
+	timestamp REAL NOT NULL,
+	token_count INTEGER,
+	active INTEGER NOT NULL DEFAULT 1,
+	compacted INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO sessions (
+	id, source, model, started_at, message_count, input_tokens, output_tokens, cwd, title
+) VALUES (
+	'state-session', 'cli', 'gpt-5.5', 1782097441, 1, 3, 5, '/tmp/hermes-project', 'State DB Session'
+);
+INSERT INTO messages (session_id, role, content, timestamp, token_count) VALUES
+	('state-session', 'user', 'Use canonical state', 1782097441, 3);
+`)
+	s.Require().NoError(err)
+}
+
 func (s *SessionFacadeSuite) TestGetSyncsSessionElementsWhenNeeded() {
 	codexHome := s.T().TempDir()
 	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
@@ -131,6 +201,30 @@ func (s *SessionFacadeSuite) TestGetSyncsSessionElementsWhenNeeded() {
 	s.Require().NoError(err)
 	s.Require().Len(resp.Elements, 1)
 	s.Equal("Hello", resp.Elements[0].ContentText)
+}
+
+func (s *SessionFacadeSuite) TestGetReturnsSyncErrorWhenCachedTimelineIsEmpty() {
+	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+		Agent: model.AgentNameHermes,
+		Sessions: []*model.Session{
+			{NativeID: "sessions", Title: "Stale routing index"},
+		},
+	})
+	s.Require().NoError(err)
+	_, err = s.store.ReplaceSessionElements(s.ctx, &store.ReplaceSessionElementsRequest{
+		SessionID: "hermes:sessions",
+		Elements:  []*model.Element{},
+	})
+	s.Require().NoError(err)
+	hermesHome := s.T().TempDir()
+	s.T().Setenv("HERMES_HOME", hermesHome)
+	s.T().Setenv("PAXL_HERMES_HOME", hermesHome)
+	sessionFacade := facade.NewSessionFacade(nil, s.store)
+
+	_, err = sessionFacade.Get(s.ctx, &facade.GetSessionRequest{ID: "hermes:sessions"})
+
+	s.Require().Error(err)
+	s.Contains(err.Error(), "sync session elements")
 }
 
 func (s *SessionFacadeSuite) TestGetRefreshesCachedSessionElements() {

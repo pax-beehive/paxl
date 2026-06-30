@@ -255,10 +255,7 @@ func (s *CapsuleFacadeSuite) TestCreateManualCapsuleRejectsSourceSession() {
 	s.Error(err)
 }
 
-func (s *CapsuleFacadeSuite) TestInjectDeliversHandoffAndStoresInjection() {
-	if runtime.GOOS == "windows" {
-		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
-	}
+func (s *CapsuleFacadeSuite) TestInjectQueuesTargetSessionForHookDelivery() {
 	s.T().Setenv("PAXL_NODE_ID", "local-node")
 	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
 	created, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
@@ -268,8 +265,6 @@ func (s *CapsuleFacadeSuite) TestInjectDeliversHandoffAndStoresInjection() {
 	})
 	s.Require().NoError(err)
 	s.seedTargetSession()
-	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
-	s.installFakeCodex(capturePath)
 
 	injected, err := capsuleFacade.Inject(s.ctx, &facade.InjectCapsuleRequest{
 		CapsuleID:       created.Capsule.CapsuleID,
@@ -279,18 +274,14 @@ func (s *CapsuleFacadeSuite) TestInjectDeliversHandoffAndStoresInjection() {
 	s.Require().NoError(err)
 	s.Equal(created.Capsule.CapsuleID, injected.Injection.CapsuleID)
 	s.Equal("codex:target", injected.Injection.TargetSessionID)
+	s.Equal("pending", injected.Injection.Status)
+	s.Equal("hook", injected.Injection.DeliveryMethod)
+	s.Equal("session", injected.Injection.RouteMatchType)
+	s.Equal("codex:target", injected.Injection.RouteMatchValue)
 	s.Equal("local-node", injected.Injection.SourceNodeID)
 	s.Equal(model.AgentNameCodex, injected.Injection.SourceAgent)
 	s.Equal("codex:sess", injected.Injection.SourceSessionID)
 	s.Equal("local-node", injected.Injection.TargetNodeID)
-	s.Contains(injected.Message, "system_handoff")
-	s.Contains(injected.Message, "NO ACTIONABLE ITEMS")
-	s.Contains(injected.Message, "From:\nNode: local-node\nAgent: codex\nSession: codex:sess")
-	s.Contains(injected.Message, "To:\nNode: local-node\nAgent: codex\nSession: codex:target")
-	s.Contains(injected.Message, "Bridge content")
-	rawPrompt, err := os.ReadFile(capturePath)
-	s.Require().NoError(err)
-	s.Equal(injected.Message, string(rawPrompt))
 
 	listed, err := capsuleFacade.ListInjections(s.ctx, &facade.ListInjectionsRequest{
 		TargetSessionID: "codex:target",
@@ -298,12 +289,32 @@ func (s *CapsuleFacadeSuite) TestInjectDeliversHandoffAndStoresInjection() {
 	s.Require().NoError(err)
 	s.Require().Len(listed.Injections, 1)
 	s.Equal(injected.Injection.InjectionID, listed.Injections[0].InjectionID)
+
+	hookFacade := facade.NewAgentHookFacade(s.store)
+	noop, err := hookFacade.Run(s.ctx, &facade.AgentHookRequest{
+		Agent:     model.AgentNameCodex,
+		Event:     "user-prompt",
+		SessionID: "other",
+		Prompt:    "next prompt",
+	})
+	s.Require().NoError(err)
+	s.Empty(noop.Message)
+
+	consumed, err := hookFacade.Run(s.ctx, &facade.AgentHookRequest{
+		Agent:     model.AgentNameCodex,
+		Event:     "user-prompt",
+		SessionID: "target",
+		Prompt:    "next prompt",
+	})
+	s.Require().NoError(err)
+	s.Contains(consumed.Message, "system_handoff")
+	s.Contains(consumed.Message, "NO ACTIONABLE ITEMS")
+	s.Contains(consumed.Message, "From:\nNode: local-node\nAgent: codex\nSession: codex:sess")
+	s.Contains(consumed.Message, "To:\nNode: local-node\nAgent: codex\nSession: codex:target")
+	s.Contains(consumed.Message, "Bridge content")
 }
 
-func (s *CapsuleFacadeSuite) TestInjectCanIncludeActionItemsInHandoff() {
-	if runtime.GOOS == "windows" {
-		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
-	}
+func (s *CapsuleFacadeSuite) TestQueuedTargetSessionInjectionCanIncludeActionItems() {
 	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
 	created, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
 		SourceSessionID: "codex:sess",
@@ -312,8 +323,6 @@ func (s *CapsuleFacadeSuite) TestInjectCanIncludeActionItemsInHandoff() {
 	})
 	s.Require().NoError(err)
 	s.seedTargetSession()
-	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
-	s.installFakeCodex(capturePath)
 
 	injected, err := capsuleFacade.Inject(s.ctx, &facade.InjectCapsuleRequest{
 		CapsuleID:       created.Capsule.CapsuleID,
@@ -325,13 +334,20 @@ func (s *CapsuleFacadeSuite) TestInjectCanIncludeActionItemsInHandoff() {
 	})
 
 	s.Require().NoError(err)
-	s.Contains(injected.Message, "ACTION ITEMS")
-	s.Contains(injected.Message, "1. run go test ./...")
-	s.Contains(injected.Message, "2. open a PR")
-	s.NotContains(injected.Message, "NO ACTIONABLE ITEMS")
-	rawPrompt, err := os.ReadFile(capturePath)
+	s.Equal("pending", injected.Injection.Status)
+
+	hookFacade := facade.NewAgentHookFacade(s.store)
+	consumed, err := hookFacade.Run(s.ctx, &facade.AgentHookRequest{
+		Agent:     model.AgentNameCodex,
+		Event:     "user-prompt",
+		SessionID: "target",
+		Prompt:    "next prompt",
+	})
 	s.Require().NoError(err)
-	s.Equal(injected.Message, string(rawPrompt))
+	s.Contains(consumed.Message, "ACTION ITEMS")
+	s.Contains(consumed.Message, "1. run go test ./...")
+	s.Contains(consumed.Message, "2. open a PR")
+	s.NotContains(consumed.Message, "NO ACTIONABLE ITEMS")
 }
 
 func (s *CapsuleFacadeSuite) TestQueueHookInjectionAndConsumeFromMatchingPrompt() {
@@ -519,10 +535,7 @@ func (s *CapsuleFacadeSuite) TestInjectRejectsMissingTargetAgentForNewSession() 
 	s.Contains(err.Error(), "target agent is required")
 }
 
-func (s *CapsuleFacadeSuite) TestInjectLoadsUncachedTargetSessionBeforeDelivery() {
-	if runtime.GOOS == "windows" {
-		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
-	}
+func (s *CapsuleFacadeSuite) TestInjectQueuesUncachedTargetSessionForHookDelivery() {
 	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
 	created, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
 		SourceSessionID: "codex:sess",
@@ -542,8 +555,6 @@ func (s *CapsuleFacadeSuite) TestInjectLoadsUncachedTargetSessionBeforeDelivery(
 		),
 		0o600,
 	))
-	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
-	s.installFakeCodex(capturePath)
 
 	injected, err := capsuleFacade.Inject(s.ctx, &facade.InjectCapsuleRequest{
 		CapsuleID:       created.Capsule.CapsuleID,
@@ -552,16 +563,24 @@ func (s *CapsuleFacadeSuite) TestInjectLoadsUncachedTargetSessionBeforeDelivery(
 
 	s.Require().NoError(err)
 	s.Equal("codex:target", injected.Injection.TargetSessionID)
-	s.Equal("cli_resume", injected.Injection.DeliveryMethod)
-	rawPrompt, err := os.ReadFile(capturePath)
+	s.Equal("hook", injected.Injection.DeliveryMethod)
+	s.Equal("pending", injected.Injection.Status)
+	s.Equal("session", injected.Injection.RouteMatchType)
+
+	hookFacade := facade.NewAgentHookFacade(s.store)
+	consumed, err := hookFacade.Run(s.ctx, &facade.AgentHookRequest{
+		Agent:     model.AgentNameCodex,
+		Event:     "user-prompt",
+		SessionID: "target",
+		Prompt:    "next prompt",
+	})
 	s.Require().NoError(err)
-	s.Equal(injected.Message, string(rawPrompt))
 	s.Contains(
-		injected.Message,
+		consumed.Message,
 		"NO ACTIONABLE ITEMS: This is knowledge transfer only.",
 	)
 	s.Contains(
-		injected.Message,
+		consumed.Message,
 		"Acknowledge receipt only; do not start implementation or run tools.",
 	)
 }

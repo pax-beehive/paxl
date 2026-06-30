@@ -1396,6 +1396,10 @@ func hookInjectionMatches(
 	switch strings.TrimSpace(injection.RouteMatchType) {
 	case "any":
 		return true
+	case "session":
+		hookSessionID := hookTargetSessionID(req.Agent, req.SessionID, "")
+		return hookSessionID != "" &&
+			hookSessionID == strings.TrimSpace(injection.RouteMatchValue)
 	case "project":
 		return filepath.Base(req.ProjectPath) == strings.TrimSpace(injection.RouteMatchValue)
 	case "keyword":

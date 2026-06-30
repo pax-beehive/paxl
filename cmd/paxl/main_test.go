@@ -2843,16 +2843,11 @@ func (s *CommandSuite) TestCapsuleCreateRejectsInvalidDebugStackAfter() {
 	s.Error(err)
 }
 
-func (s *CommandSuite) TestCapsuleInjectDeliversHandoffAndListsInjection() {
-	if runtime.GOOS == "windows" {
-		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
-	}
+func (s *CommandSuite) TestCapsuleInjectQueuesTargetSessionAndHookDeliversHandoff() {
 	s.T().Setenv("PAXL_NODE_ID", "local-node")
 	dbPath := s.seedCodexSessionWithKeyword("bridge")
 	capsuleID := s.createLocalCapsule(dbPath, "bridge")
 	s.seedCodexTargetSession(dbPath)
-	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
-	s.installFakeCodex(capturePath)
 
 	err := run(
 		context.Background(),
@@ -2861,11 +2856,7 @@ func (s *CommandSuite) TestCapsuleInjectDeliversHandoffAndListsInjection() {
 		&s.stderr,
 	)
 	s.Require().NoError(err)
-	s.Contains(s.stdout.String(), "Injected")
-	rawPrompt, err := os.ReadFile(capturePath)
-	s.Require().NoError(err)
-	s.Contains(string(rawPrompt), "system_handoff")
-	s.Contains(string(rawPrompt), "Bridge context")
+	s.Contains(s.stdout.String(), "Queued")
 
 	s.SetupTest()
 	err = run(
@@ -2890,17 +2881,33 @@ func (s *CommandSuite) TestCapsuleInjectDeliversHandoffAndListsInjection() {
 	s.Contains(s.stdout.String(), `"sourceSessionId":"codex:sess-1"`)
 	s.Contains(s.stdout.String(), `"capsuleId":"`+capsuleID+`"`)
 	s.Contains(s.stdout.String(), `"actionItems":null`)
+	s.Contains(s.stdout.String(), `"deliveryMethod":"hook"`)
+	s.Contains(s.stdout.String(), `"status":"pending"`)
+	s.Contains(s.stdout.String(), `"routeMatchType":"session"`)
+	s.Contains(s.stdout.String(), `"routeMatchValue":"codex:target"`)
+
+	s.SetupTest()
+	s.withStdinJSON(map[string]string{
+		"sessionId":  "target",
+		"userPrompt": "continue",
+		"projectId":  "/tmp/project",
+	}, func() {
+		err = run(
+			context.Background(),
+			[]string{"--db", dbPath, "__agent-hook", "--agent", "codex", "--event", "user-prompt"},
+			&s.stdout,
+			&s.stderr,
+		)
+	})
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "system_handoff")
+	s.Contains(s.stdout.String(), "Bridge context")
 }
 
 func (s *CommandSuite) TestCapsuleInjectIncludesActionItemsFlag() {
-	if runtime.GOOS == "windows" {
-		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
-	}
 	dbPath := s.seedCodexSessionWithKeyword("bridge")
 	capsuleID := s.createLocalCapsule(dbPath, "bridge")
 	s.seedCodexTargetSession(dbPath)
-	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
-	s.installFakeCodex(capturePath)
 
 	err := run(
 		context.Background(),
@@ -2915,12 +2922,23 @@ func (s *CommandSuite) TestCapsuleInjectIncludesActionItemsFlag() {
 	)
 
 	s.Require().NoError(err)
-	rawPrompt, err := os.ReadFile(capturePath)
+	s.SetupTest()
+	s.withStdinJSON(map[string]string{
+		"sessionId":  "target",
+		"userPrompt": "continue",
+	}, func() {
+		err = run(
+			context.Background(),
+			[]string{"--db", dbPath, "__agent-hook", "--agent", "codex", "--event", "user-prompt"},
+			&s.stdout,
+			&s.stderr,
+		)
+	})
 	s.Require().NoError(err)
-	s.Contains(string(rawPrompt), "ACTION ITEMS")
-	s.Contains(string(rawPrompt), "1. run go test ./...")
-	s.Contains(string(rawPrompt), "2. open a PR")
-	s.NotContains(string(rawPrompt), "NO ACTIONABLE ITEMS")
+	s.Contains(s.stdout.String(), "ACTION ITEMS")
+	s.Contains(s.stdout.String(), "1. run go test ./...")
+	s.Contains(s.stdout.String(), "2. open a PR")
+	s.NotContains(s.stdout.String(), "NO ACTIONABLE ITEMS")
 }
 
 func (s *CommandSuite) TestCapsuleInjectQueuesMatchedActionItems() {
@@ -3025,16 +3043,11 @@ func (s *CommandSuite) TestCapsuleInjectStartsNewKiroTargetSession() {
 	s.Contains(string(rawArgs), "Bridge context")
 }
 
-func (s *CommandSuite) TestCapsuleInjectWritesDeliveredHandoffToOutputPath() {
-	if runtime.GOOS == "windows" {
-		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
-	}
+func (s *CommandSuite) TestCapsuleInjectRejectsOutputPathForQueuedTargetSession() {
 	dbPath := s.seedCodexSessionWithKeyword("bridge")
 	capsuleID := s.createLocalCapsule(dbPath, "bridge")
 	s.seedCodexTargetSession(dbPath)
-	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
 	outputPath := filepath.Join(s.T().TempDir(), "handoff.txt")
-	s.installFakeCodex(capturePath)
 
 	err := run(
 		context.Background(),
@@ -3047,12 +3060,8 @@ func (s *CommandSuite) TestCapsuleInjectWritesDeliveredHandoffToOutputPath() {
 		&s.stderr,
 	)
 
-	s.Require().NoError(err)
-	s.Contains(s.stdout.String(), "and wrote "+outputPath)
-	rawOutput, err := os.ReadFile(outputPath)
-	s.Require().NoError(err)
-	s.Contains(string(rawOutput), "system_handoff")
-	s.Contains(string(rawOutput), "Bridge context")
+	s.Error(err)
+	s.NoFileExists(outputPath)
 }
 
 func (s *CommandSuite) TestCapsuleInjectionListSupportsTableFormat() {
@@ -3062,8 +3071,6 @@ func (s *CommandSuite) TestCapsuleInjectionListSupportsTableFormat() {
 	dbPath := s.seedCodexSessionWithKeyword("bridge")
 	capsuleID := s.createLocalCapsule(dbPath, "bridge")
 	s.seedCodexTargetSession(dbPath)
-	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
-	s.installFakeCodex(capturePath)
 	s.Require().NoError(run(
 		context.Background(),
 		[]string{"--db", dbPath, "capsule", "inject", capsuleID, "codex:target"},

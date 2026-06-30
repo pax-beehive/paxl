@@ -678,7 +678,7 @@ func newCapsuleCommand(
 			},
 			{
 				Name:      "inject",
-				Usage:     "Inject a knowledge capsule into a target session",
+				Usage:     "Queue or deliver a knowledge capsule to a target session",
 				ArgsUsage: "<capsule-id> [target-session-id]",
 				Flags: []cli.Flag{
 					&cli.StringFlag{
@@ -687,7 +687,7 @@ func newCapsuleCommand(
 					},
 					&cli.StringFlag{
 						Name:  "output",
-						Usage: "Also write the sent system_handoff message to this path",
+						Usage: "Also write the sent system_handoff message for --new delivery",
 					},
 					&cli.StringFlag{
 						Name:  "timeout",
@@ -2749,6 +2749,11 @@ func parseInjectCapsuleRequest(cmd *cli.Command) (*facade.InjectCapsuleRequest, 
 	}
 	if !req.NewSession && req.TargetSessionID == "" {
 		return nil, fmt.Errorf("target session id is required unless --new is set")
+	}
+	if !req.NewSession && strings.TrimSpace(cmd.String("output")) != "" {
+		return nil, fmt.Errorf(
+			"--output cannot be combined with existing target session hook injection",
+		)
 	}
 	return req, nil
 }

@@ -2,6 +2,7 @@ package adaptor
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/pax-oss/paxl/internal/model"
 	"github.com/stretchr/testify/suite"
+	_ "modernc.org/sqlite"
 )
 
 type HermesSuite struct {
@@ -162,6 +164,66 @@ func (s *HermesSuite) TestAdapterListsHermesHomeSessionsWithNumericTimestamps() 
 	s.Require().NoError(err)
 	s.Require().Len(resp.Sessions, 1)
 	s.Equal("2026-06-20T23:56:53Z", resp.Sessions[0].UpdatedAt)
+}
+
+func (s *HermesSuite) TestAdapterListsHermesStateDBSessionsBeforeRoutingIndex() {
+	hermesHome := s.T().TempDir()
+	s.writeHermesRoutingIndex(hermesHome)
+	s.writeHermesStateDB(hermesHome)
+	s.setHermesHome(hermesHome)
+
+	resp, err := NewHermesAdapter().ListSessions(
+		context.Background(),
+		&ListSessionsRequest{},
+	)
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Sessions, 1)
+	s.Equal("hermes:state-session", resp.Sessions[0].ID)
+	s.Equal("State DB Session", resp.Sessions[0].Title)
+	s.Equal("Use canonical state", resp.Sessions[0].Preview)
+	s.Equal("/tmp/hermes-project", resp.Sessions[0].ProjectID)
+	s.Equal("2026-06-22T03:04:02Z", resp.Sessions[0].UpdatedAt)
+}
+
+func (s *HermesSuite) TestAdapterGetsHermesStateDBSessionElements() {
+	hermesHome := s.T().TempDir()
+	s.writeHermesRoutingIndex(hermesHome)
+	s.writeHermesStateDB(hermesHome)
+	s.setHermesHome(hermesHome)
+
+	resp, err := NewHermesAdapter().GetSession(
+		context.Background(),
+		&GetSessionRequest{NativeID: "state-session"},
+	)
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Elements, 2)
+	s.Equal("hermes:state-session", resp.Elements[0].SessionID)
+	s.Equal("user", resp.Elements[0].Role)
+	s.Equal("Use canonical state", resp.Elements[0].ContentText)
+	s.Equal("assistant", resp.Elements[1].Role)
+	s.Equal("State DB response", resp.Elements[1].ContentText)
+}
+
+func (s *HermesSuite) TestAdapterIgnoresHermesRoutingIndexWhenStateDBIsMissing() {
+	hermesHome := s.T().TempDir()
+	s.writeHermesRoutingIndex(hermesHome)
+	s.setHermesHome(hermesHome)
+	original := hermesACPCommand
+	hermesACPCommand = []string{}
+	s.T().Cleanup(func() {
+		hermesACPCommand = original
+	})
+	withFailingHermesHTTPClient(s.T())
+
+	resp, err := NewHermesAdapter().ListSessions(
+		context.Background(),
+		&ListSessionsRequest{},
+	)
+
+	s.Require().NoError(err)
+	s.Empty(resp.Sessions)
 }
 
 func (s *HermesSuite) TestAdapterIgnoresPaxlHookDescriptorsWhenLookingForLocalSessions() {
@@ -579,4 +641,59 @@ func (s *HermesSuite) readFile(path string) string {
 	raw, err := os.ReadFile(path)
 	s.Require().NoError(err)
 	return string(raw)
+}
+
+func (s *HermesSuite) writeHermesRoutingIndex(hermesHome string) {
+	sessionDir := filepath.Join(hermesHome, "sessions")
+	s.Require().NoError(os.MkdirAll(sessionDir, 0o700))
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(sessionDir, "sessions.json"),
+		[]byte(`{
+			"_README":"Gateway routing index ONLY. This is NOT the session list.",
+			"gateway-state":{"session_id":"gateway-session"}
+		}`),
+		0o600,
+	))
+}
+
+func (s *HermesSuite) writeHermesStateDB(hermesHome string) {
+	db, err := sql.Open("sqlite", filepath.Join(hermesHome, "state.db"))
+	s.Require().NoError(err)
+	defer func() {
+		s.Require().NoError(db.Close())
+	}()
+	_, err = db.ExecContext(context.Background(), `
+CREATE TABLE sessions (
+	id TEXT PRIMARY KEY,
+	source TEXT NOT NULL,
+	model TEXT,
+	started_at REAL NOT NULL,
+	ended_at REAL,
+	message_count INTEGER DEFAULT 0,
+	input_tokens INTEGER DEFAULT 0,
+	output_tokens INTEGER DEFAULT 0,
+	cwd TEXT,
+	title TEXT,
+	archived INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE messages (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	session_id TEXT NOT NULL,
+	role TEXT NOT NULL,
+	content TEXT,
+	timestamp REAL NOT NULL,
+	token_count INTEGER,
+	active INTEGER NOT NULL DEFAULT 1,
+	compacted INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO sessions (
+	id, source, model, started_at, message_count, input_tokens, output_tokens, cwd, title
+) VALUES (
+	'state-session', 'cli', 'gpt-5.5', 1782097441, 2, 11, 13, '/tmp/hermes-project', 'State DB Session'
+);
+INSERT INTO messages (session_id, role, content, timestamp, token_count) VALUES
+	('state-session', 'user', 'Use canonical state', 1782097441, 11),
+	('state-session', 'assistant', 'State DB response', 1782097442, 13);
+`)
+	s.Require().NoError(err)
 }

@@ -145,10 +145,18 @@ paxl capsule list --limit 20
 paxl capsule get <capsule-id>
 ```
 
-Inject into an existing target session:
+Queue a capsule for an existing target session. The capsule is delivered by the
+agent hook the next time that session receives a user prompt:
 
 ```sh
 paxl capsule inject <capsule-id> codex:<target-session-id>
+```
+
+Queue by route when the exact target session is not known yet:
+
+```sh
+paxl capsule inject <capsule-id> --match project --project paxl --agent codex
+paxl capsule inject <capsule-id> --match keyword --keyword "handoff" --agent claude
 ```
 
 Start a new session from a capsule:

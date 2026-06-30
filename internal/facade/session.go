@@ -60,9 +60,14 @@ func (f *SessionFacade) List(
 	}
 	option := applyOptions(opts)
 	if !req.NoSync {
-		if err := f.syncSessions(ctx, req, option); err != nil {
+		sessions, err := f.syncSessions(ctx, req, option)
+		if err != nil {
 			return nil, fmt.Errorf("sync sessions: %w", err)
 		}
+		sortSessionsNewestFirst(sessions)
+		return &ListSessionsResponse{
+			Sessions: filterListedSessions(sessions, req.UpdatedSince, req.Limit),
+		}, nil
 	}
 	storeLimit := req.Limit
 	if req.UpdatedSince != nil {
@@ -96,7 +101,9 @@ func (f *SessionFacade) Get(
 	if err != nil {
 		return nil, fmt.Errorf("find session %q: %w", req.ID, err)
 	}
+	var syncErr error
 	if err := f.syncSessionElements(ctx, session.Session, option); err != nil {
+		syncErr = err
 		if session.Session.CurrentSyncVersion == 0 {
 			return nil, fmt.Errorf("sync session elements: %w", err)
 		}
@@ -109,6 +116,9 @@ func (f *SessionFacade) Get(
 	elements, err := f.store.Elements(ctx, &store.ElementsRequest{Session: session.Session})
 	if err != nil {
 		return nil, fmt.Errorf("load session elements: %w", err)
+	}
+	if syncErr != nil && len(elements.Elements) == 0 {
+		return nil, fmt.Errorf("sync session elements: %w", syncErr)
 	}
 	return &GetSessionResponse{Session: session.Session, Elements: elements.Elements}, nil
 }
@@ -217,7 +227,7 @@ func (f *SessionFacade) syncSessions(
 	ctx context.Context,
 	req *ListSessionsRequest,
 	option *Option,
-) error {
+) ([]*model.Session, error) {
 	agents := req.Agents
 	if len(agents) == 0 {
 		list, err := f.registry.List(
@@ -226,18 +236,21 @@ func (f *SessionFacade) syncSessions(
 			adaptor.WithVerboseWriter(option.VerboseWriter),
 		)
 		if err != nil {
-			return fmt.Errorf("list adapters: %w", err)
+			return nil, fmt.Errorf("list adapters: %w", err)
 		}
 		for _, agent := range list.Agents {
 			agents = append(agents, agent.Name)
 		}
 	}
+	var synced []*model.Session
 	for _, agent := range agents {
-		if err := f.syncAgentSessions(ctx, agent, req.Limit, option); err != nil {
-			return err
+		sessions, err := f.syncAgentSessions(ctx, agent, req.Limit, option)
+		if err != nil {
+			return nil, err
 		}
+		synced = append(synced, sessions...)
 	}
-	return nil
+	return synced, nil
 }
 
 func filterListedSessions(
@@ -358,10 +371,10 @@ func (f *SessionFacade) syncAgentSessions(
 	agent model.AgentName,
 	limit int,
 	option *Option,
-) error {
+) ([]*model.Session, error) {
 	adapter, err := f.registry.Lookup(ctx, &adaptor.LookupRequest{Name: agent})
 	if err != nil {
-		return fmt.Errorf("lookup %s adapter: %w", agent, err)
+		return nil, fmt.Errorf("lookup %s adapter: %w", agent, err)
 	}
 	sessions, err := adapter.Adapter.ListSessions(
 		ctx,
@@ -369,19 +382,17 @@ func (f *SessionFacade) syncAgentSessions(
 		adaptor.WithVerboseWriter(option.VerboseWriter),
 	)
 	if err != nil {
-		return fmt.Errorf("list %s sessions: %w", agent, err)
+		return nil, fmt.Errorf("list %s sessions: %w", agent, err)
 	}
 	// Sort newest-first so recent sessions are prioritised for sync
-	sort.Slice(sessions.Sessions, func(i, j int) bool {
-		return sessions.Sessions[i].UpdatedAt > sessions.Sessions[j].UpdatedAt
-	})
+	sortSessionsNewestFirst(sessions.Sessions)
 	if _, err := f.store.UpsertSessions(ctx, &store.UpsertSessionsRequest{
 		Agent:    agent,
 		Sessions: sessions.Sessions,
 	}); err != nil {
-		return fmt.Errorf("store %s sessions: %w", agent, err)
+		return nil, fmt.Errorf("store %s sessions: %w", agent, err)
 	}
-	return nil
+	return sessions.Sessions, nil
 }
 
 type SearchRequest struct {
@@ -422,20 +433,31 @@ func (f *SessionFacade) Search(
 }
 
 func (f *SessionFacade) syncSearchSessions(ctx context.Context, limit int, option *Option) error {
-	if err := f.syncSessions(ctx, &ListSessionsRequest{Limit: limit}, option); err != nil {
+	sessions, err := f.syncSessions(ctx, &ListSessionsRequest{Limit: limit}, option)
+	if err != nil {
 		return err
 	}
-	resp, err := f.store.ListSessions(ctx, &store.ListSessionsRequest{Limit: limit})
-	if err != nil {
-		return fmt.Errorf("list sessions for search sync: %w", err)
-	}
-	for _, session := range resp.Sessions {
+	sortSessionsNewestFirst(sessions)
+	for _, session := range filterListedSessions(sessions, nil, limit) {
 		if session == nil {
 			continue
 		}
 		_ = f.syncSessionElementsWithPolicy(ctx, session, option, true)
 	}
 	return nil
+}
+
+func sortSessionsNewestFirst(sessions []*model.Session) {
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessionSortTimestamp(sessions[i]) > sessionSortTimestamp(sessions[j])
+	})
+}
+
+func sessionSortTimestamp(session *model.Session) string {
+	if session == nil {
+		return ""
+	}
+	return firstNonEmpty(session.UpdatedAt, session.LastActive, session.LastListedAt)
 }
 
 // sanitizeFTSQuery strips FTS5-special characters that cause syntax errors
