@@ -399,28 +399,21 @@ func (f *EnvelopeFacade) Accept(
 	if err != nil {
 		return nil, err
 	}
-	created, err := f.store.CreateKnowledgeCapsule(
-		ctx,
-		&store.CreateKnowledgeCapsuleRequest{Capsule: capsule},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store accepted capsule: %w", err)
-	}
-	accepted, err := f.updateRemoteEnvelope(ctx, req.EnvelopeID, "accept")
+	materialized, err := f.materializeAcceptedEnvelope(ctx, capsule, route)
 	if err != nil {
 		return nil, err
 	}
-	var injection *model.KnowledgeInjection
-	if route != nil {
-		injection, err = f.storeAcceptedEnvelopeRoute(ctx, created.Capsule, route)
+	accepted := envelope
+	if strings.TrimSpace(envelope.Status) != "accepted" {
+		accepted, err = f.updateRemoteEnvelope(ctx, req.EnvelopeID, "accept")
 		if err != nil {
 			return nil, err
 		}
 	}
 	return &AcceptEnvelopeResponse{
 		Envelope:  accepted,
-		Capsule:   created.Capsule,
-		Injection: injection,
+		Capsule:   materialized.Capsule,
+		Injection: materialized.Injection,
 	}, nil
 }
 
@@ -671,6 +664,57 @@ func capsuleFromEnvelope(
 	}, payload.Route, nil
 }
 
+type materializedAcceptedEnvelope struct {
+	Capsule   *model.KnowledgeCapsule
+	Injection *model.KnowledgeInjection
+}
+
+func (f *EnvelopeFacade) materializeAcceptedEnvelope(
+	ctx context.Context,
+	capsule *model.KnowledgeCapsule,
+	route *envelopePayloadRoute,
+) (*materializedAcceptedEnvelope, error) {
+	localCapsule, err := f.findLocalCapsuleForRemoteEnvelope(ctx, capsule.SourceSessionID)
+	if err != nil {
+		return nil, err
+	}
+	if localCapsule == nil {
+		created, err := f.store.CreateKnowledgeCapsule(
+			ctx,
+			&store.CreateKnowledgeCapsuleRequest{Capsule: capsule},
+		)
+		if err != nil {
+			return nil, fmt.Errorf("store accepted capsule: %w", err)
+		}
+		localCapsule = created.Capsule
+	}
+	injection, err := f.ensureAcceptedEnvelopeRoute(ctx, localCapsule, route)
+	if err != nil {
+		return nil, err
+	}
+	return &materializedAcceptedEnvelope{Capsule: localCapsule, Injection: injection}, nil
+}
+
+func (f *EnvelopeFacade) findLocalCapsuleForRemoteEnvelope(
+	ctx context.Context,
+	sourceSessionID string,
+) (*model.KnowledgeCapsule, error) {
+	listed, err := f.store.ListKnowledgeCapsules(
+		ctx,
+		&store.ListKnowledgeCapsulesRequest{
+			SourceSessionID: sourceSessionID,
+			Limit:           1,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("find accepted capsule by source session: %w", err)
+	}
+	if len(listed.Capsules) == 0 {
+		return nil, nil
+	}
+	return listed.Capsules[0], nil
+}
+
 func validateEnvelopeRoute(route *envelopePayloadRoute) error {
 	if route == nil {
 		return fmt.Errorf("route is required")
@@ -731,4 +775,61 @@ func (f *EnvelopeFacade) storeAcceptedEnvelopeRoute(
 		return nil, fmt.Errorf("store accepted route injection: %w", err)
 	}
 	return created.Injection, nil
+}
+
+func (f *EnvelopeFacade) ensureAcceptedEnvelopeRoute(
+	ctx context.Context,
+	capsule *model.KnowledgeCapsule,
+	route *envelopePayloadRoute,
+) (*model.KnowledgeInjection, error) {
+	if route == nil {
+		return nil, nil
+	}
+	existing, err := f.findLocalRouteForAcceptedEnvelope(ctx, capsule, route)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		return existing, nil
+	}
+	return f.storeAcceptedEnvelopeRoute(ctx, capsule, route)
+}
+
+func (f *EnvelopeFacade) findLocalRouteForAcceptedEnvelope(
+	ctx context.Context,
+	capsule *model.KnowledgeCapsule,
+	route *envelopePayloadRoute,
+) (*model.KnowledgeInjection, error) {
+	listed, err := f.store.ListKnowledgeInjections(
+		ctx,
+		&store.ListKnowledgeInjectionsRequest{},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("find accepted route injection: %w", err)
+	}
+	for _, injection := range listed.Injections {
+		if injection == nil {
+			continue
+		}
+		if injection.CapsuleID != capsule.CapsuleID {
+			continue
+		}
+		if injection.DeliveryMethod != "hook" {
+			continue
+		}
+		if injection.DeliveryMessageType != "system_handoff" {
+			continue
+		}
+		if injection.TargetAgent != route.TargetAgent {
+			continue
+		}
+		if injection.RouteMatchType != route.MatchType {
+			continue
+		}
+		if injection.RouteMatchValue != route.MatchValue {
+			continue
+		}
+		return injection, nil
+	}
+	return nil, nil
 }

@@ -223,3 +223,37 @@ Verify transcript visibility:
 ```sh
 paxl session get codex:<target-session-id> --format jsonl | tail -n 8
 ```
+
+## Accepted Inbox Sync
+
+If the user accepted an envelope outside the local CLI, such as through the
+manager API or a hosted UI, the local SQLite store may not yet contain the
+capsule or routed hook injection. Sync accepted inbox envelopes before
+debugging the hook path:
+
+```sh
+paxl inbox sync
+paxl inbox sync --limit 20
+paxl inbox sync --format jsonl
+```
+
+Use this when:
+
+- the remote inbox shows `status:"accepted"` but `paxl capsule list` does not
+  show the expected capsule;
+- the user expects a routed capsule to appear on the next prompt, but
+  `paxl capsule injection --format jsonl` does not show a pending route;
+- an envelope was accepted from a web surface instead of `paxl inbox accept`.
+
+`paxl inbox accept <envelope-id>` is safe to run for an already accepted
+envelope. It should skip the remote accept call and materialize missing local
+state. Repeated sync or accept operations should reuse the local capsule keyed
+by `remote_envelope:<envelope-id>` and should not create duplicate route
+injections.
+
+After syncing, verify durable local state:
+
+```sh
+paxl capsule list --source-session remote_envelope:<envelope-id> --format jsonl
+paxl capsule injection --format jsonl --limit 10
+```

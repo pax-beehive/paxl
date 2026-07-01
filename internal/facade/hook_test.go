@@ -59,12 +59,22 @@ func TestAgentHookAcceptsInboxRoutesBeforeClaimingInjection(t *testing.T) {
 	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch {
 		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/usr_1/envelopes":
-			require.Equal(t, "pending", req.URL.Query().Get("status"))
-			return jsonResponse(`{
-				"data":{"envelopes":[{"envelope_id":"env_1","payload_type":"knowledge_capsule","status":"pending"}]},
-				"code":200,
-				"message":"ok"
-			}`), nil
+			switch req.URL.Query().Get("status") {
+			case "pending":
+				return jsonResponse(`{
+					"data":{"envelopes":[{"envelope_id":"env_1","payload_type":"knowledge_capsule","status":"pending"}]},
+					"code":200,
+					"message":"ok"
+				}`), nil
+			case "accepted":
+				return jsonResponse(`{
+					"data":{"envelopes":[]},
+					"code":200,
+					"message":"ok"
+				}`), nil
+			default:
+				return nil, fmt.Errorf("unexpected status query: %s", req.URL.Query().Get("status"))
+			}
 		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/usr_1/envelopes/env_1":
 			return jsonResponse(fmt.Sprintf(`{
 				"data":{"envelope":{
@@ -114,6 +124,104 @@ func TestAgentHookAcceptsInboxRoutesBeforeClaimingInjection(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, listed.Capsules, 1)
 	require.Equal(t, "Remote routed handoff", listed.Capsules[0].Title)
+}
+
+func TestAgentHookSyncsAcceptedInboxRoutesBeforeClaimingInjection(t *testing.T) {
+	ctx := context.Background()
+	opened, err := store.Open(
+		ctx,
+		&store.OpenRequest{Path: filepath.Join(t.TempDir(), "paxl.sqlite")},
+	)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, opened.Store.Close())
+	}()
+	_, err = opened.Store.SaveAuthCredential(ctx, &store.SaveAuthCredentialRequest{
+		Credential: &model.AuthCredential{
+			ManagerURL:  "https://manager.example",
+			APIKey:      "paxu_test",
+			UserID:      "usr_1",
+			Email:       "cli@example.com",
+			DisplayName: "CLI",
+			Role:        "user",
+		},
+	})
+	require.NoError(t, err)
+	payload := strings.ReplaceAll(`{
+		"schema_version":"paxl.envelope_payload.knowledge_capsule.v2",
+		"capsule":{
+			"capsule_id":"kcap_remote",
+			"source_node_id":"remote-node",
+			"source_session_id":"codex:source",
+			"source_agent":"codex",
+			"keyword":"monitor",
+			"title":"Monitor audit frontend integration",
+			"summary":"summary",
+			"content":"Monitor audit content",
+			"status":"active",
+			"created_at":"2026-06-22T00:00:00Z"
+		},
+		"route":{
+			"match_type":"keyword",
+			"match_value":"monitor",
+			"target_agent":"codex"
+		}
+	}`, "\n", "")
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/usr_1/envelopes":
+			switch req.URL.Query().Get("status") {
+			case "pending":
+				return jsonResponse(`{
+					"data":{"envelopes":[]},
+					"code":200,
+					"message":"ok"
+				}`), nil
+			case "accepted":
+				return jsonResponse(`{
+					"data":{"envelopes":[{"envelope_id":"env_accepted","payload_type":"knowledge_capsule","status":"accepted"}]},
+					"code":200,
+					"message":"ok"
+				}`), nil
+			default:
+				return nil, fmt.Errorf("unexpected status query: %s", req.URL.Query().Get("status"))
+			}
+		case req.Method == http.MethodGet &&
+			req.URL.Path == "/api/v1/user/usr_1/envelopes/env_accepted":
+			return jsonResponse(fmt.Sprintf(`{
+				"data":{"envelope":{
+					"envelope_id":"env_accepted",
+					"sender_user_id":"usr_sender",
+					"recipient_user_id":"usr_1",
+					"payload_type":"knowledge_capsule",
+					"payload_json":%s,
+					"status":"accepted"
+				}},
+				"code":200,
+				"message":"ok"
+			}`, payload)), nil
+		default:
+			return nil, fmt.Errorf("unexpected manager request: %s %s", req.Method, req.URL.Path)
+		}
+	})
+	hookFacade := &AgentHookFacade{client: client, store: opened.Store}
+
+	consumed, err := hookFacade.Run(ctx, &AgentHookRequest{
+		Agent:     model.AgentNameCodex,
+		Event:     "user-prompt",
+		SessionID: "monitor-session",
+		Prompt:    "monitor",
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, consumed.Injection)
+	require.Equal(t, "claimed", consumed.Injection.Status)
+	require.Equal(t, "codex:monitor-session", consumed.Injection.TargetSessionID)
+	require.Contains(t, consumed.Message, "Monitor audit content")
+	listed, err := opened.Store.ListKnowledgeCapsules(ctx, &store.ListKnowledgeCapsulesRequest{})
+	require.NoError(t, err)
+	require.Len(t, listed.Capsules, 1)
+	require.Equal(t, "Monitor audit frontend integration", listed.Capsules[0].Title)
 }
 
 func TestAgentHookSupportsHermesPreLLMCallContextOutput(t *testing.T) {

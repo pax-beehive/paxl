@@ -497,6 +497,184 @@ func (s *EnvelopeFacadeSuite) TestAcceptStoresRoutedEnvelopeAsPendingHookInjecti
 	s.Equal(resp.Injection.InjectionID, listed.Injections[0].InjectionID)
 }
 
+func (s *EnvelopeFacadeSuite) TestAcceptMaterializesAlreadyAcceptedEnvelopeWithoutRemoteUpdate() {
+	payload := strings.ReplaceAll(`{
+		"schema_version":"paxl.envelope_payload.knowledge_capsule.v2",
+		"capsule":{
+			"capsule_id":"kcap_remote",
+			"source_node_id":"remote-node",
+			"source_session_id":"codex:source",
+			"source_agent":"codex",
+			"keyword":"monitor",
+			"title":"Monitor audit frontend integration",
+			"summary":"summary",
+			"content":"content",
+			"status":"active",
+			"created_at":"2026-06-22T00:00:00Z"
+		},
+		"route":{
+			"match_type":"keyword",
+			"match_value":"monitor",
+			"target_agent":"codex"
+		}
+	}`, "\n", "")
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/usr_1/envelopes/env_1":
+			return jsonResponse(fmt.Sprintf(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"env_1",
+						"sender_user_id":"usr_sender",
+						"recipient_user_id":"usr_1",
+						"payload_type":"knowledge_capsule",
+						"payload_json":%s,
+						"status":"accepted",
+						"accepted_at":"2026-06-22T00:01:00Z"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`, payload)), nil
+		default:
+			return nil, fmt.Errorf("unexpected manager request: %s %s", req.Method, req.URL.Path)
+		}
+	})
+	envelopeFacade := NewEnvelopeFacade(client, s.store)
+
+	resp, err := envelopeFacade.Accept(s.ctx, &AcceptEnvelopeRequest{EnvelopeID: "env_1"})
+
+	s.Require().NoError(err)
+	s.Equal("accepted", resp.Envelope.Status)
+	s.Equal("Monitor audit frontend integration", resp.Capsule.Title)
+	s.Equal("remote_envelope:env_1", resp.Capsule.SourceSessionID)
+	s.Require().NotNil(resp.Injection)
+	s.Equal("monitor", resp.Injection.RouteMatchValue)
+}
+
+func (s *EnvelopeFacadeSuite) TestAcceptReusesLocalAcceptedEnvelopeMaterialization() {
+	payload := strings.ReplaceAll(`{
+		"schema_version":"paxl.envelope_payload.knowledge_capsule.v2",
+		"capsule":{
+			"capsule_id":"kcap_remote",
+			"source_node_id":"remote-node",
+			"source_session_id":"codex:source",
+			"source_agent":"codex",
+			"keyword":"monitor",
+			"title":"Monitor audit frontend integration",
+			"summary":"summary",
+			"content":"content",
+			"status":"active",
+			"created_at":"2026-06-22T00:00:00Z"
+		},
+		"route":{
+			"match_type":"keyword",
+			"match_value":"monitor",
+			"target_agent":"codex"
+		}
+	}`, "\n", "")
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/usr_1/envelopes/env_1":
+			return jsonResponse(fmt.Sprintf(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"env_1",
+						"sender_user_id":"usr_sender",
+						"recipient_user_id":"usr_1",
+						"payload_type":"knowledge_capsule",
+						"payload_json":%s,
+						"status":"accepted"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`, payload)), nil
+		default:
+			return nil, fmt.Errorf("unexpected manager request: %s %s", req.Method, req.URL.Path)
+		}
+	})
+	envelopeFacade := NewEnvelopeFacade(client, s.store)
+
+	first, err := envelopeFacade.Accept(s.ctx, &AcceptEnvelopeRequest{EnvelopeID: "env_1"})
+	s.Require().NoError(err)
+	second, err := envelopeFacade.Accept(s.ctx, &AcceptEnvelopeRequest{EnvelopeID: "env_1"})
+	s.Require().NoError(err)
+
+	s.Equal(first.Capsule.CapsuleID, second.Capsule.CapsuleID)
+	s.Require().NotNil(first.Injection)
+	s.Require().NotNil(second.Injection)
+	s.Equal(first.Injection.InjectionID, second.Injection.InjectionID)
+	capsules, err := s.store.ListKnowledgeCapsules(s.ctx, &store.ListKnowledgeCapsulesRequest{
+		SourceSessionID: "remote_envelope:env_1",
+	})
+	s.Require().NoError(err)
+	s.Require().Len(capsules.Capsules, 1)
+	injections, err := s.store.ListKnowledgeInjections(s.ctx, &store.ListKnowledgeInjectionsRequest{})
+	s.Require().NoError(err)
+	s.Require().Len(injections.Injections, 1)
+}
+
+func (s *EnvelopeFacadeSuite) TestAcceptAllCanSyncAcceptedEnvelopes() {
+	payload := strings.ReplaceAll(`{
+		"schema_version":"paxl.envelope_payload.knowledge_capsule.v1",
+		"capsule":{
+			"capsule_id":"kcap_remote",
+			"source_session_id":"codex:source",
+			"source_agent":"codex",
+			"keyword":"monitor",
+			"title":"Monitor audit frontend integration",
+			"summary":"summary",
+			"content":"content",
+			"status":"active",
+			"created_at":"2026-06-22T00:00:00Z"
+		}
+	}`, "\n", "")
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet &&
+			req.URL.Path == "/api/v1/user/usr_1/envelopes":
+			s.Equal("accepted", req.URL.Query().Get("status"))
+			return jsonResponse(`{
+				"data":{
+					"envelopes":[
+						{"envelope_id":"env_1","payload_type":"knowledge_capsule","status":"accepted"}
+					]
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		case req.Method == http.MethodGet &&
+			req.URL.Path == "/api/v1/user/usr_1/envelopes/env_1":
+			return jsonResponse(fmt.Sprintf(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"env_1",
+						"sender_user_id":"usr_sender",
+						"recipient_user_id":"usr_1",
+						"payload_type":"knowledge_capsule",
+						"payload_json":%s,
+						"status":"accepted"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`, payload)), nil
+		default:
+			return nil, fmt.Errorf("unexpected manager request: %s %s", req.Method, req.URL.Path)
+		}
+	})
+	envelopeFacade := NewEnvelopeFacade(client, s.store)
+
+	resp, err := envelopeFacade.AcceptAll(s.ctx, &AcceptAllEnvelopesRequest{
+		Status: "accepted",
+	})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Accepted, 1)
+	s.Equal("Monitor audit frontend integration", resp.Accepted[0].Capsule.Title)
+}
+
 func (s *EnvelopeFacadeSuite) TestListInboxBuildsStatusAndLimitQuery() {
 	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		s.Equal(http.MethodGet, req.Method)

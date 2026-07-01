@@ -635,3 +635,30 @@ Current support boundary:
 
 In short: macOS is verified, Linux is expected to work with similar local agent
 layouts, and Windows should be treated as experimental until tested.
+
+## Accepted Inbox Sync
+
+If an envelope is accepted outside the local CLI, for example through the
+manager API or a hosted UI, the remote inbox status can become `accepted` before
+this machine has stored the capsule locally. Use explicit inbox sync to repair
+that local state:
+
+```sh
+paxl inbox sync
+paxl inbox sync --limit 20
+```
+
+`inbox sync` lists accepted inbox envelopes, materializes any missing local
+capsules, and recreates routed hook injections when the envelope payload
+contains a route. It is idempotent: accepted envelopes are keyed locally by the
+source session id `remote_envelope:<envelope-id>`, so repeated syncs reuse the
+existing local capsule and route injection.
+
+`paxl inbox accept <envelope-id>` is also idempotent. If the remote envelope is
+already accepted, it skips the remote accept call and performs the same local
+materialization step.
+
+The hidden agent hook performs the same reconciliation before matching routes:
+it first accepts pending envelopes, then syncs a small batch of recently
+accepted envelopes. This lets capsules accepted from the web or manager API
+arrive on the next matching local prompt without a manual CLI accept step.

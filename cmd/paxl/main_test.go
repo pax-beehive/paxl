@@ -1913,7 +1913,7 @@ func (s *CommandSuite) TestSingularCapsuleCommandExposesMigratedSubcommands() {
 }
 
 func (s *CommandSuite) TestInboxCommandExposesEnvelopeSubcommands() {
-	cases := []string{"list", "get", "accept", "watch", "archive"}
+	cases := []string{"list", "get", "accept", "sync", "watch", "archive"}
 	command := findCommand(newCommand(&s.stdout, &s.stderr), "inbox")
 	s.Require().NotNil(command)
 
@@ -2411,6 +2411,93 @@ func (s *CommandSuite) TestInboxAcceptAllUsesPendingManagerEnvelopes() {
 	)
 	s.Require().NoError(err)
 	s.Len(listed.Capsules, 2)
+}
+
+func (s *CommandSuite) TestInboxSyncUsesAcceptedManagerEnvelopes() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	payload := strings.ReplaceAll(`{
+		"schema_version":"paxl.envelope_payload.knowledge_capsule.v2",
+		"capsule":{
+			"capsule_id":"kcap_remote",
+			"source_session_id":"codex:source",
+			"source_agent":"codex",
+			"keyword":"monitor",
+			"title":"Monitor audit frontend integration",
+			"summary":"summary",
+			"content":"content",
+			"status":"active",
+			"created_at":"2026-06-22T00:00:00Z"
+		},
+		"route":{
+			"match_type":"keyword",
+			"match_value":"monitor",
+			"target_agent":"codex"
+		}
+	}`, "\n", "")
+	restoreHTTPClient := s.stubDefaultHTTPClient(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/usr_1/envelopes":
+			s.Equal("accepted", req.URL.Query().Get("status"))
+			return commandJSONResponse(`{
+				"data":{
+					"envelopes":[
+						{"envelope_id":"env_1","payload_type":"knowledge_capsule","status":"accepted"}
+					]
+				},
+				"code":200,
+				"message":"ok"
+			}`), nil
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/usr_1/envelopes/env_1":
+			return commandJSONResponse(fmt.Sprintf(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"env_1",
+						"sender_email":"sender@example.com",
+						"payload_type":"knowledge_capsule",
+						"payload_json":%s,
+						"status":"accepted"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`, payload)), nil
+		default:
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(strings.NewReader("unexpected request")),
+				Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			}, nil
+		}
+	})
+	defer restoreHTTPClient()
+	s.seedManagerCredential(dbPath, "https://manager.example")
+
+	err := run(
+		context.Background(),
+		[]string{"--db", dbPath, "inbox", "sync"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Synced env_1 as local capsule")
+	s.Contains(s.stdout.String(), "Hook injection route")
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	defer closeStore(opened.Store)
+	listed, err := opened.Store.ListKnowledgeCapsules(
+		context.Background(),
+		&store.ListKnowledgeCapsulesRequest{SourceSessionID: "remote_envelope:env_1"},
+	)
+	s.Require().NoError(err)
+	s.Require().Len(listed.Capsules, 1)
+	s.Equal("Monitor audit frontend integration", listed.Capsules[0].Title)
+	injections, err := opened.Store.ListKnowledgeInjections(
+		context.Background(),
+		&store.ListKnowledgeInjectionsRequest{},
+	)
+	s.Require().NoError(err)
+	s.Require().Len(injections.Injections, 1)
 }
 
 func (s *CommandSuite) TestInboxWatchAcceptsPendingEnvelopesUntilContextCanceled() {
@@ -3458,6 +3545,7 @@ func (s *CommandSuite) TestEnvelopeCommandsRejectInvalidRequestsBeforeIO() {
 			name: "accept unknown format",
 			args: []string{"inbox", "accept", "env_1", "--format", "xml"},
 		},
+		{name: "sync unknown format", args: []string{"inbox", "sync", "--format", "xml"}},
 		{name: "archive missing envelope", args: []string{"inbox", "archive"}},
 	}
 
