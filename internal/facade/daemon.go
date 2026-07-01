@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -373,32 +374,171 @@ func (f *DaemonFacade) CreateAgent(
 	if req == nil {
 		return nil, fmt.Errorf("create daemon agent: request is required")
 	}
-	if strings.TrimSpace(req.RemoteID) == "" {
-		return nil, fmt.Errorf("create daemon agent: remote id is required")
-	}
 	if strings.TrimSpace(req.Name) == "" {
 		return nil, fmt.Errorf("create daemon agent: name is required")
 	}
 	if strings.TrimSpace(req.Harness) == "" {
 		return nil, fmt.Errorf("create daemon agent: harness is required")
 	}
+	remoteID, err := f.selectCreateAgentRemoteID(ctx, req.RemoteID)
+	if err != nil {
+		return nil, err
+	}
+	harness := strings.TrimSpace(req.Harness)
+	command, err := f.resolveCreateAgentCommand(ctx, harness, req.Command)
+	if err != nil {
+		return nil, err
+	}
 	ack, err := f.client.CreateAgentConnection(
 		ctx,
 		newDaemonCommandID(),
 		&model.DaemonCreateAgentConnectionCommand{
-			RemoteID:     strings.TrimSpace(req.RemoteID),
+			RemoteID:     remoteID,
 			Name:         strings.TrimSpace(req.Name),
 			CloudAgentID: strings.TrimSpace(req.CloudAgentID),
 			InstanceID:   firstNonEmpty(req.InstanceID, req.Name),
-			AgentType:    firstNonEmpty(req.AgentType, req.Harness),
-			Harness:      strings.TrimSpace(req.Harness),
-			Command:      append([]string(nil), req.Command...),
+			AgentType:    firstNonEmpty(req.AgentType, harness),
+			Harness:      harness,
+			Command:      command,
 			WorkingDir:   strings.TrimSpace(req.WorkingDir),
 			Env:          req.Env,
 			DesiredState: model.DaemonDesiredStateRunning,
 		},
 	)
 	return daemonCommandResponse("create daemon agent", ack, err)
+}
+
+func (f *DaemonFacade) selectCreateAgentRemoteID(
+	ctx context.Context,
+	explicit string,
+) (string, error) {
+	explicit = strings.TrimSpace(explicit)
+	result, err := f.client.ListRemotes(ctx, false)
+	if err != nil {
+		return "", daemonAPIGuidance(err)
+	}
+	if err := queryOK(result); err != nil {
+		return "", err
+	}
+	items := daemonRemoteItems(result)
+	if explicit != "" {
+		for _, item := range items {
+			if item != nil && item.Remote.ID == explicit {
+				return item.Remote.ID, nil
+			}
+		}
+		return "", fmt.Errorf(
+			"create daemon agent: remote %q is not configured or is disabled",
+			explicit,
+		)
+	}
+	switch len(items) {
+	case 0:
+		return "", fmt.Errorf(
+			"create daemon agent: no remotes configured; run `paxl daemon setup` or pass --remote",
+		)
+	case 1:
+		return items[0].Remote.ID, nil
+	default:
+		return "", fmt.Errorf("create daemon agent: multiple remotes configured; pass --remote")
+	}
+}
+
+func (f *DaemonFacade) resolveCreateAgentCommand(
+	ctx context.Context,
+	harnessName string,
+	explicit []string,
+) ([]string, error) {
+	if command := normalizedCommand(explicit); len(command) > 0 {
+		return command, nil
+	}
+	result, err := f.client.ListHarnesses(ctx, true)
+	if err != nil {
+		return nil, daemonAPIGuidance(err)
+	}
+	if err := queryOK(result); err != nil {
+		return nil, err
+	}
+	command, cached, cachedErr := commandForDaemonHarness(daemonHarnessItems(result), harnessName)
+	if cached && cachedErr == nil {
+		return command, nil
+	}
+
+	result, err = f.client.DiscoverHarnesses(ctx, false, []string{harnessName})
+	if err != nil {
+		return nil, daemonAPIGuidance(err)
+	}
+	if err := queryOK(result); err != nil {
+		return nil, err
+	}
+	if command, ok, err := commandForDaemonHarness(daemonHarnessItems(result), harnessName); ok ||
+		err != nil {
+		return command, err
+	}
+	if cachedErr != nil {
+		return nil, cachedErr
+	}
+	return nil, fmt.Errorf(
+		"create daemon agent: harness %q is not known; run `paxl daemon harness discover --probe %s` and choose an available harness",
+		harnessName,
+		harnessName,
+	)
+}
+
+func commandForDaemonHarness(
+	items []*model.DaemonHarnessView,
+	harnessName string,
+) ([]string, bool, error) {
+	for _, item := range items {
+		if item == nil || !strings.EqualFold(strings.TrimSpace(item.Harness), harnessName) {
+			continue
+		}
+		state := strings.TrimSpace(item.State)
+		if state != "" && state != "available" {
+			reason := firstNonEmpty(item.LastError, item.InstallHint, "harness is not available")
+			return nil, true, fmt.Errorf(
+				"create daemon agent: harness %q is %s: %s",
+				harnessName,
+				state,
+				reason,
+			)
+		}
+		command := normalizedCommand(item.Command)
+		if len(command) == 0 {
+			return nil, true, fmt.Errorf(
+				"create daemon agent: harness %q has no command configured; run `paxl daemon harness discover --probe %s`",
+				harnessName,
+				harnessName,
+			)
+		}
+		return command, true, nil
+	}
+	return nil, false, nil
+}
+
+func daemonRemoteItems(result *model.DaemonQueryResult) []*model.DaemonRemoteView {
+	if result == nil || result.Remotes == nil {
+		return nil
+	}
+	return result.Remotes.Items
+}
+
+func daemonHarnessItems(result *model.DaemonQueryResult) []*model.DaemonHarnessView {
+	if result == nil || result.Harnesses == nil {
+		return nil
+	}
+	return result.Harnesses.Items
+}
+
+func normalizedCommand(command []string) []string {
+	normalized := make([]string, 0, len(command))
+	for _, word := range command {
+		word = strings.TrimSpace(word)
+		if word != "" {
+			normalized = append(normalized, word)
+		}
+	}
+	return normalized
 }
 
 func (f *DaemonFacade) UpdateAgent(
@@ -620,6 +760,10 @@ func ackOK(ack *model.DaemonCommandAck) error {
 func daemonAPIGuidance(err error) error {
 	if err == nil {
 		return nil
+	}
+	var statusErr *daemonHTTPStatusError
+	if errors.As(err, &statusErr) && statusErr.clientError() {
+		return err
 	}
 	return fmt.Errorf("%w; is paxd running? try `paxd run` or `paxd setup`", err)
 }

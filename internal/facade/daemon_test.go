@@ -142,6 +142,11 @@ func TestDaemonFacadeReportsCommandAckFailures(t *testing.T) {
 func TestDaemonFacadeAgentCommandsCallLocalAPI(t *testing.T) {
 	client := &fakeDaemonControlClient{
 		ack: okDaemonAck(),
+		remotes: &model.DaemonQueryResult{Remotes: &model.DaemonListRemotesResult{
+			Items: []*model.DaemonRemoteView{{
+				Remote: model.DaemonRemote{ID: "prod", Name: "Production"},
+			}},
+		}},
 		agents: &model.DaemonQueryResult{AgentConnections: &model.DaemonListAgentConnectionsResult{
 			Items: []*model.DaemonAgentConnectionView{
 				{ID: "conn_work", RemoteID: "prod", Name: "work"},
@@ -191,6 +196,36 @@ func TestDaemonFacadeAgentCommandsCallLocalAPI(t *testing.T) {
 	assert.Equal(t, "conn_work", client.deletedAgentID)
 }
 
+func TestDaemonFacadeCreateAgentDefaultsRemoteAndCommandFromHarness(t *testing.T) {
+	client := &fakeDaemonControlClient{
+		ack: okDaemonAck(),
+		remotes: &model.DaemonQueryResult{Remotes: &model.DaemonListRemotesResult{
+			Items: []*model.DaemonRemoteView{{
+				Remote: model.DaemonRemote{ID: "default", Name: "Default"},
+			}},
+		}},
+		harnesses: &model.DaemonQueryResult{Harnesses: &model.DaemonListHarnessesResult{
+			Items: []*model.DaemonHarnessView{{
+				Harness: "hermes",
+				State:   "available",
+				Command: []string{"hermes", "agent", "--acp"},
+			}},
+		}},
+	}
+	daemon := facade.NewDaemonFacade(client)
+
+	_, err := daemon.CreateAgent(context.Background(), &facade.CreateDaemonAgentRequest{
+		Name:    "hermes",
+		Harness: "hermes",
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, client.createdAgent)
+	assert.Equal(t, "default", client.createdAgent.RemoteID)
+	assert.Equal(t, []string{"hermes", "agent", "--acp"}, client.createdAgent.Command)
+	assert.True(t, client.includeMissing)
+}
+
 func TestDaemonFacadeRejectsInvalidAgentRequests(t *testing.T) {
 	daemon := facade.NewDaemonFacade(&fakeDaemonControlClient{ack: okDaemonAck()})
 
@@ -203,7 +238,23 @@ func TestDaemonFacadeRejectsInvalidAgentRequests(t *testing.T) {
 		&facade.CreateDaemonAgentRequest{Name: "work", Harness: "codex"},
 	)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "remote id")
+	assert.Contains(t, err.Error(), "no remotes configured")
+
+	daemon = facade.NewDaemonFacade(&fakeDaemonControlClient{
+		ack: okDaemonAck(),
+		remotes: &model.DaemonQueryResult{Remotes: &model.DaemonListRemotesResult{
+			Items: []*model.DaemonRemoteView{
+				{Remote: model.DaemonRemote{ID: "prod", Name: "Production"}},
+				{Remote: model.DaemonRemote{ID: "stage", Name: "Staging"}},
+			},
+		}},
+	})
+	_, err = daemon.CreateAgent(
+		context.Background(),
+		&facade.CreateDaemonAgentRequest{Name: "work", Harness: "codex"},
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--remote")
 
 	_, err = daemon.UpdateAgent(context.Background(), &facade.UpdateDaemonAgentRequest{})
 	require.Error(t, err)
