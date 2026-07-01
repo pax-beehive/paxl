@@ -3,14 +3,17 @@ package facade_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/pax-oss/paxl/internal/facade"
 	"github.com/pax-oss/paxl/internal/model"
 	"github.com/pax-oss/paxl/internal/model/store"
+	"github.com/pax-oss/paxl/pkg/adaptor"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -417,6 +420,86 @@ func (s *SessionFacadeSuite) TestSearchReturnsResultsFromStore() {
 	s.Equal("Docker deploy", resp.Results[0].Title)
 }
 
+func (s *SessionFacadeSuite) TestSearchReturnsCachedResultsWhenSyncBudgetIsTooSmall() {
+	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+		Agent: model.AgentNameCodex,
+		Sessions: []*model.Session{
+			{NativeID: "cached-search", Title: "Cached search"},
+		},
+	})
+	s.Require().NoError(err)
+	_, err = s.store.ReplaceSessionElements(s.ctx, &store.ReplaceSessionElementsRequest{
+		SessionID: "codex:cached-search",
+		Elements: []*model.Element{
+			{Seq: 1, Type: "message", Role: "user", ContentText: "cached needle result"},
+		},
+	})
+	s.Require().NoError(err)
+	registry := adaptor.NewRegistry(&searchSyncTestAdapter{
+		agent: model.AgentNameCodex,
+		listSessions: func(_ context.Context, _ *adaptor.ListSessionsRequest) (*adaptor.ListSessionsResponse, error) {
+			return &adaptor.ListSessionsResponse{Sessions: []*model.Session{
+				{NativeID: "slow", UpdatedAt: "2026-06-30T01:00:00Z"},
+			}}, nil
+		},
+		getSession: func(ctx context.Context, _ *adaptor.GetSessionRequest) (*adaptor.GetSessionResponse, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	})
+	sessionFacade := facade.NewSessionFacade(registry, s.store)
+	ctx, cancel := context.WithTimeout(s.ctx, 50*time.Millisecond)
+	defer cancel()
+
+	resp, err := sessionFacade.Search(ctx, &facade.SearchRequest{
+		Query: "cached",
+		Limit: 10,
+	})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Results, 1)
+	s.Equal("codex:cached-search", resp.Results[0].SessionID)
+}
+
+func (s *SessionFacadeSuite) TestSearchSyncCapsTranscriptIndexingForManySessions() {
+	var getCalls int
+	registry := adaptor.NewRegistry(&searchSyncTestAdapter{
+		agent: model.AgentNameCodex,
+		listSessions: func(_ context.Context, _ *adaptor.ListSessionsRequest) (*adaptor.ListSessionsResponse, error) {
+			sessions := make([]*model.Session, 0, 50)
+			for i := 0; i < 50; i++ {
+				updatedAt := time.Date(2026, 6, 30, 1, 0, 0, 0, time.UTC).
+					Add(-time.Duration(i) * time.Minute).
+					Format(time.RFC3339)
+				sessions = append(sessions, &model.Session{
+					Agent:     model.AgentNameCodex,
+					ID:        "codex:many-" + strconv.Itoa(i),
+					NativeID:  "many-" + strconv.Itoa(i),
+					UpdatedAt: updatedAt,
+				})
+			}
+			return &adaptor.ListSessionsResponse{Sessions: sessions}, nil
+		},
+		getSession: func(_ context.Context, req *adaptor.GetSessionRequest) (*adaptor.GetSessionResponse, error) {
+			getCalls++
+			return &adaptor.GetSessionResponse{Elements: []*model.Element{
+				{Seq: 1, Type: "message", Role: "user", ContentText: "needle " + req.NativeID},
+			}}, nil
+		},
+	})
+	sessionFacade := facade.NewSessionFacade(registry, s.store)
+
+	resp, err := sessionFacade.Search(s.ctx, &facade.SearchRequest{
+		Query: "needle",
+		Limit: 10,
+		Agent: model.AgentNameCodex,
+	})
+
+	s.Require().NoError(err)
+	s.NotEmpty(resp.Results)
+	s.LessOrEqual(getCalls, 10)
+}
+
 func (s *SessionFacadeSuite) TestSearchFiltersResultsByAgent() {
 	for _, sess := range []struct {
 		agent  model.AgentName
@@ -485,6 +568,74 @@ func (s *SessionFacadeSuite) TestSearchRequiresRequest() {
 	sessionFacade := facade.NewSessionFacade(nil, s.store)
 	_, err := sessionFacade.Search(s.ctx, nil)
 	s.Error(err)
+}
+
+type searchSyncTestAdapter struct {
+	agent        model.AgentName
+	listSessions func(ctx context.Context, req *adaptor.ListSessionsRequest) (*adaptor.ListSessionsResponse, error)
+	getSession   func(ctx context.Context, req *adaptor.GetSessionRequest) (*adaptor.GetSessionResponse, error)
+}
+
+func (a *searchSyncTestAdapter) Info(
+	ctx context.Context,
+	req *adaptor.InfoRequest,
+	opts ...func(*adaptor.Option),
+) (*adaptor.InfoResponse, error) {
+	_ = ctx
+	_ = req
+	_ = opts
+	return &adaptor.InfoResponse{Agent: &model.AgentInfo{
+		Name:              a.agent,
+		Kind:              model.AgentKindLocal,
+		Available:         true,
+		SessionsAvailable: true,
+	}}, nil
+}
+
+func (a *searchSyncTestAdapter) ListSessions(
+	ctx context.Context,
+	req *adaptor.ListSessionsRequest,
+	opts ...func(*adaptor.Option),
+) (*adaptor.ListSessionsResponse, error) {
+	_ = opts
+	if a.listSessions == nil {
+		return nil, errors.New("list sessions not implemented")
+	}
+	return a.listSessions(ctx, req)
+}
+
+func (a *searchSyncTestAdapter) GetSession(
+	ctx context.Context,
+	req *adaptor.GetSessionRequest,
+	opts ...func(*adaptor.Option),
+) (*adaptor.GetSessionResponse, error) {
+	_ = opts
+	if a.getSession == nil {
+		return nil, errors.New("get session not implemented")
+	}
+	return a.getSession(ctx, req)
+}
+
+func (a *searchSyncTestAdapter) Prompt(
+	ctx context.Context,
+	req *adaptor.PromptRequest,
+	opts ...func(*adaptor.Option),
+) (*adaptor.PromptResponse, error) {
+	_ = ctx
+	_ = req
+	_ = opts
+	return nil, errors.New("prompt not implemented")
+}
+
+func (a *searchSyncTestAdapter) StartSession(
+	ctx context.Context,
+	req *adaptor.StartSessionRequest,
+	opts ...func(*adaptor.Option),
+) (*adaptor.StartSessionResponse, error) {
+	_ = ctx
+	_ = req
+	_ = opts
+	return nil, errors.New("start session not implemented")
 }
 
 func (s *SessionFacadeSuite) TestGetRefreshesWhenRecentlySynced() {
