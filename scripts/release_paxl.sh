@@ -309,6 +309,32 @@ print(value)
 PY
 }
 
+json_field_checked() {
+  local path="$1"
+  local source="$2"
+
+  python3 - "$path" "$source" <<'PY'
+import json
+import sys
+
+path = sys.argv[1].split(".")
+source = sys.argv[2]
+raw = sys.stdin.read()
+try:
+    doc = json.loads(raw)
+except json.JSONDecodeError as exc:
+    snippet = raw[:500].replace("\n", "\\n")
+    raise SystemExit(f"non-JSON response from {source}: {exc}; body={snippet!r}")
+try:
+    value = doc
+    for part in path:
+        value = value[part]
+except (KeyError, TypeError) as exc:
+    raise SystemExit(f"missing JSON field {'.'.join(path)} in response from {source}: {exc}")
+print(value)
+PY
+}
+
 urlencode() {
   python3 - "$1" <<'PY'
 import sys
@@ -392,7 +418,8 @@ verify_resolver_artifacts() {
   local version="$2"
   local tags="$3"
   local manager_url="$4"
-  local verify_tag line platform encoded_platform encoded_tag response actual_version actual_sha actual_size
+  local verify_tag line platform encoded_platform encoded_tag resolver_url response
+  local actual_version actual_sha actual_size
 
   if ! should_publish_metadata || [[ "${PAX_RELEASE_SKIP_VERIFY:-0}" == "1" ]]; then
     log "skipping public resolver verification"
@@ -408,10 +435,13 @@ verify_resolver_artifacts() {
     [[ -n "$line" ]] || continue
     platform="$(printf '%s' "$line" | json_field platform)"
     encoded_platform="$(urlencode "$platform")"
-    response="$(curl -fsS "${manager_url%/}/api/v1/public/artifacts/download?product=paxl&platform=${encoded_platform}&tags=${encoded_tag}")"
-    actual_version="$(printf '%s' "$response" | json_field version)"
-    actual_sha="$(printf '%s' "$response" | json_field sha256)"
-    actual_size="$(printf '%s' "$response" | json_field size_bytes)"
+    resolver_url="${manager_url%/}/api/v1/public/artifacts/download?product=paxl&platform=${encoded_platform}&tags=${encoded_tag}"
+    if ! response="$(curl -sS "$resolver_url")"; then
+      fail "resolver request failed for ${platform}: ${resolver_url}"
+    fi
+    actual_version="$(printf '%s' "$response" | json_field_checked data.version "$resolver_url")"
+    actual_sha="$(printf '%s' "$response" | json_field_checked data.sha256 "$resolver_url")"
+    actual_size="$(printf '%s' "$response" | json_field_checked data.size_bytes "$resolver_url")"
     [[ "$actual_version" == "$version" ]] ||
       fail "resolver version mismatch for ${platform}: ${actual_version}, expected ${version}"
     [[ "$actual_sha" == "$(printf '%s' "$line" | json_field sha256)" ]] ||
