@@ -126,6 +126,11 @@ func TestDaemonRemoteCommandsUseDaemonFacade(t *testing.T) {
 func TestDaemonAgentHarnessAndLocalCommandsUseDaemonFacade(t *testing.T) {
 	client := &cmdFakeDaemonControlClient{
 		ack: &model.DaemonCommandAck{OK: true, Status: model.DaemonCommandStatusReceived},
+		remotes: &model.DaemonQueryResult{Remotes: &model.DaemonListRemotesResult{
+			Items: []*model.DaemonRemoteView{{
+				Remote: model.DaemonRemote{ID: "prod", Name: "Production"},
+			}},
+		}},
 		agents: &model.DaemonQueryResult{AgentConnections: &model.DaemonListAgentConnectionsResult{
 			Items: []*model.DaemonAgentConnectionView{{
 				ID:           "conn_work",
@@ -138,6 +143,11 @@ func TestDaemonAgentHarnessAndLocalCommandsUseDaemonFacade(t *testing.T) {
 		harnesses: &model.DaemonQueryResult{Harnesses: &model.DaemonListHarnessesResult{
 			Items: []*model.DaemonHarnessView{
 				{Harness: "codex", State: "available", Command: []string{"codex-acp"}},
+				{
+					Harness: "hermes",
+					State:   "available",
+					Command: []string{"hermes", "agent", "--acp"},
+				},
 			},
 		}},
 		localSessions: &model.DaemonQueryResult{LocalSessions: &model.DaemonListLocalSessionsResult{
@@ -165,6 +175,17 @@ func TestDaemonAgentHarnessAndLocalCommandsUseDaemonFacade(t *testing.T) {
 	}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Equal(t, "review", client.createdAgent.Name)
+
+	stdout.Reset()
+	err = run(context.Background(), []string{
+		"daemon", "agent", "create",
+		"--remote", "prod",
+		"--name", "hermes",
+		"--harness", "hermes",
+	}, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Equal(t, "hermes", client.createdAgent.Name)
+	assert.Equal(t, []string{"hermes", "agent", "--acp"}, client.createdAgent.Command)
 
 	stdout.Reset()
 	err = run(context.Background(), []string{

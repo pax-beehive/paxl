@@ -26,6 +26,33 @@ type DaemonLocalAPIClient struct {
 	http    DaemonHTTPClient
 }
 
+type daemonHTTPStatusError struct {
+	statusCode int
+	status     string
+	err        error
+}
+
+func (e *daemonHTTPStatusError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.err != nil {
+		return fmt.Sprintf("local daemon API returned %s: %v", e.status, e.err)
+	}
+	return fmt.Sprintf("local daemon API returned %s", e.status)
+}
+
+func (e *daemonHTTPStatusError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func (e *daemonHTTPStatusError) clientError() bool {
+	return e != nil && e.statusCode >= 400 && e.statusCode < 500
+}
+
 func DefaultDaemonControlSocketPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil || strings.TrimSpace(home) == "" {
@@ -335,7 +362,11 @@ func (c *DaemonLocalAPIClient) doQuery(
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return &result, fmt.Errorf("local daemon API returned %s", resp.Status)
+		return &result, &daemonHTTPStatusError{
+			statusCode: resp.StatusCode,
+			status:     resp.Status,
+			err:        result.Error,
+		}
 	}
 	return &result, nil
 }
@@ -357,7 +388,11 @@ func (c *DaemonLocalAPIClient) doCommand(
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return &ack, fmt.Errorf("local daemon API returned %s", resp.Status)
+		return &ack, &daemonHTTPStatusError{
+			statusCode: resp.StatusCode,
+			status:     resp.Status,
+			err:        ack.Error,
+		}
 	}
 	return &ack, nil
 }
