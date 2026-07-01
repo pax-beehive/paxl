@@ -250,14 +250,8 @@ func (f *DaemonFacade) CreateRemote(
 	if req == nil {
 		return nil, fmt.Errorf("create daemon remote: request is required")
 	}
-	remoteID := strings.TrimSpace(req.RemoteID)
-	if remoteID == "" {
-		return nil, fmt.Errorf("create daemon remote: remote id is required")
-	}
-	cloudURL := strings.TrimRight(strings.TrimSpace(req.CloudAPIURL), "/")
-	if cloudURL == "" {
-		return nil, fmt.Errorf("create daemon remote: cloud url is required")
-	}
+	remoteID := firstNonEmpty(req.RemoteID, "default")
+	cloudURL := strings.TrimRight(firstNonEmpty(req.CloudAPIURL, DefaultManagerURL), "/")
 	enabled := req.Enabled
 	ack, err := f.client.CreateRemote(ctx, newDaemonCommandID(), &model.DaemonCreateRemoteCommand{
 		Remote: model.DaemonRemote{

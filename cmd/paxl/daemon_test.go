@@ -72,6 +72,14 @@ func TestDaemonRemoteCommandsUseDaemonFacade(t *testing.T) {
 
 	stdout.Reset()
 	err = run(context.Background(), []string{
+		"daemon", "remote", "create",
+	}, &stdout, &stderr)
+	require.NoError(t, err)
+	assert.Equal(t, "default", client.createdRemote.Remote.ID)
+	assert.Equal(t, facade.DefaultManagerURL, client.createdRemote.Remote.CloudAPIURL)
+
+	stdout.Reset()
+	err = run(context.Background(), []string{
 		"daemon", "remote", "update", "staging",
 		"--name", "Staging",
 		"--enabled",
