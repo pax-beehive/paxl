@@ -299,7 +299,7 @@ func newDaemonRemoteCommand(stdout io.Writer) *cli.Command {
 			{
 				Name:      "create",
 				Usage:     "Create a daemon remote from node credentials",
-				ArgsUsage: "<remote>",
+				ArgsUsage: "[remote]",
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "name", Usage: "Remote display name"},
 					&cli.StringFlag{Name: "cloud-url", Usage: "Pax cloud API URL"},

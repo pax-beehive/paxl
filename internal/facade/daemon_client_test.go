@@ -202,10 +202,13 @@ func TestDaemonLocalAPIClientReturnsRequestCreationErrors(t *testing.T) {
 
 func TestDaemonLocalAPIClientReturnsCommandHTTPStatusErrors(t *testing.T) {
 	client := daemonRoundTripFunc(func(_ *http.Request) (*http.Response, error) {
-		return daemonJSONResponse(t, http.StatusServiceUnavailable, model.DaemonCommandAck{
+		return daemonJSONResponse(t, http.StatusBadRequest, model.DaemonCommandAck{
 			OK:     false,
 			Status: model.DaemonCommandStatusFailed,
-			Error:  &model.DaemonControlError{Code: "unavailable"},
+			Error: &model.DaemonControlError{
+				Code:    "invalid_argument",
+				Message: "create_agent_connection.command: command is required",
+			},
 		}), nil
 	})
 
@@ -213,7 +216,8 @@ func TestDaemonLocalAPIClientReturnsCommandHTTPStatusErrors(t *testing.T) {
 		RestartRemote(context.Background(), "cmd_1", "prod")
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "503")
+	assert.Contains(t, err.Error(), "400")
+	assert.Contains(t, err.Error(), "command is required")
 }
 
 func TestDaemonClientConstructorsUseDefaults(t *testing.T) {
