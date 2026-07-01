@@ -25,7 +25,6 @@ Environment overrides:
   PAX_RELEASE_DIST_DIR    Local output directory. Defaults to dist.
   PAX_RELEASE_INSTALLER_OBJECT GCS object for installer. Defaults to paxl/install.sh.
   PAX_RELEASE_MANAGER_URL Public manager API base URL. Defaults to https://api.paxtech.net.
-  PAX_RELEASE_UPLOAD_AUDIENCE Google ID token audience for artifact publish.
   PAX_RELEASE_ID_TOKEN    Bearer token for artifact metadata publish. Defaults to gcloud.
   PAX_RELEASE_DRY_RUN=1   Build and smoke-test without upload or git tag.
   PAX_RELEASE_SKIP_UPLOAD=1 Build only; also skips git tag.
@@ -320,13 +319,11 @@ PY
 }
 
 artifact_publish_token() {
-  local audience="$1"
-
   if [[ -n "${PAX_RELEASE_ID_TOKEN:-}" ]]; then
     printf '%s' "$PAX_RELEASE_ID_TOKEN"
     return
   fi
-  gcloud auth print-identity-token --audiences="$audience"
+  gcloud auth print-identity-token
 }
 
 should_publish_metadata() {
@@ -341,7 +338,6 @@ publish_artifact_metadata() {
   local build_id="$3"
   local tags_json="$4"
   local manager_url="$5"
-  local audience="$6"
   local token line payload endpoint
 
   if ! should_publish_metadata; then
@@ -350,7 +346,7 @@ publish_artifact_metadata() {
   fi
 
   require_cmd curl
-  token="$(artifact_publish_token "$audience")"
+  token="$(artifact_publish_token)"
   endpoint="${manager_url%/}/api/v1/admin/artifacts"
   log "publishing artifact metadata -> ${endpoint}"
 
@@ -453,7 +449,7 @@ main() {
 
   local version_arg="${1:-patch}"
   local version tags bucket prefix_parent platforms dist_dir build_id tags_json created_at
-  local artifacts_jsonl manifest manifest_dst installer_object manager_url upload_audience
+  local artifacts_jsonl manifest manifest_dst installer_object manager_url
 
   require_cmd go
   require_cmd git
@@ -472,7 +468,6 @@ main() {
   dist_dir="${PAX_RELEASE_DIST_DIR:-dist}"
   installer_object="${PAX_RELEASE_INSTALLER_OBJECT:-paxl/install.sh}"
   manager_url="${PAX_RELEASE_MANAGER_URL:-https://api.paxtech.net}"
-  upload_audience="${PAX_RELEASE_UPLOAD_AUDIENCE:-32555940559.apps.googleusercontent.com}"
   build_id="${PAX_RELEASE_BUILD_ID:-$(git rev-parse --short HEAD)}"
   tags_json="$(tag_json_array "$tags")"
   created_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -548,7 +543,7 @@ main() {
   else
     log "skipping installer upload"
   fi
-  publish_artifact_metadata "$artifacts_jsonl" "$version" "$build_id" "$tags_json" "$manager_url" "$upload_audience"
+  publish_artifact_metadata "$artifacts_jsonl" "$version" "$build_id" "$tags_json" "$manager_url"
   verify_resolver_artifacts "$artifacts_jsonl" "$version" "$tags" "$manager_url"
   rm -f "$artifacts_jsonl"
   create_release_tag "$version"
