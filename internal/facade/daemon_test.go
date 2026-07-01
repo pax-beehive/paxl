@@ -215,13 +215,14 @@ func TestDaemonFacadeCreateAgentDefaultsRemoteAndCommandFromHarness(t *testing.T
 	daemon := facade.NewDaemonFacade(client)
 
 	_, err := daemon.CreateAgent(context.Background(), &facade.CreateDaemonAgentRequest{
-		Name:    "hermes",
 		Harness: "hermes",
 	})
 
 	require.NoError(t, err)
 	require.NotNil(t, client.createdAgent)
 	assert.Equal(t, "default", client.createdAgent.RemoteID)
+	assert.Equal(t, "hermes", client.createdAgent.Name)
+	assert.Equal(t, "hermes", client.createdAgent.InstanceID)
 	assert.Equal(t, []string{"hermes", "agent", "--acp"}, client.createdAgent.Command)
 	assert.True(t, client.includeMissing)
 }
@@ -235,7 +236,7 @@ func TestDaemonFacadeRejectsInvalidAgentRequests(t *testing.T) {
 
 	_, err = daemon.CreateAgent(
 		context.Background(),
-		&facade.CreateDaemonAgentRequest{Name: "work", Harness: "codex"},
+		&facade.CreateDaemonAgentRequest{Harness: "codex"},
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no remotes configured")
@@ -251,7 +252,7 @@ func TestDaemonFacadeRejectsInvalidAgentRequests(t *testing.T) {
 	})
 	_, err = daemon.CreateAgent(
 		context.Background(),
-		&facade.CreateDaemonAgentRequest{Name: "work", Harness: "codex"},
+		&facade.CreateDaemonAgentRequest{Harness: "codex"},
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--remote")

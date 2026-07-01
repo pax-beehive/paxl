@@ -374,17 +374,15 @@ func (f *DaemonFacade) CreateAgent(
 	if req == nil {
 		return nil, fmt.Errorf("create daemon agent: request is required")
 	}
-	if strings.TrimSpace(req.Name) == "" {
-		return nil, fmt.Errorf("create daemon agent: name is required")
-	}
 	if strings.TrimSpace(req.Harness) == "" {
 		return nil, fmt.Errorf("create daemon agent: harness is required")
 	}
+	harness := strings.TrimSpace(req.Harness)
+	name := firstNonEmpty(req.Name, harness)
 	remoteID, err := f.selectCreateAgentRemoteID(ctx, req.RemoteID)
 	if err != nil {
 		return nil, err
 	}
-	harness := strings.TrimSpace(req.Harness)
 	command, err := f.resolveCreateAgentCommand(ctx, harness, req.Command)
 	if err != nil {
 		return nil, err
@@ -394,9 +392,9 @@ func (f *DaemonFacade) CreateAgent(
 		newDaemonCommandID(),
 		&model.DaemonCreateAgentConnectionCommand{
 			RemoteID:     remoteID,
-			Name:         strings.TrimSpace(req.Name),
+			Name:         name,
 			CloudAgentID: strings.TrimSpace(req.CloudAgentID),
-			InstanceID:   firstNonEmpty(req.InstanceID, req.Name),
+			InstanceID:   firstNonEmpty(req.InstanceID, name),
 			AgentType:    firstNonEmpty(req.AgentType, harness),
 			Harness:      harness,
 			Command:      command,
