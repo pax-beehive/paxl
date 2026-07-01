@@ -295,25 +295,9 @@ gcs_object_generation() {
 
 json_field() {
   local path="$1"
+  local source="${2:-stdin}"
 
-  python3 - "$path" <<'PY'
-import json
-import sys
-
-path = sys.argv[1].split(".")
-doc = json.load(sys.stdin)
-value = doc
-for part in path:
-    value = value[part]
-print(value)
-PY
-}
-
-json_field_checked() {
-  local path="$1"
-  local source="$2"
-
-  python3 - "$path" "$source" <<'PY'
+  python3 -c '
 import json
 import sys
 
@@ -324,15 +308,22 @@ try:
     doc = json.loads(raw)
 except json.JSONDecodeError as exc:
     snippet = raw[:500].replace("\n", "\\n")
-    raise SystemExit(f"non-JSON response from {source}: {exc}; body={snippet!r}")
+    raise SystemExit(f"non-JSON input while reading {'\''.'\''.join(path)} from {source}: {exc}; body={snippet!r}")
 try:
     value = doc
     for part in path:
         value = value[part]
 except (KeyError, TypeError) as exc:
-    raise SystemExit(f"missing JSON field {'.'.join(path)} in response from {source}: {exc}")
+    raise SystemExit(f"missing JSON field {'\''.'\''.join(path)} in {source}: {exc}")
 print(value)
-PY
+' "$path" "$source"
+}
+
+json_field_checked() {
+  local path="$1"
+  local source="$2"
+
+  json_field "$path" "$source"
 }
 
 urlencode() {
@@ -364,7 +355,7 @@ publish_artifact_metadata() {
   local build_id="$3"
   local tags_json="$4"
   local manager_url="$5"
-  local token line payload endpoint
+  local token line payload endpoint platform response code
 
   if ! should_publish_metadata; then
     log "skipping manager artifact metadata publish"
@@ -378,6 +369,7 @@ publish_artifact_metadata() {
 
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
+    platform="$(printf '%s' "$line" | json_field platform "release artifact metadata")"
     payload="$(python3 - "$line" "$version" "$build_id" "$tags_json" <<'PY'
 import json
 import sys
@@ -404,12 +396,17 @@ if record["platform"] == "script":
 print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
 PY
 )"
-    curl -fsS \
+    if ! response="$(curl -sS \
       -H "Authorization: Bearer ${token}" \
       -H "Content-Type: application/json" \
       -X POST \
       --data "$payload" \
-      "$endpoint" >/dev/null
+      "$endpoint")"; then
+      fail "artifact metadata publish request failed for ${platform}: ${endpoint}"
+    fi
+    code="$(printf '%s' "$response" | json_field code "artifact publish response for ${platform}")"
+    [[ "$code" == "200" ]] ||
+      fail "artifact metadata publish failed for ${platform}: code ${code}; response ${response}"
   done <"$artifacts_jsonl"
 }
 
@@ -419,7 +416,7 @@ verify_resolver_artifacts() {
   local tags="$3"
   local manager_url="$4"
   local verify_tag line platform encoded_platform encoded_tag resolver_url response
-  local actual_version actual_sha actual_size
+  local actual_version actual_sha actual_size expected_sha expected_size
 
   if ! should_publish_metadata || [[ "${PAX_RELEASE_SKIP_VERIFY:-0}" == "1" ]]; then
     log "skipping public resolver verification"
@@ -433,7 +430,9 @@ verify_resolver_artifacts() {
 
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
-    platform="$(printf '%s' "$line" | json_field platform)"
+    platform="$(printf '%s' "$line" | json_field platform "release artifact metadata")"
+    expected_sha="$(printf '%s' "$line" | json_field sha256 "release artifact metadata for ${platform}")"
+    expected_size="$(printf '%s' "$line" | json_field size "release artifact metadata for ${platform}")"
     encoded_platform="$(urlencode "$platform")"
     resolver_url="${manager_url%/}/api/v1/public/artifacts/download?product=paxl&platform=${encoded_platform}&tags=${encoded_tag}"
     if ! response="$(curl -sS "$resolver_url")"; then
@@ -444,10 +443,10 @@ verify_resolver_artifacts() {
     actual_size="$(printf '%s' "$response" | json_field_checked data.size_bytes "$resolver_url")"
     [[ "$actual_version" == "$version" ]] ||
       fail "resolver version mismatch for ${platform}: ${actual_version}, expected ${version}"
-    [[ "$actual_sha" == "$(printf '%s' "$line" | json_field sha256)" ]] ||
+    [[ "$actual_sha" == "$expected_sha" ]] ||
       fail "resolver sha256 mismatch for ${platform}"
-    [[ "$actual_size" == "$(printf '%s' "$line" | json_field size)" ]] ||
-      fail "resolver size mismatch for ${platform}: ${actual_size}, expected $(printf '%s' "$line" | json_field size)"
+    [[ "$actual_size" == "$expected_size" ]] ||
+      fail "resolver size mismatch for ${platform}: ${actual_size}, expected ${expected_size}"
   done <"$artifacts_jsonl"
 }
 
