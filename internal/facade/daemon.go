@@ -82,7 +82,41 @@ type DaemonControlClient interface {
 }
 
 type DaemonFacade struct {
-	client DaemonControlClient
+	client     DaemonControlClient
+	cloudAgent DaemonCloudAgentRegistrar
+	nodeKey    DaemonRemoteNodeKeyLoader
+}
+
+type DaemonFacadeOption func(*DaemonFacade)
+
+type DaemonCloudAgentRegistrationRequest struct {
+	Remote    model.DaemonRemoteView
+	NodeKey   string
+	Name      string
+	AgentType string
+}
+
+type DaemonCloudAgentRegistrar interface {
+	RegisterCloudAgent(
+		ctx context.Context,
+		req *DaemonCloudAgentRegistrationRequest,
+	) (string, error)
+}
+
+type DaemonRemoteNodeKeyLoader interface {
+	LoadRemoteNodeKey(ctx context.Context, remoteID string) (string, error)
+}
+
+func WithDaemonCloudAgentRegistrar(registrar DaemonCloudAgentRegistrar) DaemonFacadeOption {
+	return func(facade *DaemonFacade) {
+		facade.cloudAgent = registrar
+	}
+}
+
+func WithDaemonRemoteNodeKeyLoader(loader DaemonRemoteNodeKeyLoader) DaemonFacadeOption {
+	return func(facade *DaemonFacade) {
+		facade.nodeKey = loader
+	}
 }
 
 type DaemonStatusRequest struct{}
@@ -192,11 +226,21 @@ type SyncDaemonLocalSessionsResponse struct {
 	Sync *model.DaemonLocalSessionSyncResult
 }
 
-func NewDaemonFacade(client DaemonControlClient) *DaemonFacade {
+func NewDaemonFacade(client DaemonControlClient, opts ...DaemonFacadeOption) *DaemonFacade {
 	if client == nil {
 		client = NewDaemonUnixClient("")
 	}
-	return &DaemonFacade{client: client}
+	facade := &DaemonFacade{
+		client:     client,
+		cloudAgent: NewDaemonHTTPCloudAgentRegistrar(nil),
+		nodeKey:    daemonHomeNodeKeyLoader{},
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(facade)
+		}
+	}
+	return facade
 }
 
 func (f *DaemonFacade) Status(
@@ -373,7 +417,8 @@ func (f *DaemonFacade) CreateAgent(
 	}
 	harness := strings.TrimSpace(req.Harness)
 	name := firstNonEmpty(req.Name, harness)
-	remoteID, err := f.selectCreateAgentRemoteID(ctx, req.RemoteID)
+	agentType := firstNonEmpty(req.AgentType, harness)
+	remote, err := f.selectCreateAgentRemote(ctx, req.RemoteID)
 	if err != nil {
 		return nil, err
 	}
@@ -381,15 +426,25 @@ func (f *DaemonFacade) CreateAgent(
 	if err != nil {
 		return nil, err
 	}
+	cloudAgentID, err := f.resolveCreateAgentCloudAgentID(
+		ctx,
+		req.CloudAgentID,
+		remote,
+		name,
+		agentType,
+	)
+	if err != nil {
+		return nil, err
+	}
 	ack, err := f.client.CreateAgentConnection(
 		ctx,
 		newDaemonCommandID(),
 		&model.DaemonCreateAgentConnectionCommand{
-			RemoteID:     remoteID,
+			RemoteID:     remote.Remote.ID,
 			Name:         name,
-			CloudAgentID: strings.TrimSpace(req.CloudAgentID),
+			CloudAgentID: cloudAgentID,
 			InstanceID:   firstNonEmpty(req.InstanceID, name),
-			AgentType:    firstNonEmpty(req.AgentType, harness),
+			AgentType:    agentType,
 			Harness:      harness,
 			Command:      command,
 			WorkingDir:   strings.TrimSpace(req.WorkingDir),
@@ -400,39 +455,80 @@ func (f *DaemonFacade) CreateAgent(
 	return daemonCommandResponse("create daemon agent", ack, err)
 }
 
-func (f *DaemonFacade) selectCreateAgentRemoteID(
+func (f *DaemonFacade) resolveCreateAgentCloudAgentID(
 	ctx context.Context,
 	explicit string,
+	remote *model.DaemonRemoteView,
+	name string,
+	agentType string,
 ) (string, error) {
+	cloudAgentID := strings.TrimSpace(explicit)
+	if cloudAgentID != "" {
+		return cloudAgentID, nil
+	}
+	if remote == nil {
+		return "", fmt.Errorf("create daemon agent: remote is required")
+	}
+	nodeKey, err := f.nodeKey.LoadRemoteNodeKey(ctx, remote.Remote.ID)
+	if err != nil {
+		return "", fmt.Errorf(
+			"create daemon agent: load node key for remote %q: %w",
+			remote.Remote.ID,
+			err,
+		)
+	}
+	cloudAgentID, err = f.cloudAgent.RegisterCloudAgent(
+		ctx,
+		&DaemonCloudAgentRegistrationRequest{
+			Remote:    *remote,
+			NodeKey:   nodeKey,
+			Name:      name,
+			AgentType: agentType,
+		},
+	)
+	if err != nil {
+		return "", fmt.Errorf(
+			"create daemon agent: register cloud agent for remote %q: %w",
+			remote.Remote.ID,
+			err,
+		)
+	}
+	return cloudAgentID, nil
+}
+
+func (f *DaemonFacade) selectCreateAgentRemote(
+	ctx context.Context,
+	explicit string,
+) (*model.DaemonRemoteView, error) {
 	explicit = strings.TrimSpace(explicit)
 	result, err := f.client.ListRemotes(ctx, false)
 	if err != nil {
-		return "", daemonAPIGuidance(err)
+		return nil, daemonAPIGuidance(err)
 	}
 	if err := queryOK(result); err != nil {
-		return "", err
+		return nil, err
 	}
 	items := daemonRemoteItems(result)
 	if explicit != "" {
 		for _, item := range items {
 			if item != nil && item.Remote.ID == explicit {
-				return item.Remote.ID, nil
+				return item, nil
 			}
 		}
-		return "", fmt.Errorf(
+		return nil, fmt.Errorf(
 			"create daemon agent: remote %q is not configured or is disabled",
 			explicit,
 		)
 	}
 	switch len(items) {
 	case 0:
-		return "", fmt.Errorf(
+		return nil, fmt.Errorf(
 			"create daemon agent: no remotes configured; run `paxl daemon setup` or pass --remote",
 		)
 	case 1:
-		return items[0].Remote.ID, nil
+		return items[0], nil
 	default:
-		return "", fmt.Errorf("create daemon agent: multiple remotes configured; pass --remote")
+		return nil, fmt.Errorf("create daemon agent: multiple remotes configured; pass --remote")
 	}
 }
 

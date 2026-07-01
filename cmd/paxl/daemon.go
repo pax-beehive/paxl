@@ -39,6 +39,11 @@ type daemonLifecycleFacade interface {
 		*facade.DaemonSetupRequest,
 		...func(*facade.Option),
 	) (*facade.DaemonLifecycleResponse, error)
+	RemoteLogin(
+		context.Context,
+		*facade.DaemonRemoteLoginRequest,
+		...func(*facade.Option),
+	) (*facade.DaemonLifecycleResponse, error)
 	Service(
 		context.Context,
 		*facade.DaemonServiceRequest,
@@ -333,6 +338,61 @@ func newDaemonRemoteCommand(stdout io.Writer) *cli.Command {
 						resp,
 						cmd.String("format"),
 					)
+				},
+			},
+			{
+				Name:      "login",
+				Usage:     "Login a daemon remote through paxd",
+				ArgsUsage: "<remote>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "cloud-url", Usage: "Pax cloud API URL"},
+					&cli.StringFlag{
+						Name:  "api-endpoint",
+						Usage: "Optional local API endpoint advertised for this node",
+					},
+					&cli.StringFlag{
+						Name:  "resolver-url",
+						Value: facade.DefaultDaemonResolverURL,
+						Usage: "Artifact resolver URL used when paxd is missing",
+					},
+					&cli.StringFlag{
+						Name:  "platform",
+						Usage: "Release platform override like darwin/arm64",
+					},
+					&cli.StringFlag{
+						Name:  "tag",
+						Value: facade.DefaultUpdateTag,
+						Usage: "Release tag to install when paxd is missing",
+					},
+					&cli.StringFlag{
+						Name:  "install-dir",
+						Usage: "Directory to install paxd into when missing",
+					},
+					&cli.BoolFlag{Name: "dry-run", Usage: "Show login action without running paxd"},
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "text",
+						Usage: "Output format: text or json",
+					},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					resp, err := newDaemonLifecycleFacade().RemoteLogin(
+						ctx,
+						&facade.DaemonRemoteLoginRequest{
+							RemoteID:    cmd.Args().First(),
+							DryRun:      cmd.Bool("dry-run"),
+							CloudURL:    cmd.String("cloud-url"),
+							APIEndpoint: cmd.String("api-endpoint"),
+							ResolverURL: cmd.String("resolver-url"),
+							Platform:    cmd.String("platform"),
+							Tag:         cmd.String("tag"),
+							InstallDir:  cmd.String("install-dir"),
+						},
+					)
+					if err != nil {
+						return fmt.Errorf("login daemon remote: %w", err)
+					}
+					return renderDaemonLifecycle(stdout, resp, cmd.String("format"))
 				},
 			},
 			{

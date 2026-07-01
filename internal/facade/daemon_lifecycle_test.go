@@ -196,6 +196,24 @@ func TestDaemonLifecycleUpdateReplacesExistingBinaryWithNewFile(t *testing.T) {
 	assert.Equal(t, binary, raw)
 }
 
+func TestInstallDaemonBinaryExplainsUnwritableInstallDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix permissions required")
+	}
+	installDir := t.TempDir()
+	require.NoError(t, os.Chmod(installDir, 0o555))
+	defer func() {
+		_ = os.Chmod(installDir, 0o755)
+	}()
+
+	err := installDaemonBinary(filepath.Join(installDir, "paxd"), []byte("new-paxd"))
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not writable")
+	assert.Contains(t, err.Error(), "--install-dir")
+	assert.Contains(t, err.Error(), "sudo")
+}
+
 func TestDaemonLifecycleCheckResolvesLatestPaxdArtifact(t *testing.T) {
 	client := roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		assert.Equal(t, "/api/v1/public/paxd/download", r.URL.Path)
@@ -544,6 +562,75 @@ func TestDaemonLifecycleSetupInstallsPaxdWhenMissing(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(installDir, "paxd"))
 	require.NoError(t, err)
 	assert.Equal(t, binary, raw)
+}
+
+func TestDaemonLifecycleRemoteLoginRunsPaxdLogin(t *testing.T) {
+	runner := &fakeDaemonLifecycleRunner{path: "/usr/local/bin/paxd"}
+
+	resp, err := NewDaemonLifecycleFacade(runner).RemoteLogin(
+		context.Background(),
+		&DaemonRemoteLoginRequest{
+			RemoteID:    "staging",
+			CloudURL:    "https://api.example.com/",
+			APIEndpoint: "http://127.0.0.1:9000",
+		},
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, SetupStatusInstalled, resp.Status)
+	assert.Equal(t, "/usr/local/bin/paxd", runner.name)
+	assert.Equal(
+		t,
+		[]string{
+			"login",
+			"--remote",
+			"staging",
+			"--cloud-url",
+			"https://api.example.com",
+			"--api-endpoint",
+			"http://127.0.0.1:9000",
+		},
+		runner.args,
+	)
+}
+
+func TestDaemonLifecycleRemoteLoginInstallsPaxdWhenMissing(t *testing.T) {
+	binary := []byte("fake-paxd-binary")
+	sum := sha256.Sum256(binary)
+	sha := hex.EncodeToString(sum[:])
+	installDir := t.TempDir()
+	runner := &fakeDaemonLifecycleRunner{}
+	lifecycle := NewDaemonLifecycleFacade(runner)
+	lifecycle.client = successfulDaemonArtifactClient(binary, sha)
+
+	resp, err := lifecycle.RemoteLogin(context.Background(), &DaemonRemoteLoginRequest{
+		RemoteID:    "staging",
+		CloudURL:    "https://api.example.com",
+		ResolverURL: "https://resolver.test/resolve",
+		Platform:    "linux/amd64",
+		InstallDir:  installDir,
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, SetupStatusInstalled, resp.Status)
+	assert.Equal(t, filepath.Join(installDir, "paxd"), resp.Path)
+	assert.Equal(t, filepath.Join(installDir, "paxd"), runner.name)
+	assert.Equal(
+		t,
+		[]string{"login", "--remote", "staging", "--cloud-url", "https://api.example.com"},
+		runner.args,
+	)
+	raw, err := os.ReadFile(filepath.Join(installDir, "paxd"))
+	require.NoError(t, err)
+	assert.Equal(t, binary, raw)
+}
+
+func TestDaemonLifecycleRemoteLoginValidatesRemoteID(t *testing.T) {
+	_, err := NewDaemonLifecycleFacade(&fakeDaemonLifecycleRunner{path: "/usr/local/bin/paxd"}).
+		RemoteLogin(context.Background(), &DaemonRemoteLoginRequest{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "remote id")
 }
 
 func TestDaemonLifecycleSetupReturnsInstallErrorWhenAutoInstallFails(t *testing.T) {

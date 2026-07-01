@@ -183,6 +183,7 @@ func TestDaemonAgentHarnessAndLocalCommandsUseDaemonFacade(t *testing.T) {
 	}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Equal(t, "review", client.createdAgent.Name)
+	assert.Equal(t, "agent_cloud_review", client.createdAgent.CloudAgentID)
 
 	stdout.Reset()
 	err = run(context.Background(), []string{
@@ -192,6 +193,7 @@ func TestDaemonAgentHarnessAndLocalCommandsUseDaemonFacade(t *testing.T) {
 	}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Equal(t, "hermes", client.createdAgent.Name)
+	assert.Equal(t, "agent_cloud_hermes", client.createdAgent.CloudAgentID)
 	assert.Equal(t, []string{"hermes", "agent", "--acp"}, client.createdAgent.Command)
 
 	stdout.Reset()
@@ -438,6 +440,41 @@ func TestDaemonLifecycleCommandsSupportDryRun(t *testing.T) {
 	assert.Contains(t, stdout.String(), "Would run paxd service restart")
 }
 
+func TestDaemonRemoteLoginCommandUsesDaemonLifecycleFacade(t *testing.T) {
+	lifecycle := &cmdFakeDaemonLifecycleFacade{
+		remoteLogin: &facade.DaemonLifecycleResponse{
+			Status:  facade.SetupStatusInstalled,
+			Binary:  "paxd",
+			Action:  "remote login",
+			Message: "paxd remote login completed.",
+		},
+	}
+	restore := stubDaemonLifecycleFacade(t, lifecycle)
+	defer restore()
+	var stdout, stderr bytes.Buffer
+
+	err := run(context.Background(), []string{
+		"daemon", "remote", "login", "staging",
+		"--cloud-url", "https://api.example.com/",
+		"--api-endpoint", "http://127.0.0.1:9000",
+		"--resolver-url", "https://resolver.test/resolve",
+		"--platform", "linux/amd64",
+		"--tag", "stable",
+		"--install-dir", "/tmp/bin",
+	}, &stdout, &stderr)
+
+	require.NoError(t, err)
+	require.NotNil(t, lifecycle.remoteLoginReq)
+	assert.Equal(t, "staging", lifecycle.remoteLoginReq.RemoteID)
+	assert.Equal(t, "https://api.example.com/", lifecycle.remoteLoginReq.CloudURL)
+	assert.Equal(t, "http://127.0.0.1:9000", lifecycle.remoteLoginReq.APIEndpoint)
+	assert.Equal(t, "https://resolver.test/resolve", lifecycle.remoteLoginReq.ResolverURL)
+	assert.Equal(t, "linux/amd64", lifecycle.remoteLoginReq.Platform)
+	assert.Equal(t, "stable", lifecycle.remoteLoginReq.Tag)
+	assert.Equal(t, "/tmp/bin", lifecycle.remoteLoginReq.InstallDir)
+	assert.Contains(t, stdout.String(), "paxd remote login completed")
+}
+
 func TestDaemonUpdateCheckCommandRendersLatestPaxdArtifact(t *testing.T) {
 	lifecycle := &cmdFakeDaemonLifecycleFacade{
 		check: &facade.DaemonUpdateCheckResponse{
@@ -490,16 +527,40 @@ func stubDaemonFacade(t *testing.T, client *cmdFakeDaemonControlClient) func() {
 	t.Helper()
 	previous := newDaemonFacade
 	newDaemonFacade = func() *facade.DaemonFacade {
-		return facade.NewDaemonFacade(client)
+		return facade.NewDaemonFacade(
+			client,
+			facade.WithDaemonRemoteNodeKeyLoader(cmdFakeDaemonNodeKeyLoader{}),
+			facade.WithDaemonCloudAgentRegistrar(cmdFakeDaemonCloudAgentRegistrar{}),
+		)
 	}
 	return func() {
 		newDaemonFacade = previous
 	}
 }
 
+type cmdFakeDaemonNodeKeyLoader struct{}
+
+func (cmdFakeDaemonNodeKeyLoader) LoadRemoteNodeKey(
+	context.Context,
+	string,
+) (string, error) {
+	return "node-secret", nil
+}
+
+type cmdFakeDaemonCloudAgentRegistrar struct{}
+
+func (cmdFakeDaemonCloudAgentRegistrar) RegisterCloudAgent(
+	_ context.Context,
+	req *facade.DaemonCloudAgentRegistrationRequest,
+) (string, error) {
+	return "agent_cloud_" + req.Name, nil
+}
+
 type cmdFakeDaemonLifecycleFacade struct {
-	check    *facade.DaemonUpdateCheckResponse
-	checkReq *facade.DaemonUpdateCheckRequest
+	check          *facade.DaemonUpdateCheckResponse
+	checkReq       *facade.DaemonUpdateCheckRequest
+	remoteLogin    *facade.DaemonLifecycleResponse
+	remoteLoginReq *facade.DaemonRemoteLoginRequest
 }
 
 func (f *cmdFakeDaemonLifecycleFacade) Install(
@@ -532,6 +593,18 @@ func (f *cmdFakeDaemonLifecycleFacade) Setup(
 	*facade.DaemonSetupRequest,
 	...func(*facade.Option),
 ) (*facade.DaemonLifecycleResponse, error) {
+	return &facade.DaemonLifecycleResponse{}, nil
+}
+
+func (f *cmdFakeDaemonLifecycleFacade) RemoteLogin(
+	_ context.Context,
+	req *facade.DaemonRemoteLoginRequest,
+	_ ...func(*facade.Option),
+) (*facade.DaemonLifecycleResponse, error) {
+	f.remoteLoginReq = req
+	if f.remoteLogin != nil {
+		return f.remoteLogin, nil
+	}
 	return &facade.DaemonLifecycleResponse{}, nil
 }
 

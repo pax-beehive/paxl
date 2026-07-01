@@ -60,6 +60,18 @@ type DaemonSetupRequest struct {
 	BinaryName  string
 }
 
+type DaemonRemoteLoginRequest struct {
+	RemoteID    string
+	DryRun      bool
+	CloudURL    string
+	APIEndpoint string
+	ResolverURL string
+	Platform    string
+	Tag         string
+	InstallDir  string
+	BinaryName  string
+}
+
 type DaemonServiceRequest struct {
 	Action string
 	DryRun bool
@@ -155,6 +167,13 @@ func installDaemonBinary(path string, binary []byte) error {
 	name := filepath.Base(path)
 	tmp, err := os.CreateTemp(dir, "."+name+".tmp-*")
 	if err != nil {
+		if os.IsPermission(err) {
+			return fmt.Errorf(
+				"paxd install dir %s is not writable: %w; rerun with sudo to update this location, or pass --install-dir to use a writable directory",
+				dir,
+				err,
+			)
+		}
 		return fmt.Errorf("create temp paxd binary: %w", err)
 	}
 	tmpPath := tmp.Name()
@@ -251,19 +270,15 @@ func (f *DaemonLifecycleFacade) Setup(
 			Message: "Would set up paxd and start the background service.",
 		}, nil
 	}
-	path, err := f.runner.LookPath("paxd")
+	path, err := f.ensureDaemonBinary(ctx, daemonInstallSpec{
+		ResolverURL: req.ResolverURL,
+		Platform:    req.Platform,
+		Tag:         req.Tag,
+		InstallDir:  req.InstallDir,
+		BinaryName:  req.BinaryName,
+	})
 	if err != nil {
-		installed, installErr := f.Install(ctx, &DaemonInstallRequest{
-			ResolverURL: req.ResolverURL,
-			Platform:    req.Platform,
-			Tag:         req.Tag,
-			InstallDir:  req.InstallDir,
-			BinaryName:  req.BinaryName,
-		})
-		if installErr != nil {
-			return nil, fmt.Errorf("install paxd before setup: %w", installErr)
-		}
-		path = installed.Path
+		return nil, fmt.Errorf("install paxd before setup: %w", err)
 	}
 	args := []string{"setup"}
 	if strings.TrimSpace(req.CloudURL) != "" {
@@ -278,6 +293,56 @@ func (f *DaemonLifecycleFacade) Setup(
 		Path:    path,
 		Action:  "setup",
 		Message: "paxd setup completed.",
+	}, nil
+}
+
+func (f *DaemonLifecycleFacade) RemoteLogin(
+	ctx context.Context,
+	req *DaemonRemoteLoginRequest,
+	opts ...func(*Option),
+) (*DaemonLifecycleResponse, error) {
+	_ = applyOptions(opts)
+	if req == nil {
+		return nil, fmt.Errorf("daemon remote login: request is required")
+	}
+	remoteID := strings.TrimSpace(req.RemoteID)
+	if remoteID == "" {
+		return nil, fmt.Errorf("daemon remote login: remote id is required")
+	}
+	if req.DryRun {
+		return &DaemonLifecycleResponse{
+			Status:  SetupStatusPending,
+			Binary:  "paxd",
+			Action:  "remote login",
+			Message: "Would run paxd login for remote " + remoteID + ".",
+		}, nil
+	}
+	path, err := f.ensureDaemonBinary(ctx, daemonInstallSpec{
+		ResolverURL: req.ResolverURL,
+		Platform:    req.Platform,
+		Tag:         req.Tag,
+		InstallDir:  req.InstallDir,
+		BinaryName:  req.BinaryName,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("install paxd before remote login: %w", err)
+	}
+	args := []string{"login", "--remote", remoteID}
+	if strings.TrimSpace(req.CloudURL) != "" {
+		args = append(args, "--cloud-url", strings.TrimRight(strings.TrimSpace(req.CloudURL), "/"))
+	}
+	if strings.TrimSpace(req.APIEndpoint) != "" {
+		args = append(args, "--api-endpoint", strings.TrimSpace(req.APIEndpoint))
+	}
+	if err := f.runner.Run(ctx, path, args); err != nil {
+		return nil, fmt.Errorf("run paxd login: %w", err)
+	}
+	return &DaemonLifecycleResponse{
+		Status:  SetupStatusInstalled,
+		Binary:  "paxd",
+		Path:    path,
+		Action:  "remote login",
+		Message: "paxd remote login completed.",
 	}, nil
 }
 
@@ -330,6 +395,35 @@ func (defaultDaemonLifecycleRunner) Run(ctx context.Context, name string, args [
 	cmd.Stdout = daemonCommandStdout
 	cmd.Stderr = daemonCommandStderr
 	return cmd.Run()
+}
+
+type daemonInstallSpec struct {
+	ResolverURL string
+	Platform    string
+	Tag         string
+	InstallDir  string
+	BinaryName  string
+}
+
+func (f *DaemonLifecycleFacade) ensureDaemonBinary(
+	ctx context.Context,
+	spec daemonInstallSpec,
+) (string, error) {
+	path, err := f.runner.LookPath("paxd")
+	if err == nil {
+		return path, nil
+	}
+	installed, installErr := f.Install(ctx, &DaemonInstallRequest{
+		ResolverURL: spec.ResolverURL,
+		Platform:    spec.Platform,
+		Tag:         spec.Tag,
+		InstallDir:  spec.InstallDir,
+		BinaryName:  spec.BinaryName,
+	})
+	if installErr != nil {
+		return "", installErr
+	}
+	return installed.Path, nil
 }
 
 func (f *DaemonLifecycleFacade) resolveDaemonArtifact(

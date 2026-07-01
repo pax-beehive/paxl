@@ -3,6 +3,11 @@ package facade_test
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pax-oss/paxl/internal/facade"
@@ -164,10 +169,11 @@ func TestDaemonFacadeAgentCommandsCallLocalAPI(t *testing.T) {
 	assert.True(t, client.includeDisabled)
 
 	_, err = daemon.CreateAgent(context.Background(), &facade.CreateDaemonAgentRequest{
-		RemoteID: "prod",
-		Name:     "work",
-		Harness:  "codex",
-		Command:  []string{"codex-acp"},
+		RemoteID:     "prod",
+		Name:         "work",
+		CloudAgentID: "agent_cloud_work",
+		Harness:      "codex",
+		Command:      []string{"codex-acp"},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, client.createdAgent)
@@ -201,6 +207,54 @@ func TestDaemonFacadeCreateAgentDefaultsRemoteAndCommandFromHarness(t *testing.T
 		ack: okDaemonAck(),
 		remotes: &model.DaemonQueryResult{Remotes: &model.DaemonListRemotesResult{
 			Items: []*model.DaemonRemoteView{{
+				Remote: model.DaemonRemote{
+					ID:          "default",
+					Name:        "Default",
+					CloudAPIURL: "https://api.test",
+				},
+			}},
+		}},
+		harnesses: &model.DaemonQueryResult{Harnesses: &model.DaemonListHarnessesResult{
+			Items: []*model.DaemonHarnessView{{
+				Harness: "hermes",
+				State:   "available",
+				Command: []string{"hermes", "agent", "--acp"},
+			}},
+		}},
+	}
+	nodeKeys := &fakeDaemonNodeKeyLoader{nodeKey: "node-secret"}
+	registrar := &fakeDaemonCloudAgentRegistrar{agentID: "agent_cloud_hermes"}
+	daemon := facade.NewDaemonFacade(
+		client,
+		facade.WithDaemonRemoteNodeKeyLoader(nodeKeys),
+		facade.WithDaemonCloudAgentRegistrar(registrar),
+	)
+
+	_, err := daemon.CreateAgent(context.Background(), &facade.CreateDaemonAgentRequest{
+		Harness: "hermes",
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, client.createdAgent)
+	assert.Equal(t, "default", client.createdAgent.RemoteID)
+	assert.Equal(t, "hermes", client.createdAgent.Name)
+	assert.Equal(t, "agent_cloud_hermes", client.createdAgent.CloudAgentID)
+	assert.Equal(t, "hermes", client.createdAgent.InstanceID)
+	assert.Equal(t, []string{"hermes", "agent", "--acp"}, client.createdAgent.Command)
+	assert.True(t, client.includeMissing)
+	assert.Equal(t, "default", nodeKeys.remoteID)
+	require.NotNil(t, registrar.req)
+	assert.Equal(t, "default", registrar.req.Remote.Remote.ID)
+	assert.Equal(t, "node-secret", registrar.req.NodeKey)
+	assert.Equal(t, "hermes", registrar.req.Name)
+	assert.Equal(t, "hermes", registrar.req.AgentType)
+}
+
+func TestDaemonFacadeCreateAgentUsesProvidedCloudAgentIDWithoutRegistering(t *testing.T) {
+	client := &fakeDaemonControlClient{
+		ack: okDaemonAck(),
+		remotes: &model.DaemonQueryResult{Remotes: &model.DaemonListRemotesResult{
+			Items: []*model.DaemonRemoteView{{
 				Remote: model.DaemonRemote{ID: "default", Name: "Default"},
 			}},
 		}},
@@ -212,19 +266,247 @@ func TestDaemonFacadeCreateAgentDefaultsRemoteAndCommandFromHarness(t *testing.T
 			}},
 		}},
 	}
+	daemon := facade.NewDaemonFacade(
+		client,
+		facade.WithDaemonRemoteNodeKeyLoader(&fakeDaemonNodeKeyLoader{
+			err: errors.New("should not load node key"),
+		}),
+		facade.WithDaemonCloudAgentRegistrar(&fakeDaemonCloudAgentRegistrar{
+			err: errors.New("should not register cloud agent"),
+		}),
+	)
+
+	_, err := daemon.CreateAgent(context.Background(), &facade.CreateDaemonAgentRequest{
+		Harness:      "hermes",
+		CloudAgentID: "agent_existing",
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, client.createdAgent)
+	assert.Equal(t, "agent_existing", client.createdAgent.CloudAgentID)
+}
+
+func TestDaemonFacadeCreateAgentDiscoversHarnessCommandWhenCacheMissing(t *testing.T) {
+	client := &fakeDaemonControlClient{
+		ack: okDaemonAck(),
+		remotes: &model.DaemonQueryResult{Remotes: &model.DaemonListRemotesResult{
+			Items: []*model.DaemonRemoteView{{
+				Remote: model.DaemonRemote{ID: "default", Name: "Default"},
+			}},
+		}},
+		harnesses: &model.DaemonQueryResult{Harnesses: &model.DaemonListHarnessesResult{}},
+		discovered: &model.DaemonQueryResult{Harnesses: &model.DaemonListHarnessesResult{
+			Items: []*model.DaemonHarnessView{{
+				Harness: "hermes",
+				State:   "available",
+				Command: []string{"hermes", "agent", "--acp"},
+			}},
+		}},
+	}
 	daemon := facade.NewDaemonFacade(client)
+
+	_, err := daemon.CreateAgent(context.Background(), &facade.CreateDaemonAgentRequest{
+		Harness:      "hermes",
+		CloudAgentID: "agent_existing",
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"hermes", "agent", "--acp"}, client.createdAgent.Command)
+	assert.Equal(t, []string{"hermes"}, client.discoverNames)
+}
+
+func TestDaemonFacadeCreateAgentLoadsDefaultNodeKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	nodeKeyPath := filepath.Join(home, ".paxd", "secrets", "remotes", "default", "node_key")
+	require.NoError(t, os.MkdirAll(filepath.Dir(nodeKeyPath), 0o700))
+	require.NoError(t, os.WriteFile(nodeKeyPath, []byte("node-secret\n"), 0o600))
+	client := &fakeDaemonControlClient{
+		ack: okDaemonAck(),
+		remotes: &model.DaemonQueryResult{Remotes: &model.DaemonListRemotesResult{
+			Items: []*model.DaemonRemoteView{{
+				Remote: model.DaemonRemote{
+					ID:          "default",
+					Name:        "Default",
+					CloudAPIURL: "https://api.test",
+				},
+			}},
+		}},
+		harnesses: &model.DaemonQueryResult{Harnesses: &model.DaemonListHarnessesResult{
+			Items: []*model.DaemonHarnessView{{
+				Harness: "hermes",
+				State:   "available",
+				Command: []string{"hermes", "agent", "--acp"},
+			}},
+		}},
+	}
+	registrar := &fakeDaemonCloudAgentRegistrar{agentID: "agent_cloud_hermes"}
+	daemon := facade.NewDaemonFacade(
+		client,
+		facade.WithDaemonCloudAgentRegistrar(registrar),
+	)
 
 	_, err := daemon.CreateAgent(context.Background(), &facade.CreateDaemonAgentRequest{
 		Harness: "hermes",
 	})
 
 	require.NoError(t, err)
-	require.NotNil(t, client.createdAgent)
-	assert.Equal(t, "default", client.createdAgent.RemoteID)
-	assert.Equal(t, "hermes", client.createdAgent.Name)
-	assert.Equal(t, "hermes", client.createdAgent.InstanceID)
-	assert.Equal(t, []string{"hermes", "agent", "--acp"}, client.createdAgent.Command)
-	assert.True(t, client.includeMissing)
+	require.NotNil(t, registrar.req)
+	assert.Equal(t, "node-secret", registrar.req.NodeKey)
+	assert.Equal(t, "agent_cloud_hermes", client.createdAgent.CloudAgentID)
+}
+
+func TestDaemonHTTPCloudAgentRegistrarUsesRemoteCloudflareAccessAuth(t *testing.T) {
+	secretPath := filepath.Join(t.TempDir(), "cf-secret")
+	require.NoError(t, os.WriteFile(secretPath, []byte("cf-secret\n"), 0o600))
+	client := &fakeDaemonHTTPClient{
+		response: &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"data":{"agent_id":"agent_cloud_123"}}`)),
+			Header:     make(http.Header),
+		},
+	}
+
+	agentID, err := facade.NewDaemonHTTPCloudAgentRegistrar(client).
+		RegisterCloudAgent(context.Background(), &facade.DaemonCloudAgentRegistrationRequest{
+			Remote: model.DaemonRemoteView{
+				Remote: model.DaemonRemote{ID: "prod", CloudAPIURL: "https://api.test"},
+				Auth: &model.DaemonRemoteAuthView{
+					Kind:            model.DaemonRemoteAuthCloudflareAccess,
+					ClientID:        "cf-client",
+					ClientSecretRef: "file:" + secretPath,
+				},
+			},
+			NodeKey:   "node-secret",
+			Name:      "work",
+			AgentType: "codex",
+		})
+
+	require.NoError(t, err)
+	assert.Equal(t, "agent_cloud_123", agentID)
+	require.NotNil(t, client.request)
+	assert.Equal(t, "/api/v1/node/agents/register", client.request.URL.Path)
+	assert.Equal(t, "node-secret", client.request.Header.Get("X-Pax-Key"))
+	assert.Equal(t, "cf-client", client.request.Header.Get("CF-Access-Client-Id"))
+	assert.Equal(t, "cf-secret", client.request.Header.Get("CF-Access-Client-Secret"))
+}
+
+func TestDaemonHTTPCloudAgentRegistrarRejectsEmptyAgentID(t *testing.T) {
+	client := &fakeDaemonHTTPClient{
+		response: &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"data":{}}`)),
+			Header:     make(http.Header),
+		},
+	}
+
+	_, err := facade.NewDaemonHTTPCloudAgentRegistrar(client).
+		RegisterCloudAgent(context.Background(), &facade.DaemonCloudAgentRegistrationRequest{
+			Remote: model.DaemonRemoteView{
+				Remote: model.DaemonRemote{ID: "prod", CloudAPIURL: "https://api.test"},
+			},
+			NodeKey:   "node-secret",
+			Name:      "work",
+			AgentType: "codex",
+		})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty agent id")
+}
+
+func TestDaemonHTTPCloudAgentRegistrarReportsHTTPFailureBody(t *testing.T) {
+	client := &fakeDaemonHTTPClient{
+		response: &http.Response{
+			StatusCode: http.StatusBadGateway,
+			Body:       io.NopCloser(strings.NewReader("cloudflare blocked")),
+			Header:     make(http.Header),
+		},
+	}
+
+	_, err := facade.NewDaemonHTTPCloudAgentRegistrar(client).
+		RegisterCloudAgent(context.Background(), &facade.DaemonCloudAgentRegistrationRequest{
+			Remote: model.DaemonRemoteView{
+				Remote: model.DaemonRemote{ID: "prod", CloudAPIURL: "https://api.test"},
+			},
+			NodeKey:   "node-secret",
+			Name:      "work",
+			AgentType: "codex",
+		})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "HTTP 502")
+	assert.Contains(t, err.Error(), "cloudflare blocked")
+}
+
+func TestDaemonHTTPCloudAgentRegistrarRejectsUnsupportedRemoteAuth(t *testing.T) {
+	client := &fakeDaemonHTTPClient{
+		response: &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"data":{"agent_id":"agent_1"}}`)),
+			Header:     make(http.Header),
+		},
+	}
+
+	_, err := facade.NewDaemonHTTPCloudAgentRegistrar(client).
+		RegisterCloudAgent(context.Background(), &facade.DaemonCloudAgentRegistrationRequest{
+			Remote: model.DaemonRemoteView{
+				Remote: model.DaemonRemote{ID: "prod", CloudAPIURL: "https://api.test"},
+				Auth:   &model.DaemonRemoteAuthView{Kind: "bearer"},
+			},
+			NodeKey:   "node-secret",
+			Name:      "work",
+			AgentType: "codex",
+		})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported auth kind")
+	assert.Nil(t, client.request)
+}
+
+func TestDaemonHTTPCloudAgentRegistrarRejectsUnsupportedSecretRef(t *testing.T) {
+	client := &fakeDaemonHTTPClient{
+		response: &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"data":{"agent_id":"agent_1"}}`)),
+			Header:     make(http.Header),
+		},
+	}
+
+	_, err := facade.NewDaemonHTTPCloudAgentRegistrar(client).
+		RegisterCloudAgent(context.Background(), &facade.DaemonCloudAgentRegistrationRequest{
+			Remote: model.DaemonRemoteView{
+				Remote: model.DaemonRemote{ID: "prod", CloudAPIURL: "https://api.test"},
+				Auth: &model.DaemonRemoteAuthView{
+					Kind:            model.DaemonRemoteAuthCloudflareAccess,
+					ClientID:        "cf-client",
+					ClientSecretRef: "env:CF_SECRET",
+				},
+			},
+			NodeKey:   "node-secret",
+			Name:      "work",
+			AgentType: "codex",
+		})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported secret ref")
+	assert.Nil(t, client.request)
+}
+
+func TestDaemonHTTPCloudAgentRegistrarPropagatesRequestError(t *testing.T) {
+	client := &fakeDaemonHTTPClient{err: errors.New("network down")}
+
+	_, err := facade.NewDaemonHTTPCloudAgentRegistrar(client).
+		RegisterCloudAgent(context.Background(), &facade.DaemonCloudAgentRegistrationRequest{
+			Remote: model.DaemonRemoteView{
+				Remote: model.DaemonRemote{ID: "prod", CloudAPIURL: "https://api.test"},
+			},
+			NodeKey:   "node-secret",
+			Name:      "work",
+			AgentType: "codex",
+		})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "network down")
 }
 
 func TestDaemonFacadeRejectsInvalidAgentRequests(t *testing.T) {
@@ -381,6 +663,7 @@ type fakeDaemonControlClient struct {
 	remotes       *model.DaemonQueryResult
 	agents        *model.DaemonQueryResult
 	harnesses     *model.DaemonQueryResult
+	discovered    *model.DaemonQueryResult
 	overview      *model.DaemonQueryResult
 	localSessions *model.DaemonQueryResult
 	localSync     *model.DaemonQueryResult
@@ -408,6 +691,45 @@ type fakeDaemonControlClient struct {
 	syncAgent         string
 	syncLimit         int
 	syncTimeoutMillis int64
+}
+
+type fakeDaemonNodeKeyLoader struct {
+	remoteID string
+	nodeKey  string
+	err      error
+}
+
+func (f *fakeDaemonNodeKeyLoader) LoadRemoteNodeKey(
+	_ context.Context,
+	remoteID string,
+) (string, error) {
+	f.remoteID = remoteID
+	return f.nodeKey, f.err
+}
+
+type fakeDaemonCloudAgentRegistrar struct {
+	req     *facade.DaemonCloudAgentRegistrationRequest
+	agentID string
+	err     error
+}
+
+func (f *fakeDaemonCloudAgentRegistrar) RegisterCloudAgent(
+	_ context.Context,
+	req *facade.DaemonCloudAgentRegistrationRequest,
+) (string, error) {
+	f.req = req
+	return f.agentID, f.err
+}
+
+type fakeDaemonHTTPClient struct {
+	request  *http.Request
+	response *http.Response
+	err      error
+}
+
+func (f *fakeDaemonHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	f.request = req
+	return f.response, f.err
 }
 
 func (f *fakeDaemonControlClient) GetStatus(context.Context) (*model.DaemonQueryResult, error) {
@@ -523,6 +845,9 @@ func (f *fakeDaemonControlClient) DiscoverHarnesses(
 ) (*model.DaemonQueryResult, error) {
 	f.probe = probe
 	f.discoverNames = append([]string(nil), names...)
+	if f.discovered != nil {
+		return f.discovered, f.err
+	}
 	return firstDaemonQueryResult(f.harnesses), f.err
 }
 
