@@ -11,10 +11,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"runtime/pprof"
+	"strconv"
 	"strings"
 	"sync"
 	"text/tabwriter"
@@ -31,6 +33,7 @@ var buildCommit = ""
 var updateHTTPClient facade.UpdateHTTPClient = http.DefaultClient
 var authHTTPClient facade.AuthHTTPClient = http.DefaultClient
 var executablePath = os.Executable
+var scheduleSessionQueryBackgroundSync = startSessionQueryBackgroundSync
 
 func main() {
 	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -538,6 +541,10 @@ func newSessionCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 						Usage: "Output format: table or jsonl",
 					},
 					&cli.BoolFlag{Name: "sync", Usage: "Scan local logs before searching"},
+					&cli.BoolFlag{
+						Name:  "no-background-sync",
+						Usage: "Skip the default background refresh after cached search",
+					},
 					&cli.StringFlag{Name: "agent", Usage: "Filter search results by agent"},
 					&cli.StringFlag{
 						Name:  "timeout",
@@ -1725,7 +1732,89 @@ func sessionQuery(
 	if err != nil {
 		return fmt.Errorf("search sessions: %w", err)
 	}
-	return renderSearchResults(stdout, resp, cmd.String("format"))
+	if err := renderSearchResults(stdout, resp, cmd.String("format")); err != nil {
+		return err
+	}
+	if shouldScheduleSessionQueryBackgroundSync(cmd) {
+		err := scheduleSessionQueryBackgroundSync(&sessionQueryBackgroundSyncRequest{
+			DBPath: cmd.String("db"),
+			Agent:  agent,
+			Limit:  cmd.Int("limit"),
+		})
+		if err != nil {
+			writeVerbose(
+				verboseWriter(cmd, stderr, diagnostics),
+				"Session search background sync was not started: %v.",
+				err,
+			)
+		}
+	}
+	return nil
+}
+
+type sessionQueryBackgroundSyncRequest struct {
+	DBPath string
+	Agent  model.AgentName
+	Limit  int
+}
+
+const (
+	sessionQueryBackgroundSyncQuery   = "__paxl_background_session_index_refresh__"
+	sessionQueryBackgroundSyncTimeout = 10 * time.Second
+)
+
+func shouldScheduleSessionQueryBackgroundSync(cmd *cli.Command) bool {
+	return !cmd.Bool("sync") && !cmd.Bool("no-background-sync")
+}
+
+func startSessionQueryBackgroundSync(req *sessionQueryBackgroundSyncRequest) error {
+	if req == nil {
+		return fmt.Errorf("background session sync request is required")
+	}
+	executable, err := executablePath()
+	if err != nil {
+		return fmt.Errorf("resolve executable path: %w", err)
+	}
+	args := []string{}
+	if strings.TrimSpace(req.DBPath) != "" {
+		args = append(args, "--db", req.DBPath)
+	}
+	args = append(args,
+		"session",
+		"query",
+		sessionQueryBackgroundSyncQuery,
+		"--sync",
+		"--no-background-sync",
+		"--format",
+		"jsonl",
+		"--limit",
+		strconv.Itoa(req.Limit),
+		"--timeout",
+		sessionQueryBackgroundSyncTimeout.String(),
+	)
+	if req.Agent != "" && req.Agent != model.AgentNameUnknown {
+		args = append(args, "--agent", string(req.Agent))
+	}
+	command := exec.CommandContext(
+		context.Background(),
+		executable,
+		args...) // #nosec G204 -- paxl intentionally re-execs itself.
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	if err := command.Start(); err != nil {
+		return fmt.Errorf("start background session sync: %w", err)
+	}
+	if err := command.Process.Release(); err != nil {
+		return fmt.Errorf("release background session sync process: %w", err)
+	}
+	return nil
+}
+
+func writeVerbose(writer io.Writer, format string, args ...any) {
+	if writer == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(writer, format+"\n", args...)
 }
 
 func renderSearchResults(stdout io.Writer, resp *facade.SearchResponse, format string) error {
