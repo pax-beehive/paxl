@@ -25,6 +25,12 @@ type DaemonLifecycleFacade struct {
 	client UpdateHTTPClient
 }
 
+var (
+	daemonCommandStdin  io.Reader = os.Stdin
+	daemonCommandStdout io.Writer = os.Stdout
+	daemonCommandStderr io.Writer = os.Stderr
+)
+
 const DefaultDaemonResolverURL = "https://api.paxtech.net/api/v1/public/paxd/download"
 
 type DaemonInstallRequest struct {
@@ -320,6 +326,9 @@ func (defaultDaemonLifecycleRunner) LookPath(file string) (string, error) {
 
 func (defaultDaemonLifecycleRunner) Run(ctx context.Context, name string, args []string) error {
 	cmd := exec.CommandContext(ctx, name, args...) // #nosec G204 -- paxl intentionally runs paxd.
+	cmd.Stdin = daemonCommandStdin
+	cmd.Stdout = daemonCommandStdout
+	cmd.Stderr = daemonCommandStderr
 	return cmd.Run()
 }
 

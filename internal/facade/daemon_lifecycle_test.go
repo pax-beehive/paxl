@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -617,6 +618,35 @@ func TestDefaultDaemonLifecycleRunnerInheritsCloudflareEnv(t *testing.T) {
 	)
 
 	require.NoError(t, err)
+}
+
+func TestDefaultDaemonLifecycleRunnerDisplaysChildProcessIO(t *testing.T) {
+	runner := defaultDaemonLifecycleRunner{}
+	path, err := runner.LookPath("sh")
+	require.NoError(t, err)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	originalStdin := daemonCommandStdin
+	originalStdout := daemonCommandStdout
+	originalStderr := daemonCommandStderr
+	daemonCommandStdin = strings.NewReader("pair-code\n")
+	daemonCommandStdout = &stdout
+	daemonCommandStderr = &stderr
+	defer func() {
+		daemonCommandStdin = originalStdin
+		daemonCommandStdout = originalStdout
+		daemonCommandStderr = originalStderr
+	}()
+
+	err = runner.Run(
+		context.Background(),
+		path,
+		[]string{"-c", `read code; echo "stdout:$code"; echo "stderr:$code" >&2`},
+	)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout.String(), "stdout:pair-code")
+	assert.Contains(t, stderr.String(), "stderr:pair-code")
 }
 
 func ioNopCloser(raw []byte) io.ReadCloser {
