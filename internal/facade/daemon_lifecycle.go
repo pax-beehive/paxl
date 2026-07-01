@@ -38,6 +38,12 @@ type DaemonInstallRequest struct {
 
 type DaemonUpdateRequest = DaemonInstallRequest
 
+type DaemonUpdateCheckRequest struct {
+	ResolverURL string
+	Platform    string
+	Tag         string
+}
+
 type DaemonSetupRequest struct {
 	DryRun      bool
 	CloudURL    string
@@ -59,6 +65,17 @@ type DaemonLifecycleResponse struct {
 	Path    string
 	Action  string
 	Message string
+}
+
+type DaemonUpdateCheckResponse struct {
+	Binary      string `json:"binary"`
+	Version     string `json:"version"`
+	Platform    string `json:"platform"`
+	DownloadURL string `json:"download_url"`
+	SHA256      string `json:"sha256"`
+	SizeBytes   int64  `json:"size_bytes"`
+	Action      string `json:"action"`
+	Message     string `json:"message"`
 }
 
 type defaultDaemonLifecycleRunner struct{}
@@ -115,9 +132,8 @@ func (f *DaemonLifecycleFacade) Install(
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create install dir: %w", err)
 	}
-	// #nosec G306 -- paxd must be executable.
-	if err := os.WriteFile(path, binary, 0o755); err != nil {
-		return nil, fmt.Errorf("write paxd binary: %w", err)
+	if err := installDaemonBinary(path, binary); err != nil {
+		return nil, err
 	}
 	return &DaemonLifecycleResponse{
 		Status:  SetupStatusInstalled,
@@ -126,6 +142,39 @@ func (f *DaemonLifecycleFacade) Install(
 		Action:  "install",
 		Message: fmt.Sprintf("paxd %s installed.", artifact.Version),
 	}, nil
+}
+
+func installDaemonBinary(path string, binary []byte) error {
+	dir := filepath.Dir(path)
+	name := filepath.Base(path)
+	tmp, err := os.CreateTemp(dir, "."+name+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp paxd binary: %w", err)
+	}
+	tmpPath := tmp.Name()
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmp.Write(binary); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp paxd binary: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp paxd binary: %w", err)
+	}
+	// #nosec G302 -- paxd must be executable.
+	if err := os.Chmod(tmpPath, 0o755); err != nil {
+		return fmt.Errorf("chmod temp paxd binary: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("replace paxd binary: %w", err)
+	}
+	removeTemp = false
+	return nil
 }
 
 func (f *DaemonLifecycleFacade) Update(
@@ -146,6 +195,37 @@ func (f *DaemonLifecycleFacade) Update(
 		}
 	}
 	return resp, nil
+}
+
+func (f *DaemonLifecycleFacade) Check(
+	ctx context.Context,
+	req *DaemonUpdateCheckRequest,
+	opts ...func(*Option),
+) (*DaemonUpdateCheckResponse, error) {
+	_ = applyOptions(opts)
+	if req == nil {
+		req = &DaemonUpdateCheckRequest{}
+	}
+	platform := firstNonEmpty(strings.TrimSpace(req.Platform), currentPlatform())
+	artifact, err := f.resolveDaemonArtifact(
+		ctx,
+		firstNonEmpty(strings.TrimSpace(req.ResolverURL), DefaultDaemonResolverURL),
+		platform,
+		firstNonEmpty(strings.TrimSpace(req.Tag), DefaultUpdateTag),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("resolve paxd artifact: %w", err)
+	}
+	return &DaemonUpdateCheckResponse{
+		Binary:      "paxd",
+		Version:     artifact.Version,
+		Platform:    platform,
+		DownloadURL: artifact.URL,
+		SHA256:      artifact.SHA256,
+		SizeBytes:   artifact.Size,
+		Action:      "update check",
+		Message:     fmt.Sprintf("Latest paxd %s is available for %s.", artifact.Version, platform),
+	}, nil
 }
 
 func (f *DaemonLifecycleFacade) Setup(
@@ -285,7 +365,7 @@ func (f *DaemonLifecycleFacade) resolveDaemonArtifact(
 		return nil, fmt.Errorf("decode resolver response: %w", err)
 	}
 	artifact := resolverResp.Data.toArtifact()
-	if err := artifact.validate(); err != nil {
+	if err := validateDaemonArtifact(artifact); err != nil {
 		return nil, err
 	}
 	artifact.URL = normalizeArtifactURL(artifact.URL)
@@ -332,6 +412,25 @@ func verifyDaemonArtifact(binary []byte, expectedSHA string) error {
 	got := hex.EncodeToString(sum[:])
 	if got != strings.TrimSpace(expectedSHA) {
 		return fmt.Errorf("paxd sha256 %s does not match expected %s", got, expectedSHA)
+	}
+	return nil
+}
+
+func validateDaemonArtifact(artifact *updateArtifact) error {
+	if artifact == nil {
+		return fmt.Errorf("resolver artifact is required")
+	}
+	if artifact.Product != "" && artifact.Product != "paxd" {
+		return fmt.Errorf("resolver product %q is not paxd", artifact.Product)
+	}
+	if strings.TrimSpace(artifact.Version) == "" {
+		return fmt.Errorf("resolver version is required")
+	}
+	if strings.TrimSpace(artifact.URL) == "" {
+		return fmt.Errorf("resolver download URL is required")
+	}
+	if strings.TrimSpace(artifact.SHA256) == "" {
+		return fmt.Errorf("resolver sha256 is required")
 	}
 	return nil
 }

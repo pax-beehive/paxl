@@ -25,7 +25,6 @@ Environment overrides:
   PAX_RELEASE_DIST_DIR    Local output directory. Defaults to dist.
   PAX_RELEASE_INSTALLER_OBJECT GCS object for installer. Defaults to paxl/install.sh.
   PAX_RELEASE_MANAGER_URL Public manager API base URL. Defaults to https://api.paxtech.net.
-  PAX_RELEASE_UPLOAD_AUDIENCE Google ID token audience for artifact publish.
   PAX_RELEASE_ID_TOKEN    Bearer token for artifact metadata publish. Defaults to gcloud.
   PAX_RELEASE_DRY_RUN=1   Build and smoke-test without upload or git tag.
   PAX_RELEASE_SKIP_UPLOAD=1 Build only; also skips git tag.
@@ -296,18 +295,35 @@ gcs_object_generation() {
 
 json_field() {
   local path="$1"
+  local source="${2:-stdin}"
 
-  python3 - "$path" <<'PY'
+  python3 -c '
 import json
 import sys
 
 path = sys.argv[1].split(".")
-doc = json.load(sys.stdin)
-value = doc
-for part in path:
-    value = value[part]
+source = sys.argv[2]
+raw = sys.stdin.read()
+try:
+    doc = json.loads(raw)
+except json.JSONDecodeError as exc:
+    snippet = raw[:500].replace("\n", "\\n")
+    raise SystemExit(f"non-JSON input while reading {'\''.'\''.join(path)} from {source}: {exc}; body={snippet!r}")
+try:
+    value = doc
+    for part in path:
+        value = value[part]
+except (KeyError, TypeError) as exc:
+    raise SystemExit(f"missing JSON field {'\''.'\''.join(path)} in {source}: {exc}")
 print(value)
-PY
+' "$path" "$source"
+}
+
+json_field_checked() {
+  local path="$1"
+  local source="$2"
+
+  json_field "$path" "$source"
 }
 
 urlencode() {
@@ -320,13 +336,11 @@ PY
 }
 
 artifact_publish_token() {
-  local audience="$1"
-
   if [[ -n "${PAX_RELEASE_ID_TOKEN:-}" ]]; then
     printf '%s' "$PAX_RELEASE_ID_TOKEN"
     return
   fi
-  gcloud auth print-identity-token --audiences="$audience"
+  gcloud auth print-identity-token
 }
 
 should_publish_metadata() {
@@ -341,8 +355,7 @@ publish_artifact_metadata() {
   local build_id="$3"
   local tags_json="$4"
   local manager_url="$5"
-  local audience="$6"
-  local token line payload endpoint
+  local token line payload endpoint platform response code
 
   if ! should_publish_metadata; then
     log "skipping manager artifact metadata publish"
@@ -350,12 +363,13 @@ publish_artifact_metadata() {
   fi
 
   require_cmd curl
-  token="$(artifact_publish_token "$audience")"
+  token="$(artifact_publish_token)"
   endpoint="${manager_url%/}/api/v1/admin/artifacts"
   log "publishing artifact metadata -> ${endpoint}"
 
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
+    platform="$(printf '%s' "$line" | json_field platform "release artifact metadata")"
     payload="$(python3 - "$line" "$version" "$build_id" "$tags_json" <<'PY'
 import json
 import sys
@@ -382,12 +396,17 @@ if record["platform"] == "script":
 print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
 PY
 )"
-    curl -fsS \
+    if ! response="$(curl -sS \
       -H "Authorization: Bearer ${token}" \
       -H "Content-Type: application/json" \
       -X POST \
       --data "$payload" \
-      "$endpoint" >/dev/null
+      "$endpoint")"; then
+      fail "artifact metadata publish request failed for ${platform}: ${endpoint}"
+    fi
+    code="$(printf '%s' "$response" | json_field code "artifact publish response for ${platform}")"
+    [[ "$code" == "200" ]] ||
+      fail "artifact metadata publish failed for ${platform}: code ${code}; response ${response}"
   done <"$artifacts_jsonl"
 }
 
@@ -396,7 +415,8 @@ verify_resolver_artifacts() {
   local version="$2"
   local tags="$3"
   local manager_url="$4"
-  local verify_tag line platform encoded_platform encoded_tag response actual_version actual_sha actual_size
+  local verify_tag line platform encoded_platform encoded_tag resolver_url response
+  local actual_version actual_sha actual_size expected_sha expected_size
 
   if ! should_publish_metadata || [[ "${PAX_RELEASE_SKIP_VERIFY:-0}" == "1" ]]; then
     log "skipping public resolver verification"
@@ -410,18 +430,23 @@ verify_resolver_artifacts() {
 
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
-    platform="$(printf '%s' "$line" | json_field platform)"
+    platform="$(printf '%s' "$line" | json_field platform "release artifact metadata")"
+    expected_sha="$(printf '%s' "$line" | json_field sha256 "release artifact metadata for ${platform}")"
+    expected_size="$(printf '%s' "$line" | json_field size "release artifact metadata for ${platform}")"
     encoded_platform="$(urlencode "$platform")"
-    response="$(curl -fsS "${manager_url%/}/api/v1/public/artifacts/download?product=paxl&platform=${encoded_platform}&tags=${encoded_tag}")"
-    actual_version="$(printf '%s' "$response" | json_field version)"
-    actual_sha="$(printf '%s' "$response" | json_field sha256)"
-    actual_size="$(printf '%s' "$response" | json_field size_bytes)"
+    resolver_url="${manager_url%/}/api/v1/public/artifacts/download?product=paxl&platform=${encoded_platform}&tags=${encoded_tag}"
+    if ! response="$(curl -sS "$resolver_url")"; then
+      fail "resolver request failed for ${platform}: ${resolver_url}"
+    fi
+    actual_version="$(printf '%s' "$response" | json_field_checked data.version "$resolver_url")"
+    actual_sha="$(printf '%s' "$response" | json_field_checked data.sha256 "$resolver_url")"
+    actual_size="$(printf '%s' "$response" | json_field_checked data.size_bytes "$resolver_url")"
     [[ "$actual_version" == "$version" ]] ||
       fail "resolver version mismatch for ${platform}: ${actual_version}, expected ${version}"
-    [[ "$actual_sha" == "$(printf '%s' "$line" | json_field sha256)" ]] ||
+    [[ "$actual_sha" == "$expected_sha" ]] ||
       fail "resolver sha256 mismatch for ${platform}"
-    [[ "$actual_size" == "$(printf '%s' "$line" | json_field size)" ]] ||
-      fail "resolver size mismatch for ${platform}: ${actual_size}, expected $(printf '%s' "$line" | json_field size)"
+    [[ "$actual_size" == "$expected_size" ]] ||
+      fail "resolver size mismatch for ${platform}: ${actual_size}, expected ${expected_size}"
   done <"$artifacts_jsonl"
 }
 
@@ -453,7 +478,7 @@ main() {
 
   local version_arg="${1:-patch}"
   local version tags bucket prefix_parent platforms dist_dir build_id tags_json created_at
-  local artifacts_jsonl manifest manifest_dst installer_object manager_url upload_audience
+  local artifacts_jsonl manifest manifest_dst installer_object manager_url
 
   require_cmd go
   require_cmd git
@@ -472,7 +497,6 @@ main() {
   dist_dir="${PAX_RELEASE_DIST_DIR:-dist}"
   installer_object="${PAX_RELEASE_INSTALLER_OBJECT:-paxl/install.sh}"
   manager_url="${PAX_RELEASE_MANAGER_URL:-https://api.paxtech.net}"
-  upload_audience="${PAX_RELEASE_UPLOAD_AUDIENCE:-32555940559.apps.googleusercontent.com}"
   build_id="${PAX_RELEASE_BUILD_ID:-$(git rev-parse --short HEAD)}"
   tags_json="$(tag_json_array "$tags")"
   created_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -548,7 +572,7 @@ main() {
   else
     log "skipping installer upload"
   fi
-  publish_artifact_metadata "$artifacts_jsonl" "$version" "$build_id" "$tags_json" "$manager_url" "$upload_audience"
+  publish_artifact_metadata "$artifacts_jsonl" "$version" "$build_id" "$tags_json" "$manager_url"
   verify_resolver_artifacts "$artifacts_jsonl" "$version" "$tags" "$manager_url"
   rm -f "$artifacts_jsonl"
   create_release_tag "$version"

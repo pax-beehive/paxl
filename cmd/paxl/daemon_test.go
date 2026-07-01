@@ -410,6 +410,54 @@ func TestDaemonLifecycleCommandsSupportDryRun(t *testing.T) {
 	assert.Contains(t, stdout.String(), "Would run paxd service restart")
 }
 
+func TestDaemonUpdateCheckCommandRendersLatestPaxdArtifact(t *testing.T) {
+	lifecycle := &cmdFakeDaemonLifecycleFacade{
+		check: &facade.DaemonUpdateCheckResponse{
+			Binary:      "paxd",
+			Version:     "0.2.0",
+			Platform:    "linux/amd64",
+			DownloadURL: "https://download.test/paxd",
+			SHA256:      "abc123",
+			SizeBytes:   42,
+			Action:      "update check",
+			Message:     "Latest paxd 0.2.0 is available for linux/amd64.",
+		},
+	}
+	restore := stubDaemonLifecycleFacade(t, lifecycle)
+	defer restore()
+	var stdout, stderr bytes.Buffer
+
+	err := run(context.Background(), []string{
+		"daemon", "update", "check",
+		"--resolver-url", "https://resolver.test/api/v1/public/paxd/download",
+		"--platform", "linux/amd64",
+		"--format", "json",
+	}, &stdout, &stderr)
+
+	require.NoError(t, err)
+	require.NotNil(t, lifecycle.checkReq)
+	assert.Equal(
+		t,
+		"https://resolver.test/api/v1/public/paxd/download",
+		lifecycle.checkReq.ResolverURL,
+	)
+	assert.Equal(t, "linux/amd64", lifecycle.checkReq.Platform)
+	assert.Contains(t, stdout.String(), `"binary":"paxd"`)
+	assert.Contains(t, stdout.String(), `"version":"0.2.0"`)
+	assert.Contains(t, stdout.String(), `"sha256":"abc123"`)
+}
+
+func stubDaemonLifecycleFacade(t *testing.T, lifecycle *cmdFakeDaemonLifecycleFacade) func() {
+	t.Helper()
+	previous := newDaemonLifecycleFacade
+	newDaemonLifecycleFacade = func() daemonLifecycleFacade {
+		return lifecycle
+	}
+	return func() {
+		newDaemonLifecycleFacade = previous
+	}
+}
+
 func stubDaemonFacade(t *testing.T, client *cmdFakeDaemonControlClient) func() {
 	t.Helper()
 	previous := newDaemonFacade
@@ -419,6 +467,52 @@ func stubDaemonFacade(t *testing.T, client *cmdFakeDaemonControlClient) func() {
 	return func() {
 		newDaemonFacade = previous
 	}
+}
+
+type cmdFakeDaemonLifecycleFacade struct {
+	check    *facade.DaemonUpdateCheckResponse
+	checkReq *facade.DaemonUpdateCheckRequest
+}
+
+func (f *cmdFakeDaemonLifecycleFacade) Install(
+	context.Context,
+	*facade.DaemonInstallRequest,
+	...func(*facade.Option),
+) (*facade.DaemonLifecycleResponse, error) {
+	return &facade.DaemonLifecycleResponse{}, nil
+}
+
+func (f *cmdFakeDaemonLifecycleFacade) Update(
+	context.Context,
+	*facade.DaemonUpdateRequest,
+	...func(*facade.Option),
+) (*facade.DaemonLifecycleResponse, error) {
+	return &facade.DaemonLifecycleResponse{}, nil
+}
+
+func (f *cmdFakeDaemonLifecycleFacade) Check(
+	_ context.Context,
+	req *facade.DaemonUpdateCheckRequest,
+	_ ...func(*facade.Option),
+) (*facade.DaemonUpdateCheckResponse, error) {
+	f.checkReq = req
+	return f.check, nil
+}
+
+func (f *cmdFakeDaemonLifecycleFacade) Setup(
+	context.Context,
+	*facade.DaemonSetupRequest,
+	...func(*facade.Option),
+) (*facade.DaemonLifecycleResponse, error) {
+	return &facade.DaemonLifecycleResponse{}, nil
+}
+
+func (f *cmdFakeDaemonLifecycleFacade) Service(
+	context.Context,
+	*facade.DaemonServiceRequest,
+	...func(*facade.Option),
+) (*facade.DaemonLifecycleResponse, error) {
+	return &facade.DaemonLifecycleResponse{}, nil
 }
 
 type cmdFakeDaemonControlClient struct {
