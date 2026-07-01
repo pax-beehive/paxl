@@ -326,10 +326,20 @@ func (f *SessionFacade) syncSessionElementsWithPolicy(
 	option *Option,
 	throttle bool,
 ) error {
+	return f.syncSessionElementsWithTimeout(ctx, session, option, throttle, syncTimeoutDuration)
+}
+
+func (f *SessionFacade) syncSessionElementsWithTimeout(
+	ctx context.Context,
+	session *model.Session,
+	option *Option,
+	throttle bool,
+	timeout time.Duration,
+) error {
 	if throttle && recentlySynced(session.LastSyncedAt) {
 		return nil
 	}
-	syncCtx, cancel := context.WithTimeout(ctx, syncTimeoutDuration)
+	syncCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	adapter, err := f.registry.Lookup(syncCtx, &adaptor.LookupRequest{Name: session.Agent})
 	if err != nil {
@@ -364,6 +374,13 @@ func recentlySynced(lastSyncedAt string) bool {
 		return false
 	}
 	return time.Since(lastSynced) < syncThrottleDuration
+}
+
+func verbosef(option *Option, format string, args ...any) {
+	if option == nil || option.VerboseWriter == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(option.VerboseWriter, format+"\n", args...)
 }
 
 func (f *SessionFacade) syncAgentSessions(
@@ -423,9 +440,13 @@ func (f *SessionFacade) Search(
 			ctx,
 			req.Agent,
 			searchSyncLimit(req.Limit),
+			searchTranscriptSyncLimit(req.Limit),
 			option,
 		); err != nil {
-			return nil, fmt.Errorf("sync search sessions: %w", err)
+			if !errors.Is(err, context.DeadlineExceeded) {
+				return nil, fmt.Errorf("sync search sessions: %w", err)
+			}
+			verbosef(option, "Session search sync timed out; returning cached search results.")
 		}
 	}
 	resp, err := f.store.SearchElements(ctx, &store.SearchElementsRequest{
@@ -439,7 +460,13 @@ func (f *SessionFacade) Search(
 	return &SearchResponse{Results: resp.Results}, nil
 }
 
-const defaultSearchSyncLimit = 50
+const (
+	defaultSearchSyncLimit           = 50
+	defaultSearchTranscriptSyncLimit = 10
+	searchSyncMaxDuration            = 10 * time.Second
+	searchSyncReserveDuration        = 2 * time.Second
+	searchSyncSessionTimeout         = time.Second
+)
 
 func searchSyncLimit(resultLimit int) int {
 	if resultLimit > defaultSearchSyncLimit {
@@ -448,28 +475,70 @@ func searchSyncLimit(resultLimit int) int {
 	return defaultSearchSyncLimit
 }
 
+func searchTranscriptSyncLimit(resultLimit int) int {
+	if resultLimit <= 0 || resultLimit > defaultSearchTranscriptSyncLimit {
+		return defaultSearchTranscriptSyncLimit
+	}
+	return resultLimit
+}
+
 func (f *SessionFacade) syncSearchSessions(
 	ctx context.Context,
 	agent model.AgentName,
-	limit int,
+	listLimit int,
+	transcriptLimit int,
 	option *Option,
 ) error {
+	syncCtx, cancel, ok := searchSyncContext(ctx)
+	if !ok {
+		return nil
+	}
+	defer cancel()
 	var agents []model.AgentName
 	if agent != "" && agent != model.AgentNameUnknown {
 		agents = []model.AgentName{agent}
 	}
-	sessions, err := f.syncSessions(ctx, &ListSessionsRequest{Agents: agents, Limit: limit}, option)
+	sessions, err := f.syncSessions(syncCtx, &ListSessionsRequest{
+		Agents: agents,
+		Limit:  listLimit,
+	}, option)
 	if err != nil {
 		return err
 	}
 	sortSessionsNewestFirst(sessions)
-	for _, session := range filterListedSessions(sessions, nil, limit) {
+	for _, session := range filterListedSessions(sessions, nil, transcriptLimit) {
 		if session == nil {
 			continue
 		}
-		_ = f.syncSessionElementsWithPolicy(ctx, session, option, true)
+		select {
+		case <-syncCtx.Done():
+			return syncCtx.Err()
+		default:
+		}
+		_ = f.syncSessionElementsWithTimeout(
+			syncCtx,
+			session,
+			option,
+			true,
+			searchSyncSessionTimeout,
+		)
 	}
 	return nil
+}
+
+func searchSyncContext(ctx context.Context) (context.Context, context.CancelFunc, bool) {
+	budget := searchSyncMaxDuration
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline) - searchSyncReserveDuration
+		if remaining <= 0 {
+			return nil, func() {}, false
+		}
+		if remaining < budget {
+			budget = remaining
+		}
+	}
+	syncCtx, cancel := context.WithTimeout(ctx, budget)
+	return syncCtx, cancel, true
 }
 
 func sortSessionsNewestFirst(sessions []*model.Session) {

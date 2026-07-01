@@ -86,6 +86,10 @@ type Registry struct {
 	adapters []Adapter
 }
 
+func NewRegistry(adapters ...Adapter) *Registry {
+	return &Registry{adapters: adapters}
+}
+
 func NewDefaultRegistry() *Registry {
 	return &Registry{
 		adapters: []Adapter{
