@@ -19,6 +19,8 @@ type AgentHookFacade struct {
 	sessionFacade *SessionFacade
 }
 
+const hookAcceptedInboxReconcileLimit = 20
+
 type AgentHookRequest struct {
 	Agent       model.AgentName
 	Event       string
@@ -159,6 +161,23 @@ func (f *AgentHookFacade) acceptPendingInboxRoutes(ctx context.Context, verbose 
 			"Accepted %d inbox envelopes before hook injection with %d failures.",
 			len(resp.Accepted),
 			len(resp.Failures),
+		)
+	}
+	synced, err := envelopeFacade.AcceptAll(ctx, &AcceptAllEnvelopesRequest{
+		Status:          "accepted",
+		Limit:           hookAcceptedInboxReconcileLimit,
+		ContinueOnError: true,
+	})
+	if err != nil {
+		writeHookVerbose(verbose, "Skip accepted inbox sync before hook injection: %v.", err)
+		return
+	}
+	if len(synced.Accepted) > 0 || len(synced.Failures) > 0 {
+		writeHookVerbose(
+			verbose,
+			"Synced %d accepted inbox envelopes before hook injection with %d failures.",
+			len(synced.Accepted),
+			len(synced.Failures),
 		)
 	}
 }

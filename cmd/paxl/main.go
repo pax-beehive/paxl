@@ -834,6 +834,24 @@ func newInboxCommand(stdout io.Writer) *cli.Command {
 				},
 			},
 			{
+				Name:  "sync",
+				Usage: "Sync accepted envelopes into local capsules",
+				Flags: []cli.Flag{
+					&cli.IntFlag{
+						Name:  "limit",
+						Usage: "Maximum accepted envelopes to sync",
+					},
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "table",
+						Usage: "Output format: table or jsonl",
+					},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return inboxSync(ctx, cmd, stdout)
+				},
+			},
+			{
 				Name:  "watch",
 				Usage: "Continuously accept pending inbox envelopes",
 				Flags: []cli.Flag{
@@ -2208,6 +2226,35 @@ func inboxAcceptAll(ctx context.Context, cmd *cli.Command, stdout io.Writer) err
 	}
 	if len(resp.Failures) > 0 {
 		return fmt.Errorf("accept all envelopes: %d failed", len(resp.Failures))
+	}
+	return nil
+}
+
+func inboxSync(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	switch cmd.String("format") {
+	case "table", "jsonl":
+	default:
+		return fmt.Errorf("unsupported format %q", cmd.String("format"))
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open envelope store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	envelopeFacade := facade.NewEnvelopeFacade(nil, opened.Store)
+	resp, err := envelopeFacade.AcceptAll(ctx, &facade.AcceptAllEnvelopesRequest{
+		Status:          "accepted",
+		Limit:           cmd.Int("limit"),
+		ContinueOnError: true,
+	})
+	if err != nil {
+		return fmt.Errorf("sync accepted envelopes: %w", err)
+	}
+	if err := renderSyncEnvelopes(stdout, resp, cmd.String("format")); err != nil {
+		return fmt.Errorf("render synced envelopes: %w", err)
+	}
+	if len(resp.Failures) > 0 {
+		return fmt.Errorf("sync accepted envelopes: %d failed", len(resp.Failures))
 	}
 	return nil
 }
@@ -3648,6 +3695,74 @@ func renderAcceptAllEnvelopes(
 				"error":         failure.Error,
 			}); err != nil {
 				return fmt.Errorf("encode accept all failure: %w", err)
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func renderSyncEnvelopes(
+	stdout io.Writer,
+	resp *facade.AcceptAllEnvelopesResponse,
+	format string,
+) error {
+	switch format {
+	case "table":
+		if len(resp.Accepted) == 0 && len(resp.Failures) == 0 {
+			if _, err := fmt.Fprintln(stdout, "No accepted envelopes to sync"); err != nil {
+				return fmt.Errorf("write sync empty result: %w", err)
+			}
+			return nil
+		}
+		for _, synced := range resp.Accepted {
+			if _, err := fmt.Fprintf(
+				stdout,
+				"Synced %s as local capsule %s\n",
+				synced.Envelope.EnvelopeID,
+				synced.Capsule.CapsuleID,
+			); err != nil {
+				return fmt.Errorf("write sync result: %w", err)
+			}
+			if synced.Injection != nil {
+				if _, err := fmt.Fprintf(
+					stdout,
+					"Hook injection route %s is %s for %s match %s\n",
+					synced.Injection.InjectionID,
+					firstNonEmpty(synced.Injection.Status, "stored"),
+					firstNonEmpty(string(synced.Injection.TargetAgent), "any agent"),
+					firstNonEmpty(synced.Injection.RouteMatchType, "any"),
+				); err != nil {
+					return fmt.Errorf("write sync route result: %w", err)
+				}
+			}
+		}
+		for _, failure := range resp.Failures {
+			if _, err := fmt.Fprintf(
+				stdout,
+				"Failed %s: %s\n",
+				failure.EnvelopeID,
+				failure.Error,
+			); err != nil {
+				return fmt.Errorf("write sync failure: %w", err)
+			}
+		}
+		return nil
+	case "jsonl":
+		for _, synced := range resp.Accepted {
+			if err := renderAcceptEnvelope(stdout, synced, format); err != nil {
+				return err
+			}
+		}
+		encoder := json.NewEncoder(stdout)
+		for _, failure := range resp.Failures {
+			if err := encoder.Encode(map[string]any{
+				"schemaVersion": "paxl.sync_failure.v1",
+				"envelopeId":    failure.EnvelopeID,
+				"error":         failure.Error,
+			}); err != nil {
+				return fmt.Errorf("encode sync failure: %w", err)
 			}
 		}
 		return nil

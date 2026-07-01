@@ -399,28 +399,21 @@ func (f *EnvelopeFacade) Accept(
 	if err != nil {
 		return nil, err
 	}
-	created, err := f.store.CreateKnowledgeCapsule(
-		ctx,
-		&store.CreateKnowledgeCapsuleRequest{Capsule: capsule},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store accepted capsule: %w", err)
-	}
-	accepted, err := f.updateRemoteEnvelope(ctx, req.EnvelopeID, "accept")
+	materialized, err := f.materializeAcceptedEnvelope(ctx, capsule, route)
 	if err != nil {
 		return nil, err
 	}
-	var injection *model.KnowledgeInjection
-	if route != nil {
-		injection, err = f.storeAcceptedEnvelopeRoute(ctx, created.Capsule, route)
+	accepted := envelope
+	if strings.TrimSpace(envelope.Status) != "accepted" {
+		accepted, err = f.updateRemoteEnvelope(ctx, req.EnvelopeID, "accept")
 		if err != nil {
 			return nil, err
 		}
 	}
 	return &AcceptEnvelopeResponse{
 		Envelope:  accepted,
-		Capsule:   created.Capsule,
-		Injection: injection,
+		Capsule:   materialized.Capsule,
+		Injection: materialized.Injection,
 	}, nil
 }
 
@@ -671,6 +664,78 @@ func capsuleFromEnvelope(
 	}, payload.Route, nil
 }
 
+type materializedAcceptedEnvelope struct {
+	Capsule   *model.KnowledgeCapsule
+	Injection *model.KnowledgeInjection
+}
+
+type localCapsuleLookup struct {
+	Capsule *model.KnowledgeCapsule
+	Found   bool
+}
+
+type acceptedEnvelopeRouteResult struct {
+	Injection *model.KnowledgeInjection
+}
+
+type localRouteLookup struct {
+	Injection *model.KnowledgeInjection
+	Found     bool
+}
+
+func (f *EnvelopeFacade) materializeAcceptedEnvelope(
+	ctx context.Context,
+	capsule *model.KnowledgeCapsule,
+	route *envelopePayloadRoute,
+) (*materializedAcceptedEnvelope, error) {
+	lookup, err := f.findLocalCapsuleForRemoteEnvelope(ctx, capsule.SourceSessionID)
+	if err != nil {
+		return nil, err
+	}
+	localCapsule := lookup.Capsule
+	if !lookup.Found {
+		created, err := f.store.CreateKnowledgeCapsule(
+			ctx,
+			&store.CreateKnowledgeCapsuleRequest{Capsule: capsule},
+		)
+		if err != nil {
+			return nil, fmt.Errorf("store accepted capsule: %w", err)
+		}
+		localCapsule = created.Capsule
+	}
+	routeResult, err := f.ensureAcceptedEnvelopeRoute(ctx, localCapsule, route)
+	if err != nil {
+		return nil, err
+	}
+	return &materializedAcceptedEnvelope{
+		Capsule:   localCapsule,
+		Injection: routeResult.Injection,
+	}, nil
+}
+
+func (f *EnvelopeFacade) findLocalCapsuleForRemoteEnvelope(
+	ctx context.Context,
+	sourceSessionID string,
+) (localCapsuleLookup, error) {
+	listed, err := f.store.ListKnowledgeCapsules(
+		ctx,
+		&store.ListKnowledgeCapsulesRequest{
+			SourceSessionID: sourceSessionID,
+			Limit:           1,
+		},
+	)
+	if err != nil {
+		return localCapsuleLookup{}, fmt.Errorf(
+			"find accepted capsule by source session: %w",
+			err,
+		)
+	}
+	if len(listed.Capsules) == 0 {
+		return localCapsuleLookup{}, nil
+	}
+	return localCapsuleLookup{Capsule: listed.Capsules[0], Found: true}, nil
+}
+
 func validateEnvelopeRoute(route *envelopePayloadRoute) error {
 	if route == nil {
 		return fmt.Errorf("route is required")
@@ -731,4 +796,65 @@ func (f *EnvelopeFacade) storeAcceptedEnvelopeRoute(
 		return nil, fmt.Errorf("store accepted route injection: %w", err)
 	}
 	return created.Injection, nil
+}
+
+func (f *EnvelopeFacade) ensureAcceptedEnvelopeRoute(
+	ctx context.Context,
+	capsule *model.KnowledgeCapsule,
+	route *envelopePayloadRoute,
+) (acceptedEnvelopeRouteResult, error) {
+	if route == nil {
+		return acceptedEnvelopeRouteResult{}, nil
+	}
+	existing, err := f.findLocalRouteForAcceptedEnvelope(ctx, capsule, route)
+	if err != nil {
+		return acceptedEnvelopeRouteResult{}, err
+	}
+	if existing.Found {
+		return acceptedEnvelopeRouteResult{Injection: existing.Injection}, nil
+	}
+	created, err := f.storeAcceptedEnvelopeRoute(ctx, capsule, route)
+	if err != nil {
+		return acceptedEnvelopeRouteResult{}, err
+	}
+	return acceptedEnvelopeRouteResult{Injection: created}, nil
+}
+
+func (f *EnvelopeFacade) findLocalRouteForAcceptedEnvelope(
+	ctx context.Context,
+	capsule *model.KnowledgeCapsule,
+	route *envelopePayloadRoute,
+) (localRouteLookup, error) {
+	listed, err := f.store.ListKnowledgeInjections(
+		ctx,
+		&store.ListKnowledgeInjectionsRequest{},
+	)
+	if err != nil {
+		return localRouteLookup{}, fmt.Errorf("find accepted route injection: %w", err)
+	}
+	for _, injection := range listed.Injections {
+		if injection == nil {
+			continue
+		}
+		if injection.CapsuleID != capsule.CapsuleID {
+			continue
+		}
+		if injection.DeliveryMethod != "hook" {
+			continue
+		}
+		if injection.DeliveryMessageType != "system_handoff" {
+			continue
+		}
+		if injection.TargetAgent != route.TargetAgent {
+			continue
+		}
+		if injection.RouteMatchType != route.MatchType {
+			continue
+		}
+		if injection.RouteMatchValue != route.MatchValue {
+			continue
+		}
+		return localRouteLookup{Injection: injection, Found: true}, nil
+	}
+	return localRouteLookup{}, nil
 }

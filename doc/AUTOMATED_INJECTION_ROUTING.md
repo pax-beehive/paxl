@@ -255,3 +255,36 @@ user-facing command surface.
   successfully.
 - Durable injection records are the source of truth for whether an injection
   was claimed, rendered, consumed, failed, or expired.
+
+## Accepted Envelope Reconciliation
+
+Remote envelope acceptance can happen outside the local CLI, such as through a
+hosted UI or a direct manager API call. In that case the manager records the
+envelope as `accepted`, but the recipient machine may still be missing the
+local capsule row and the pending hook injection derived from the envelope
+route.
+
+`paxl inbox sync` is the explicit repair command for this state:
+
+```sh
+paxl inbox sync
+paxl inbox sync --limit 20
+```
+
+The command lists accepted inbox envelopes and materializes each envelope into
+local state. For routed knowledge capsule payloads, materialization creates or
+reuses:
+
+- one local knowledge capsule with `source_session_id` set to
+  `remote_envelope:<envelope-id>`;
+- one pending hook injection with the envelope route fields.
+
+The operation is idempotent. Repeated syncs must not create duplicate capsules
+or duplicate hook routes for the same accepted envelope. `paxl inbox accept
+<envelope-id>` follows the same rule: if the remote envelope is already
+accepted, it skips the remote accept action and only performs local
+materialization.
+
+The runtime hook performs this reconciliation before route matching. It first
+accepts pending envelopes, then syncs a bounded batch of accepted envelopes so
+routes accepted remotely can become eligible during the same hook invocation.

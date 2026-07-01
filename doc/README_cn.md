@@ -565,3 +565,26 @@ CLI 架构和 SQLite 存储本身是跨平台 Go 代码，但当前内置 adapte
   测试方式、native CLI resume 行为都需要单独覆盖。
 
 简而言之：macOS 已验证，Linux 预计可用但需要验证，Windows 目前应视为 experimental。
+
+## Accepted Inbox 同步
+
+如果 envelope 是在本地 CLI 之外被 accept 的，比如通过 manager API 或线上 UI，
+远端 inbox 状态可能已经变成 `accepted`，但当前机器还没有把 capsule 和 route
+写进本地 SQLite。可以用显式同步来修复本地状态：
+
+```sh
+paxl inbox sync
+paxl inbox sync --limit 20
+```
+
+`inbox sync` 会列出 accepted inbox envelopes，把缺失的 capsule 写入本地，并在
+payload 里带 route 时重新创建 pending hook injection。这个操作是幂等的：本地用
+`remote_envelope:<envelope-id>` 作为 source session id 来识别同一个远端
+envelope，所以重复 sync 会复用已有 capsule 和 route injection。
+
+`paxl inbox accept <envelope-id>` 也是幂等的。如果远端 envelope 已经是
+`accepted`，它会跳过远端 accept 请求，只执行同样的本地 materialization。
+
+隐藏 agent hook 在匹配 route 前也会做同样的 reconcile：先 accept pending
+envelopes，再同步一小批最近 accepted envelopes。这样通过 Web 或 manager API
+accept 的 capsule，也能在下一次匹配的本地 prompt 里自动注入。
