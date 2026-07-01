@@ -183,6 +183,7 @@ func TestDaemonAgentHarnessAndLocalCommandsUseDaemonFacade(t *testing.T) {
 	}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Equal(t, "review", client.createdAgent.Name)
+	assert.Equal(t, "agent_cloud_review", client.createdAgent.CloudAgentID)
 
 	stdout.Reset()
 	err = run(context.Background(), []string{
@@ -192,6 +193,7 @@ func TestDaemonAgentHarnessAndLocalCommandsUseDaemonFacade(t *testing.T) {
 	}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Equal(t, "hermes", client.createdAgent.Name)
+	assert.Equal(t, "agent_cloud_hermes", client.createdAgent.CloudAgentID)
 	assert.Equal(t, []string{"hermes", "agent", "--acp"}, client.createdAgent.Command)
 
 	stdout.Reset()
@@ -490,11 +492,33 @@ func stubDaemonFacade(t *testing.T, client *cmdFakeDaemonControlClient) func() {
 	t.Helper()
 	previous := newDaemonFacade
 	newDaemonFacade = func() *facade.DaemonFacade {
-		return facade.NewDaemonFacade(client)
+		return facade.NewDaemonFacade(
+			client,
+			facade.WithDaemonRemoteNodeKeyLoader(cmdFakeDaemonNodeKeyLoader{}),
+			facade.WithDaemonCloudAgentRegistrar(cmdFakeDaemonCloudAgentRegistrar{}),
+		)
 	}
 	return func() {
 		newDaemonFacade = previous
 	}
+}
+
+type cmdFakeDaemonNodeKeyLoader struct{}
+
+func (cmdFakeDaemonNodeKeyLoader) LoadRemoteNodeKey(
+	context.Context,
+	string,
+) (string, error) {
+	return "node-secret", nil
+}
+
+type cmdFakeDaemonCloudAgentRegistrar struct{}
+
+func (cmdFakeDaemonCloudAgentRegistrar) RegisterCloudAgent(
+	_ context.Context,
+	req *facade.DaemonCloudAgentRegistrationRequest,
+) (string, error) {
+	return "agent_cloud_" + req.Name, nil
 }
 
 type cmdFakeDaemonLifecycleFacade struct {
