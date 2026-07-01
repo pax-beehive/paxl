@@ -155,6 +155,13 @@ func installDaemonBinary(path string, binary []byte) error {
 	name := filepath.Base(path)
 	tmp, err := os.CreateTemp(dir, "."+name+".tmp-*")
 	if err != nil {
+		if os.IsPermission(err) {
+			return fmt.Errorf(
+				"paxd install dir %s is not writable: %w; rerun with sudo to update this location, or pass --install-dir to use a writable directory",
+				dir,
+				err,
+			)
+		}
 		return fmt.Errorf("create temp paxd binary: %w", err)
 	}
 	tmpPath := tmp.Name()

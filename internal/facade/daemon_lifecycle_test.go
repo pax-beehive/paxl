@@ -196,6 +196,24 @@ func TestDaemonLifecycleUpdateReplacesExistingBinaryWithNewFile(t *testing.T) {
 	assert.Equal(t, binary, raw)
 }
 
+func TestInstallDaemonBinaryExplainsUnwritableInstallDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix permissions required")
+	}
+	installDir := t.TempDir()
+	require.NoError(t, os.Chmod(installDir, 0o555))
+	defer func() {
+		_ = os.Chmod(installDir, 0o755)
+	}()
+
+	err := installDaemonBinary(filepath.Join(installDir, "paxd"), []byte("new-paxd"))
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not writable")
+	assert.Contains(t, err.Error(), "--install-dir")
+	assert.Contains(t, err.Error(), "sudo")
+}
+
 func TestDaemonLifecycleCheckResolvesLatestPaxdArtifact(t *testing.T) {
 	client := roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		assert.Equal(t, "/api/v1/public/paxd/download", r.URL.Path)
