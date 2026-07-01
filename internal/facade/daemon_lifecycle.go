@@ -132,9 +132,8 @@ func (f *DaemonLifecycleFacade) Install(
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create install dir: %w", err)
 	}
-	// #nosec G306 -- paxd must be executable.
-	if err := os.WriteFile(path, binary, 0o755); err != nil {
-		return nil, fmt.Errorf("write paxd binary: %w", err)
+	if err := installDaemonBinary(path, binary); err != nil {
+		return nil, err
 	}
 	return &DaemonLifecycleResponse{
 		Status:  SetupStatusInstalled,
@@ -143,6 +142,39 @@ func (f *DaemonLifecycleFacade) Install(
 		Action:  "install",
 		Message: fmt.Sprintf("paxd %s installed.", artifact.Version),
 	}, nil
+}
+
+func installDaemonBinary(path string, binary []byte) error {
+	dir := filepath.Dir(path)
+	name := filepath.Base(path)
+	tmp, err := os.CreateTemp(dir, "."+name+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp paxd binary: %w", err)
+	}
+	tmpPath := tmp.Name()
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmp.Write(binary); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp paxd binary: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp paxd binary: %w", err)
+	}
+	// #nosec G302 -- paxd must be executable.
+	if err := os.Chmod(tmpPath, 0o755); err != nil {
+		return fmt.Errorf("chmod temp paxd binary: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("replace paxd binary: %w", err)
+	}
+	removeTemp = false
+	return nil
 }
 
 func (f *DaemonLifecycleFacade) Update(

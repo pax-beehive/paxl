@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -165,6 +166,35 @@ func TestDaemonLifecycleUpdateDownloadsAndReportsUpdate(t *testing.T) {
 	assert.FileExists(t, filepath.Join(installDir, "paxd"))
 }
 
+func TestDaemonLifecycleUpdateReplacesExistingBinaryWithNewFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("inode replacement assertion is unix-specific")
+	}
+	binary := []byte("fake-paxd-binary")
+	sum := sha256.Sum256(binary)
+	sha := hex.EncodeToString(sum[:])
+	installDir := t.TempDir()
+	target := filepath.Join(installDir, "paxd")
+	require.NoError(t, os.WriteFile(target, []byte("old-paxd-binary"), 0o755))
+	before := requireFileInfo(t, target)
+	lifecycle := NewDaemonLifecycleFacade(nil)
+	lifecycle.client = successfulDaemonArtifactClient(binary, sha)
+
+	resp, err := lifecycle.Update(context.Background(), &DaemonUpdateRequest{
+		ResolverURL: "https://resolver.test/resolve",
+		Platform:    "linux/amd64",
+		InstallDir:  installDir,
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "update", resp.Action)
+	after := requireFileInfo(t, target)
+	assert.False(t, os.SameFile(before, after))
+	raw, err := os.ReadFile(target)
+	require.NoError(t, err)
+	assert.Equal(t, binary, raw)
+}
+
 func TestDaemonLifecycleCheckResolvesLatestPaxdArtifact(t *testing.T) {
 	client := roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		assert.Equal(t, "/api/v1/public/paxd/download", r.URL.Path)
@@ -202,6 +232,13 @@ func TestDaemonLifecycleCheckResolvesLatestPaxdArtifact(t *testing.T) {
 		resp.DownloadURL,
 	)
 	assert.Contains(t, resp.Message, "Latest paxd 0.2.0")
+}
+
+func requireFileInfo(t *testing.T, path string) os.FileInfo {
+	t.Helper()
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	return info
 }
 
 func TestDaemonLifecycleCheckUsesDefaultsWhenRequestIsNil(t *testing.T) {
