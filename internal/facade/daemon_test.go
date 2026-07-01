@@ -63,7 +63,14 @@ func TestDaemonFacadeRemoteCommandsCallLocalAPI(t *testing.T) {
 	client := &fakeDaemonControlClient{ack: okDaemonAck()}
 	daemon := facade.NewDaemonFacade(client)
 
-	_, err := daemon.CreateRemote(context.Background(), &facade.CreateDaemonRemoteRequest{
+	_, err := daemon.CreateRemote(context.Background(), &facade.CreateDaemonRemoteRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, client.createdRemote)
+	assert.Equal(t, "default", client.createdRemote.Remote.ID)
+	assert.Equal(t, "default", client.createdRemote.Remote.Name)
+	assert.Equal(t, facade.DefaultManagerURL, client.createdRemote.Remote.CloudAPIURL)
+
+	_, err = daemon.CreateRemote(context.Background(), &facade.CreateDaemonRemoteRequest{
 		RemoteID:       "prod",
 		CloudAPIURL:    "https://api.test/",
 		NodeID:         "node_123",
@@ -107,13 +114,6 @@ func TestDaemonFacadeRejectsInvalidRemoteRequests(t *testing.T) {
 	_, err := daemon.CreateRemote(context.Background(), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "request is required")
-
-	_, err = daemon.CreateRemote(
-		context.Background(),
-		&facade.CreateDaemonRemoteRequest{CloudAPIURL: "https://api.test"},
-	)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "remote id")
 
 	_, err = daemon.UpdateRemote(context.Background(), &facade.UpdateDaemonRemoteRequest{})
 	require.Error(t, err)
