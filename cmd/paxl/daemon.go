@@ -18,7 +18,35 @@ var newDaemonFacade = func() *facade.DaemonFacade {
 	return facade.NewDaemonFacade(nil)
 }
 
-var newDaemonLifecycleFacade = func() *facade.DaemonLifecycleFacade {
+type daemonLifecycleFacade interface {
+	Install(
+		context.Context,
+		*facade.DaemonInstallRequest,
+		...func(*facade.Option),
+	) (*facade.DaemonLifecycleResponse, error)
+	Update(
+		context.Context,
+		*facade.DaemonUpdateRequest,
+		...func(*facade.Option),
+	) (*facade.DaemonLifecycleResponse, error)
+	Check(
+		context.Context,
+		*facade.DaemonUpdateCheckRequest,
+		...func(*facade.Option),
+	) (*facade.DaemonUpdateCheckResponse, error)
+	Setup(
+		context.Context,
+		*facade.DaemonSetupRequest,
+		...func(*facade.Option),
+	) (*facade.DaemonLifecycleResponse, error)
+	Service(
+		context.Context,
+		*facade.DaemonServiceRequest,
+		...func(*facade.Option),
+	) (*facade.DaemonLifecycleResponse, error)
+}
+
+var newDaemonLifecycleFacade = func() daemonLifecycleFacade {
 	return facade.NewDaemonLifecycleFacade(nil)
 }
 
@@ -44,22 +72,7 @@ func newDaemonUpdateCommand(stdout io.Writer) *cli.Command {
 	return &cli.Command{
 		Name:  "update",
 		Usage: "Update the paxd daemon binary",
-		Flags: []cli.Flag{
-			&cli.BoolFlag{Name: "dry-run", Usage: "Show update actions without writing files"},
-			&cli.StringFlag{
-				Name:  "resolver-url",
-				Value: facade.DefaultDaemonResolverURL,
-				Usage: "Artifact resolver URL",
-			},
-			&cli.StringFlag{Name: "platform", Usage: "Release platform override like darwin/arm64"},
-			&cli.StringFlag{
-				Name:  "tag",
-				Value: facade.DefaultUpdateTag,
-				Usage: "Release tag to install",
-			},
-			&cli.StringFlag{Name: "install-dir", Usage: "Directory to install paxd into"},
-			&cli.StringFlag{Name: "format", Value: "text", Usage: "Output format: text or json"},
-		},
+		Flags: daemonUpdateFlags(true),
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			resp, err := newDaemonLifecycleFacade().Update(ctx, &facade.DaemonUpdateRequest{
 				DryRun:      cmd.Bool("dry-run"),
@@ -73,7 +86,59 @@ func newDaemonUpdateCommand(stdout io.Writer) *cli.Command {
 			}
 			return renderDaemonLifecycle(stdout, resp, cmd.String("format"))
 		},
+		Commands: []*cli.Command{
+			newDaemonUpdateCheckCommand(stdout),
+		},
 	}
+}
+
+func newDaemonUpdateCheckCommand(stdout io.Writer) *cli.Command {
+	return &cli.Command{
+		Name:  "check",
+		Usage: "Check the latest hosted paxd release",
+		Flags: daemonUpdateFlags(false),
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			resp, err := newDaemonLifecycleFacade().Check(ctx, &facade.DaemonUpdateCheckRequest{
+				ResolverURL: cmd.String("resolver-url"),
+				Platform:    cmd.String("platform"),
+				Tag:         cmd.String("tag"),
+			})
+			if err != nil {
+				return fmt.Errorf("check daemon update: %w", err)
+			}
+			return renderDaemonUpdateCheck(stdout, resp, cmd.String("format"))
+		},
+	}
+}
+
+func daemonUpdateFlags(includeWriteFlags bool) []cli.Flag {
+	flags := []cli.Flag{
+		&cli.StringFlag{
+			Name:  "resolver-url",
+			Value: facade.DefaultDaemonResolverURL,
+			Usage: "Artifact resolver URL",
+		},
+		&cli.StringFlag{Name: "platform", Usage: "Release platform override like darwin/arm64"},
+		&cli.StringFlag{
+			Name:  "tag",
+			Value: facade.DefaultUpdateTag,
+			Usage: "Release tag to install",
+		},
+		&cli.StringFlag{Name: "format", Value: "text", Usage: "Output format: text or json"},
+	}
+	if includeWriteFlags {
+		flags = append(
+			[]cli.Flag{
+				&cli.BoolFlag{Name: "dry-run", Usage: "Show update actions without writing files"},
+			},
+			flags...,
+		)
+		flags = append(
+			flags,
+			&cli.StringFlag{Name: "install-dir", Usage: "Directory to install paxd into"},
+		)
+	}
+	return flags
 }
 
 func newDaemonInstallCommand(stdout io.Writer) *cli.Command {
@@ -1005,6 +1070,34 @@ func renderDaemonLifecycle(
 	switch format {
 	case "text":
 		_, err := fmt.Fprintln(stdout, resp.Message)
+		return err
+	case "json":
+		return json.NewEncoder(stdout).Encode(resp)
+	default:
+		return fmt.Errorf("unsupported format %q", format)
+	}
+}
+
+func renderDaemonUpdateCheck(
+	stdout io.Writer,
+	resp *facade.DaemonUpdateCheckResponse,
+	format string,
+) error {
+	if resp == nil {
+		return fmt.Errorf("daemon update check response is empty")
+	}
+	switch format {
+	case "text":
+		if _, err := fmt.Fprintln(stdout, resp.Message); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(stdout, "SHA256: %s\n", resp.SHA256); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(stdout, "Size: %d\n", resp.SizeBytes); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintf(stdout, "URL: %s\n", resp.DownloadURL)
 		return err
 	case "json":
 		return json.NewEncoder(stdout).Encode(resp)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -167,10 +168,59 @@ func TestDaemonLocalAPIClientReturnsHTTPStatusErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), "503")
 }
 
+func TestDaemonLocalAPIClientReturnsRequestErrors(t *testing.T) {
+	client := daemonRoundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return nil, errors.New("socket missing")
+	})
+
+	_, err := facade.NewDaemonHTTPClient("https://paxd.test", client).
+		GetStatus(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "socket missing")
+
+	_, err = facade.NewDaemonHTTPClient("https://paxd.test", client).
+		RestartRemote(context.Background(), "cmd_1", "prod")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "socket missing")
+}
+
+func TestDaemonLocalAPIClientReturnsRequestCreationErrors(t *testing.T) {
+	api := facade.NewDaemonHTTPClient("http://[::1", nil)
+
+	_, err := api.GetStatus(context.Background())
+	require.Error(t, err)
+
+	_, err = api.DiscoverHarnesses(context.Background(), false, nil)
+	require.Error(t, err)
+
+	_, err = api.RestartRemote(context.Background(), "cmd_1", "prod")
+	require.Error(t, err)
+
+	_, err = api.DeleteRemote(context.Background(), "cmd_2", "prod", false)
+	require.Error(t, err)
+}
+
+func TestDaemonLocalAPIClientReturnsCommandHTTPStatusErrors(t *testing.T) {
+	client := daemonRoundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return daemonJSONResponse(t, http.StatusServiceUnavailable, model.DaemonCommandAck{
+			OK:     false,
+			Status: model.DaemonCommandStatusFailed,
+			Error:  &model.DaemonControlError{Code: "unavailable"},
+		}), nil
+	})
+
+	_, err := facade.NewDaemonHTTPClient("https://paxd.test", client).
+		RestartRemote(context.Background(), "cmd_1", "prod")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "503")
+}
+
 func TestDaemonClientConstructorsUseDefaults(t *testing.T) {
-	t.Setenv("HOME", "/tmp/pax-home")
+	t.Setenv("HOME", "")
 
 	assert.Contains(t, facade.DefaultDaemonControlSocketPath(), ".paxd/paxd.sock")
+	assert.NotNil(t, facade.NewDaemonUnixClient("/tmp/paxd.sock"))
 	assert.NotNil(t, facade.NewDaemonUnixClient(""))
 	assert.NotNil(t, facade.NewDaemonHTTPClient("https://paxd.test/", nil))
 	assert.NotNil(t, facade.NewDaemonFacade(nil))

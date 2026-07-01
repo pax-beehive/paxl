@@ -120,6 +120,25 @@ func TestDaemonFacadeRejectsInvalidRemoteRequests(t *testing.T) {
 	assert.Contains(t, err.Error(), "remote id")
 }
 
+func TestDaemonFacadeReportsCommandAckFailures(t *testing.T) {
+	daemon := facade.NewDaemonFacade(&fakeDaemonControlClient{
+		ack: &model.DaemonCommandAck{Status: model.DaemonCommandStatusFailed},
+	})
+	_, err := daemon.RestartRemote(context.Background(), "prod")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed")
+
+	daemon = facade.NewDaemonFacade(&fakeDaemonControlClient{
+		ack: &model.DaemonCommandAck{
+			Status: model.DaemonCommandStatusFailed,
+			Error:  &model.DaemonControlError{Code: "boom", Message: "failed"},
+		},
+	})
+	_, err = daemon.RestartRemote(context.Background(), "prod")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "boom")
+}
+
 func TestDaemonFacadeAgentCommandsCallLocalAPI(t *testing.T) {
 	client := &fakeDaemonControlClient{
 		ack: okDaemonAck(),
