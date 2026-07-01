@@ -669,16 +669,31 @@ type materializedAcceptedEnvelope struct {
 	Injection *model.KnowledgeInjection
 }
 
+type localCapsuleLookup struct {
+	Capsule *model.KnowledgeCapsule
+	Found   bool
+}
+
+type acceptedEnvelopeRouteResult struct {
+	Injection *model.KnowledgeInjection
+}
+
+type localRouteLookup struct {
+	Injection *model.KnowledgeInjection
+	Found     bool
+}
+
 func (f *EnvelopeFacade) materializeAcceptedEnvelope(
 	ctx context.Context,
 	capsule *model.KnowledgeCapsule,
 	route *envelopePayloadRoute,
 ) (*materializedAcceptedEnvelope, error) {
-	localCapsule, err := f.findLocalCapsuleForRemoteEnvelope(ctx, capsule.SourceSessionID)
+	lookup, err := f.findLocalCapsuleForRemoteEnvelope(ctx, capsule.SourceSessionID)
 	if err != nil {
 		return nil, err
 	}
-	if localCapsule == nil {
+	localCapsule := lookup.Capsule
+	if !lookup.Found {
 		created, err := f.store.CreateKnowledgeCapsule(
 			ctx,
 			&store.CreateKnowledgeCapsuleRequest{Capsule: capsule},
@@ -688,17 +703,20 @@ func (f *EnvelopeFacade) materializeAcceptedEnvelope(
 		}
 		localCapsule = created.Capsule
 	}
-	injection, err := f.ensureAcceptedEnvelopeRoute(ctx, localCapsule, route)
+	routeResult, err := f.ensureAcceptedEnvelopeRoute(ctx, localCapsule, route)
 	if err != nil {
 		return nil, err
 	}
-	return &materializedAcceptedEnvelope{Capsule: localCapsule, Injection: injection}, nil
+	return &materializedAcceptedEnvelope{
+		Capsule:   localCapsule,
+		Injection: routeResult.Injection,
+	}, nil
 }
 
 func (f *EnvelopeFacade) findLocalCapsuleForRemoteEnvelope(
 	ctx context.Context,
 	sourceSessionID string,
-) (*model.KnowledgeCapsule, error) {
+) (localCapsuleLookup, error) {
 	listed, err := f.store.ListKnowledgeCapsules(
 		ctx,
 		&store.ListKnowledgeCapsulesRequest{
@@ -707,12 +725,15 @@ func (f *EnvelopeFacade) findLocalCapsuleForRemoteEnvelope(
 		},
 	)
 	if err != nil {
-		return nil, fmt.Errorf("find accepted capsule by source session: %w", err)
+		return localCapsuleLookup{}, fmt.Errorf(
+			"find accepted capsule by source session: %w",
+			err,
+		)
 	}
 	if len(listed.Capsules) == 0 {
-		return nil, nil
+		return localCapsuleLookup{}, nil
 	}
-	return listed.Capsules[0], nil
+	return localCapsuleLookup{Capsule: listed.Capsules[0], Found: true}, nil
 }
 
 func validateEnvelopeRoute(route *envelopePayloadRoute) error {
@@ -781,31 +802,35 @@ func (f *EnvelopeFacade) ensureAcceptedEnvelopeRoute(
 	ctx context.Context,
 	capsule *model.KnowledgeCapsule,
 	route *envelopePayloadRoute,
-) (*model.KnowledgeInjection, error) {
+) (acceptedEnvelopeRouteResult, error) {
 	if route == nil {
-		return nil, nil
+		return acceptedEnvelopeRouteResult{}, nil
 	}
 	existing, err := f.findLocalRouteForAcceptedEnvelope(ctx, capsule, route)
 	if err != nil {
-		return nil, err
+		return acceptedEnvelopeRouteResult{}, err
 	}
-	if existing != nil {
-		return existing, nil
+	if existing.Found {
+		return acceptedEnvelopeRouteResult{Injection: existing.Injection}, nil
 	}
-	return f.storeAcceptedEnvelopeRoute(ctx, capsule, route)
+	created, err := f.storeAcceptedEnvelopeRoute(ctx, capsule, route)
+	if err != nil {
+		return acceptedEnvelopeRouteResult{}, err
+	}
+	return acceptedEnvelopeRouteResult{Injection: created}, nil
 }
 
 func (f *EnvelopeFacade) findLocalRouteForAcceptedEnvelope(
 	ctx context.Context,
 	capsule *model.KnowledgeCapsule,
 	route *envelopePayloadRoute,
-) (*model.KnowledgeInjection, error) {
+) (localRouteLookup, error) {
 	listed, err := f.store.ListKnowledgeInjections(
 		ctx,
 		&store.ListKnowledgeInjectionsRequest{},
 	)
 	if err != nil {
-		return nil, fmt.Errorf("find accepted route injection: %w", err)
+		return localRouteLookup{}, fmt.Errorf("find accepted route injection: %w", err)
 	}
 	for _, injection := range listed.Injections {
 		if injection == nil {
@@ -829,7 +854,7 @@ func (f *EnvelopeFacade) findLocalRouteForAcceptedEnvelope(
 		if injection.RouteMatchValue != route.MatchValue {
 			continue
 		}
-		return injection, nil
+		return localRouteLookup{Injection: injection, Found: true}, nil
 	}
-	return nil, nil
+	return localRouteLookup{}, nil
 }
