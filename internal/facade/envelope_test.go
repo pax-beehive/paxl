@@ -610,7 +610,10 @@ func (s *EnvelopeFacadeSuite) TestAcceptReusesLocalAcceptedEnvelopeMaterializati
 	})
 	s.Require().NoError(err)
 	s.Require().Len(capsules.Capsules, 1)
-	injections, err := s.store.ListKnowledgeInjections(s.ctx, &store.ListKnowledgeInjectionsRequest{})
+	injections, err := s.store.ListKnowledgeInjections(
+		s.ctx,
+		&store.ListKnowledgeInjectionsRequest{},
+	)
 	s.Require().NoError(err)
 	s.Require().Len(injections.Injections, 1)
 }
