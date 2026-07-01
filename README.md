@@ -147,14 +147,25 @@ paxl capsule create --manual \
   --content "Prepared incident context..."
 ```
 
-Install the bundled Codex skill when you want to say "move this context to
-Claude" or "create a capsule for this bug" and let the agent run the concrete
+Install the bundled Codex skills when you want an agent to run the concrete
 `paxl` commands:
 
 ```sh
 mkdir -p ~/.codex/skills
 cp -R skills/knowledge-transfer ~/.codex/skills/
+cp -R skills/session-search ~/.codex/skills/
+cp -R skills/session-condense ~/.codex/skills/
+cp -R skills/wiki-recall ~/.codex/skills/
 ```
+
+- `knowledge-transfer`: move context, create capsules, inject capsules, or
+  mirror sessions.
+- `session-search`: search local session history and optionally record reusable
+  query trails into the qmd wiki.
+- `session-condense`: maintain a Karpathy-style qmd LLM wiki from changed paxl
+  sessions and query trails.
+- `wiki-recall`: recall answers from the qmd LLM wiki before falling back to raw
+  session search.
 
 ## Data Model
 

@@ -22,6 +22,8 @@ go.work.sum
 
 # Generated scratch output
 .local/
+.llm-wiki/
+wiki/
 *.log
 *.sqlite
 *.sqlite3

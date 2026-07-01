@@ -141,13 +141,20 @@ paxl capsule create --manual \
   --content "Prepared incident context..."
 ```
 
-安装仓库里的 Codex skill 后，可以直接说“把这个上下文迁到 Claude”或“给这个 bug 建一个
-capsule”，让 agent 去执行对应的 `paxl` 命令。
+安装仓库里的 Codex skills 后，可以让 agent 去执行对应的 `paxl` 命令。
 
 ```sh
 mkdir -p ~/.codex/skills
 cp -R skills/knowledge-transfer ~/.codex/skills/
+cp -R skills/session-search ~/.codex/skills/
+cp -R skills/session-condense ~/.codex/skills/
+cp -R skills/wiki-recall ~/.codex/skills/
 ```
+
+- `knowledge-transfer`：迁移上下文、创建 capsule、注入 capsule、mirror session。
+- `session-search`：搜索本地 session history，并可把可复用 query trail 写入 qmd wiki。
+- `session-condense`：从变化的 paxl sessions 和 query trails 维护 Karpathy 风格的 qmd LLM wiki。
+- `wiki-recall`：先从 qmd LLM wiki 召回答案，再按需回退到 raw session search。
 
 ## 数据模型
 

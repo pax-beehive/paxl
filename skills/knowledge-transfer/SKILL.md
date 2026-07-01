@@ -55,6 +55,9 @@ that directory to the shell profile or call the printed absolute `paxl` path.
 
 ## Session Discovery
 
+For broad transcript search, use `session-search`. In this skill, use session
+commands only to identify or inspect source and target sessions for transfer.
+
 List available agents:
 
 ```sh
@@ -73,30 +76,6 @@ Use cached metadata only when explicitly wanted:
 
 ```sh
 paxl session list --no-sync
-```
-
-Search indexed session content. By default this returns cached SQLite results
-immediately, then starts a best-effort background refresh for future queries:
-
-```sh
-paxl session query "keyword or phrase"
-paxl session query "keyword or phrase" --limit 20
-paxl session query "keyword or phrase" --format jsonl
-```
-
-For a pure cached lookup with no background refresh side effect:
-
-```sh
-paxl session query "keyword or phrase" --no-background-sync
-```
-
-If search misses content that may only exist in fresh local logs, explicitly
-refresh recent session indexes before searching. This foreground sync is bounded
-and may return cached results if the sync budget is exhausted:
-
-```sh
-paxl session query "keyword or phrase" --sync
-paxl session query "keyword or phrase" --sync --timeout 10s
 ```
 
 User-facing session IDs are typed:
