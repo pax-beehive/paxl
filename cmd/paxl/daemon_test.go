@@ -180,7 +180,6 @@ func TestDaemonAgentHarnessAndLocalCommandsUseDaemonFacade(t *testing.T) {
 	err = run(context.Background(), []string{
 		"daemon", "agent", "create",
 		"--remote", "prod",
-		"--name", "hermes",
 		"--harness", "hermes",
 	}, &stdout, &stderr)
 	require.NoError(t, err)
