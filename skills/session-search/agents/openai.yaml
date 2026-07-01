@@ -1,0 +1,4 @@
+interface:
+  display_name: "Session Search"
+  short_description: "Search local paxl session history"
+  default_prompt: "Use $session-search to find relevant local agent sessions with paxl."

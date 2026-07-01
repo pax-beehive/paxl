@@ -1900,6 +1900,59 @@ func (s *CommandSuite) TestSessionGetRendersClaudeJSONL() {
 	s.Contains(s.stdout.String(), `"contentText":"Hi there"`)
 }
 
+func (s *CommandSuite) TestSessionGetJSONLStartsWithSnapshotMetadata() {
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+
+	err := run(
+		context.Background(),
+		[]string{"--db", dbPath, "session", "get", "codex:sess-1", "--format", "jsonl"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	records := decodeJSONLLines(s.T(), s.stdout.String())
+	s.Require().GreaterOrEqual(len(records), 2)
+	s.Equal("paxl.session.snapshot.v1", records[0]["schemaVersion"])
+	s.Equal("codex:sess-1", records[0]["sessionId"])
+	s.Equal("codex", records[0]["agent"])
+	s.Equal("sess-1", records[0]["nativeId"])
+	s.NotZero(records[0]["currentSyncVersion"])
+	s.Equal("paxl.session.element.v1", records[1]["schemaVersion"])
+	s.Equal(records[0]["currentSyncVersion"], records[1]["syncVersion"])
+}
+
+func (s *CommandSuite) TestSessionListJSONLIncludesCurrentSyncVersion() {
+	dbPath := s.seedCodexSessionWithKeyword("bridge")
+	s.Require().NoError(run(
+		context.Background(),
+		[]string{"--db", dbPath, "session", "get", "codex:sess-1", "--format", "jsonl"},
+		&s.stdout,
+		&s.stderr,
+	))
+	s.SetupTest()
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"session", "list",
+			"--agent", "codex",
+			"--no-sync",
+			"--format", "jsonl",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	records := decodeJSONLLines(s.T(), s.stdout.String())
+	s.Require().NotEmpty(records)
+	s.Equal("paxl.session.metadata.v1", records[0]["schemaVersion"])
+	s.Equal("codex:sess-1", records[0]["id"])
+	s.NotZero(records[0]["currentSyncVersion"])
+}
+
 func (s *CommandSuite) TestSingularCapsuleCommandExposesMigratedSubcommands() {
 	cases := []string{"create", "list", "get", "archive", "send", "inject", "injection"}
 	command := findCommand(newCommand(&s.stdout, &s.stderr), "capsule")
@@ -4298,6 +4351,23 @@ func firstLine(raw []byte) []byte {
 		}
 	}
 	return raw
+}
+
+func decodeJSONLLines(t *testing.T, raw string) []map[string]any {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(raw), "\n")
+	records := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("decode jsonl line %q: %v", line, err)
+		}
+		records = append(records, record)
+	}
+	return records
 }
 
 type commandRoundTripFunc func(req *http.Request) (*http.Response, error)

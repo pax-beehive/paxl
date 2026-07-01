@@ -4259,10 +4259,31 @@ func renderSessionTimeline(stdout io.Writer, resp *facade.GetSessionResponse, fo
 		return nil
 	case "jsonl":
 		encoder := json.NewEncoder(stdout)
+		if resp == nil || resp.Session == nil {
+			return fmt.Errorf("session response missing session")
+		}
+		if err := encoder.Encode(map[string]any{
+			"schemaVersion":      "paxl.session.snapshot.v1",
+			"sessionId":          resp.Session.ID,
+			"agent":              resp.Session.Agent,
+			"nativeId":           resp.Session.NativeID,
+			"title":              resp.Session.Title,
+			"status":             resp.Session.Status,
+			"preview":            resp.Session.Preview,
+			"projectId":          resp.Session.ProjectID,
+			"updatedAt":          resp.Session.UpdatedAt,
+			"lastActive":         resp.Session.LastActive,
+			"lastListedAt":       resp.Session.LastListedAt,
+			"lastSyncedAt":       resp.Session.LastSyncedAt,
+			"currentSyncVersion": resp.Session.CurrentSyncVersion,
+		}); err != nil {
+			return fmt.Errorf("encode session snapshot: %w", err)
+		}
 		for _, element := range resp.Elements {
 			if err := encoder.Encode(map[string]any{
 				"schemaVersion": "paxl.session.element.v1",
 				"sessionId":     element.SessionID,
+				"syncVersion":   element.SyncVersion,
 				"seq":           element.Seq,
 				"type":          element.Type,
 				"role":          element.Role,
@@ -4308,16 +4329,17 @@ func renderSessionList(stdout io.Writer, resp *facade.ListSessionsResponse, form
 		encoder := json.NewEncoder(stdout)
 		for _, session := range resp.Sessions {
 			if err := encoder.Encode(map[string]any{
-				"schemaVersion": "paxl.session.metadata.v1",
-				"id":            session.ID,
-				"agent":         session.Agent,
-				"nativeId":      session.NativeID,
-				"title":         session.Title,
-				"status":        session.Status,
-				"preview":       session.Preview,
-				"projectId":     session.ProjectID,
-				"updatedAt":     session.UpdatedAt,
-				"lastSyncedAt":  session.LastSyncedAt,
+				"schemaVersion":      "paxl.session.metadata.v1",
+				"id":                 session.ID,
+				"agent":              session.Agent,
+				"nativeId":           session.NativeID,
+				"title":              session.Title,
+				"status":             session.Status,
+				"preview":            session.Preview,
+				"projectId":          session.ProjectID,
+				"updatedAt":          session.UpdatedAt,
+				"lastSyncedAt":       session.LastSyncedAt,
+				"currentSyncVersion": session.CurrentSyncVersion,
 			}); err != nil {
 				return fmt.Errorf("encode session: %w", err)
 			}

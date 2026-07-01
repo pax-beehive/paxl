@@ -1,0 +1,4 @@
+interface:
+  display_name: "Wiki Recall"
+  short_description: "Recall context from qmd LLM wiki"
+  default_prompt: "Use $wiki-recall to recall relevant context from the local qmd LLM wiki."
