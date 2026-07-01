@@ -618,6 +618,147 @@ func (s *EnvelopeFacadeSuite) TestAcceptReusesLocalAcceptedEnvelopeMaterializati
 	s.Require().Len(injections.Injections, 1)
 }
 
+func (s *EnvelopeFacadeSuite) TestAcceptCreatesRouteWhenExistingLocalRoutesDoNotMatch() {
+	_, err := s.store.CreateKnowledgeCapsule(
+		s.ctx,
+		&store.CreateKnowledgeCapsuleRequest{Capsule: &model.KnowledgeCapsule{
+			CapsuleID:       "kcap_existing",
+			SourceSessionID: "remote_envelope:env_1",
+			SourceAgent:     model.AgentNameCodex,
+			Keyword:         "monitor",
+			Title:           "Existing local materialization",
+			Summary:         "summary",
+			Content:         "content",
+		}},
+	)
+	s.Require().NoError(err)
+	_, err = s.store.CreateKnowledgeCapsule(
+		s.ctx,
+		&store.CreateKnowledgeCapsuleRequest{Capsule: &model.KnowledgeCapsule{
+			CapsuleID:       "kcap_other",
+			SourceSessionID: "remote_envelope:env_other",
+			SourceAgent:     model.AgentNameCodex,
+			Keyword:         "monitor",
+			Title:           "Other local materialization",
+			Summary:         "summary",
+			Content:         "content",
+		}},
+	)
+	s.Require().NoError(err)
+	s.seedRouteInjection(&model.KnowledgeInjection{
+		InjectionID:         "kci_other_capsule",
+		CapsuleID:           "kcap_other",
+		DeliveryMethod:      "hook",
+		DeliveryMessageType: "system_handoff",
+		TargetAgent:         model.AgentNameCodex,
+		RouteMatchType:      "keyword",
+		RouteMatchValue:     "monitor",
+	})
+	s.seedRouteInjection(&model.KnowledgeInjection{
+		InjectionID:         "kci_other_method",
+		CapsuleID:           "kcap_existing",
+		DeliveryMethod:      "direct",
+		DeliveryMessageType: "system_handoff",
+		TargetAgent:         model.AgentNameCodex,
+		RouteMatchType:      "keyword",
+		RouteMatchValue:     "monitor",
+	})
+	s.seedRouteInjection(&model.KnowledgeInjection{
+		InjectionID:         "kci_other_message",
+		CapsuleID:           "kcap_existing",
+		DeliveryMethod:      "hook",
+		DeliveryMessageType: "manual",
+		TargetAgent:         model.AgentNameCodex,
+		RouteMatchType:      "keyword",
+		RouteMatchValue:     "monitor",
+	})
+	s.seedRouteInjection(&model.KnowledgeInjection{
+		InjectionID:         "kci_other_agent",
+		CapsuleID:           "kcap_existing",
+		DeliveryMethod:      "hook",
+		DeliveryMessageType: "system_handoff",
+		TargetAgent:         model.AgentNameClaude,
+		RouteMatchType:      "keyword",
+		RouteMatchValue:     "monitor",
+	})
+	s.seedRouteInjection(&model.KnowledgeInjection{
+		InjectionID:         "kci_other_match_type",
+		CapsuleID:           "kcap_existing",
+		DeliveryMethod:      "hook",
+		DeliveryMessageType: "system_handoff",
+		TargetAgent:         model.AgentNameCodex,
+		RouteMatchType:      "project",
+		RouteMatchValue:     "monitor",
+	})
+	s.seedRouteInjection(&model.KnowledgeInjection{
+		InjectionID:         "kci_other_match_value",
+		CapsuleID:           "kcap_existing",
+		DeliveryMethod:      "hook",
+		DeliveryMessageType: "system_handoff",
+		TargetAgent:         model.AgentNameCodex,
+		RouteMatchType:      "keyword",
+		RouteMatchValue:     "different",
+	})
+	payload := strings.ReplaceAll(`{
+		"schema_version":"paxl.envelope_payload.knowledge_capsule.v2",
+		"capsule":{
+			"capsule_id":"kcap_remote",
+			"source_node_id":"remote-node",
+			"source_session_id":"codex:source",
+			"source_agent":"codex",
+			"keyword":"monitor",
+			"title":"Monitor audit frontend integration",
+			"summary":"summary",
+			"content":"content",
+			"status":"active",
+			"created_at":"2026-06-22T00:00:00Z"
+		},
+		"route":{
+			"match_type":"keyword",
+			"match_value":"monitor",
+			"target_agent":"codex"
+		}
+	}`, "\n", "")
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/user/usr_1/envelopes/env_1":
+			return jsonResponse(fmt.Sprintf(`{
+				"data":{
+					"envelope":{
+						"envelope_id":"env_1",
+						"sender_user_id":"usr_sender",
+						"recipient_user_id":"usr_1",
+						"payload_type":"knowledge_capsule",
+						"payload_json":%s,
+						"status":"accepted"
+					}
+				},
+				"code":200,
+				"message":"ok"
+			}`, payload)), nil
+		default:
+			return nil, fmt.Errorf("unexpected manager request: %s %s", req.Method, req.URL.Path)
+		}
+	})
+	envelopeFacade := NewEnvelopeFacade(client, s.store)
+
+	resp, err := envelopeFacade.Accept(s.ctx, &AcceptEnvelopeRequest{EnvelopeID: "env_1"})
+
+	s.Require().NoError(err)
+	s.Equal("kcap_existing", resp.Capsule.CapsuleID)
+	s.Require().NotNil(resp.Injection)
+	s.NotContains(resp.Injection.InjectionID, "kci_other")
+	s.Equal("kcap_existing", resp.Injection.CapsuleID)
+	s.Equal("keyword", resp.Injection.RouteMatchType)
+	s.Equal("monitor", resp.Injection.RouteMatchValue)
+	injections, err := s.store.ListKnowledgeInjections(
+		s.ctx,
+		&store.ListKnowledgeInjectionsRequest{},
+	)
+	s.Require().NoError(err)
+	s.Require().Len(injections.Injections, 7)
+}
+
 func (s *EnvelopeFacadeSuite) TestAcceptAllCanSyncAcceptedEnvelopes() {
 	payload := strings.ReplaceAll(`{
 		"schema_version":"paxl.envelope_payload.knowledge_capsule.v1",
@@ -853,6 +994,23 @@ func (s *EnvelopeFacadeSuite) seedCapsule(capsuleID string) {
 			Summary:         "summary",
 			Content:         "content",
 		}},
+	)
+	s.Require().NoError(err)
+}
+
+func (s *EnvelopeFacadeSuite) seedRouteInjection(injection *model.KnowledgeInjection) {
+	if injection.SourceSessionID == "" {
+		injection.SourceSessionID = "remote_envelope:env_1"
+	}
+	if injection.SourceAgent == "" {
+		injection.SourceAgent = model.AgentNameCodex
+	}
+	if injection.Status == "" {
+		injection.Status = "pending"
+	}
+	_, err := s.store.CreateKnowledgeInjection(
+		s.ctx,
+		&store.CreateKnowledgeInjectionRequest{Injection: injection},
 	)
 	s.Require().NoError(err)
 }
