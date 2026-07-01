@@ -138,6 +138,13 @@ func (s *CommandSuite) SetupTest() {
 	s.stdout.Reset()
 	s.stderr.Reset()
 	s.T().Setenv("HOME", s.T().TempDir())
+	oldScheduler := scheduleSessionQueryBackgroundSync
+	scheduleSessionQueryBackgroundSync = func(*sessionQueryBackgroundSyncRequest) error {
+		return nil
+	}
+	s.T().Cleanup(func() {
+		scheduleSessionQueryBackgroundSync = oldScheduler
+	})
 }
 
 func (s *CommandSuite) TestRunWritesExecutionLogUnderPaxHome() {
@@ -1579,6 +1586,96 @@ func (s *CommandSuite) TestSessionQuerySearchesCachedSessionElements() {
 	s.Contains(s.stdout.String(), `"content_text":"docker rollout plan"`)
 }
 
+func (s *CommandSuite) TestSessionQuerySchedulesBackgroundSyncByDefault() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	_, err = opened.Store.UpsertSessions(context.Background(), &store.UpsertSessionsRequest{
+		Agent: model.AgentNameHermes,
+		Sessions: []*model.Session{
+			{NativeID: "query-background", Title: "Background query"},
+		},
+	})
+	s.Require().NoError(err)
+	_, err = opened.Store.ReplaceSessionElements(
+		context.Background(),
+		&store.ReplaceSessionElementsRequest{
+			SessionID: "hermes:query-background",
+			Elements: []*model.Element{
+				{Seq: 1, Type: "message", Role: "user", ContentText: "background refresh token"},
+			},
+		},
+	)
+	s.Require().NoError(err)
+	s.Require().NoError(opened.Store.Close())
+	var scheduled *sessionQueryBackgroundSyncRequest
+	scheduleSessionQueryBackgroundSync = func(req *sessionQueryBackgroundSyncRequest) error {
+		copied := *req
+		scheduled = &copied
+		return nil
+	}
+
+	err = run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"session", "query", "background",
+			"--agent", "hermes",
+			"--format", "jsonl",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Require().NotNil(scheduled)
+	s.Equal(dbPath, scheduled.DBPath)
+	s.Equal(model.AgentNameHermes, scheduled.Agent)
+	s.Equal(10, scheduled.Limit)
+	s.Contains(s.stdout.String(), `"session_id":"hermes:query-background"`)
+}
+
+func (s *CommandSuite) TestSessionQueryCanDisableBackgroundSync() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	s.seedStoredSessions(dbPath, []*model.Session{
+		{NativeID: "query-no-background", Title: "No background query"},
+	})
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	_, err = opened.Store.ReplaceSessionElements(
+		context.Background(),
+		&store.ReplaceSessionElementsRequest{
+			SessionID: "codex:query-no-background",
+			Elements: []*model.Element{
+				{Seq: 1, Type: "message", Role: "user", ContentText: "no background token"},
+			},
+		},
+	)
+	s.Require().NoError(err)
+	s.Require().NoError(opened.Store.Close())
+	called := false
+	scheduleSessionQueryBackgroundSync = func(*sessionQueryBackgroundSyncRequest) error {
+		called = true
+		return nil
+	}
+
+	err = run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"session", "query", "background",
+			"--no-background-sync",
+			"--format", "jsonl",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.False(called)
+	s.Contains(s.stdout.String(), `"session_id":"codex:query-no-background"`)
+}
+
 func (s *CommandSuite) TestSessionQueryFiltersCachedResultsByAgent() {
 	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
 	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
@@ -1646,6 +1743,11 @@ func (s *CommandSuite) TestSessionQuerySyncsCodexBeforeSearching() {
 		0o600,
 	))
 	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	called := false
+	scheduleSessionQueryBackgroundSync = func(*sessionQueryBackgroundSyncRequest) error {
+		called = true
+		return nil
+	}
 
 	err := run(
 		context.Background(),
@@ -1661,6 +1763,7 @@ func (s *CommandSuite) TestSessionQuerySyncsCodexBeforeSearching() {
 	)
 
 	s.Require().NoError(err)
+	s.False(called)
 	s.Contains(s.stdout.String(), `"session_id":"codex:smoke-query-sync"`)
 	s.Contains(s.stdout.String(), `"content_text":"needlequery sync transcript"`)
 }
