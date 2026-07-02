@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -136,6 +137,47 @@ func TestRenderSearchResultsTableSnippets(t *testing.T) {
 	}
 }
 
+func TestMemexRenderHandlerServesHTMLAndAssets(t *testing.T) {
+	svgPath := filepath.Join(t.TempDir(), "memex.graph.svg")
+	if err := os.WriteFile(svgPath, []byte(`<svg><text>memex</text></svg>`), 0o600); err != nil {
+		t.Fatalf("write svg: %v", err)
+	}
+	handler := newMemexRenderHandler(&facade.RenderMemexResponse{
+		HTML: `<html><body><img src="/assets/memex.graph.svg"></body></html>`,
+		Assets: []*facade.MemexRenderAsset{
+			{
+				URLPath:     "/assets/memex.graph.svg",
+				FilePath:    svgPath,
+				ContentType: "image/svg+xml",
+			},
+		},
+	})
+
+	htmlResp := httptest.NewRecorder()
+	handler.ServeHTTP(
+		htmlResp,
+		httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil),
+	)
+	if htmlResp.Code != http.StatusOK ||
+		!strings.Contains(htmlResp.Body.String(), "memex.graph.svg") {
+		t.Fatalf("html response = %d %q", htmlResp.Code, htmlResp.Body.String())
+	}
+
+	assetResp := httptest.NewRecorder()
+	handler.ServeHTTP(
+		assetResp,
+		httptest.NewRequestWithContext(
+			context.Background(),
+			http.MethodGet,
+			"/assets/memex.graph.svg",
+			nil,
+		),
+	)
+	if assetResp.Code != http.StatusOK || !strings.Contains(assetResp.Body.String(), "<svg>") {
+		t.Fatalf("asset response = %d %q", assetResp.Code, assetResp.Body.String())
+	}
+}
+
 func TestDownloadUpdateBinaryRejectsSizeMismatch(t *testing.T) {
 	client := commandRoundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -228,6 +270,18 @@ func (s *CommandSuite) TestAgentEnvPrintsHookEnvironmentPayload() {
 	s.Equal("hermes", env["PAXL_CALLER_AGENT"])
 	s.Equal("hermes", env["PAXL_AGENT"])
 	s.Contains(payload["additionalContext"], "paxl caller agent: hermes")
+}
+
+func (s *CommandSuite) TestMemexRenderRequiresHTMLFlag() {
+	err := run(
+		context.Background(),
+		[]string{"memex", "render"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().Error(err)
+	s.Contains(err.Error(), "--html is required")
 }
 
 func (s *CommandSuite) TestRunWritesCommandErrorsToExecutionLog() {

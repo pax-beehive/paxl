@@ -1,4 +1,4 @@
 interface:
   display_name: "Session Condense"
-  short_description: "Maintain qmd wiki from paxl sessions"
-  default_prompt: "Use $session-condense to run a maintenance pass that consumes changed paxl sessions, updates durable qmd wiki pages, and advances processed session cursors."
+  short_description: "Maintain and lint local memex"
+  default_prompt: "Use $session-condense to run a maintenance pass that consumes changed paxl sessions and .llm-wiki recall traces, extracts durable memex knowledge units, updates qmd wiki pages, backlinks, memex.graph.json, recall-index, inbox, lint, visualization artifacts, and advances processed cursors."
