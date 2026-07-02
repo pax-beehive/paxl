@@ -17,6 +17,11 @@ import (
 
 const memexRenderReadHeaderTimeout = 5 * time.Second
 
+var listenMemexHTML = func(ctx context.Context, network string, address string) (net.Listener, error) {
+	listenConfig := &net.ListenConfig{}
+	return listenConfig.Listen(ctx, network, address)
+}
+
 func newMemexCommand(stdout io.Writer, stderr io.Writer) *cli.Command {
 	return &cli.Command{
 		Name:  "memex",
@@ -95,8 +100,7 @@ func serveMemexHTML(
 	if port < 0 || port > 65535 {
 		return fmt.Errorf("port must be between 0 and 65535")
 	}
-	listenConfig := &net.ListenConfig{}
-	listener, err := listenConfig.Listen(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	listener, err := listenMemexHTML(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return fmt.Errorf("listen on %s:%d: %w", host, port, err)
 	}
@@ -119,6 +123,9 @@ func serveMemexHTML(
 		return fmt.Errorf("write memex render address: %w", err)
 	}
 	err = server.Serve(listener)
+	if errors.Is(err, net.ErrClosed) && ctx.Err() != nil {
+		err = nil
+	}
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

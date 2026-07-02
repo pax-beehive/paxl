@@ -49,6 +49,42 @@ func (s *MemexFacadeSuite) TestRenderHTMLRequiresWikiRoot() {
 	s.Contains(err.Error(), "wiki root")
 }
 
+func (s *MemexFacadeSuite) TestRenderHTMLAcceptsDirectWikiRoot() {
+	root := s.T().TempDir()
+	s.Require().NoError(os.MkdirAll(filepath.Join(root, "wiki"), 0o700))
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(root, "wiki", "index.qmd"),
+		[]byte("Plain memex note without heading."),
+		0o600,
+	))
+	memexFacade := facade.NewMemexFacade()
+
+	resp, err := memexFacade.Render(context.Background(), &facade.RenderMemexRequest{
+		WikiRoot: filepath.Join(root, "wiki"),
+		Format:   facade.MemexRenderFormatHTML,
+	})
+
+	s.Require().NoError(err)
+	s.Contains(resp.HTML, "index")
+	s.Contains(resp.HTML, "Plain memex note without heading.")
+	s.Empty(resp.Assets)
+}
+
+func (s *MemexFacadeSuite) TestRenderRejectsInvalidRequest() {
+	memexFacade := facade.NewMemexFacade()
+
+	_, err := memexFacade.Render(context.Background(), nil)
+	s.Require().Error(err)
+	s.Contains(err.Error(), "request is required")
+
+	_, err = memexFacade.Render(context.Background(), &facade.RenderMemexRequest{
+		WikiRoot: s.T().TempDir(),
+		Format:   facade.MemexRenderFormatUnknown,
+	})
+	s.Require().Error(err)
+	s.Contains(err.Error(), "unsupported memex render format")
+}
+
 func (s *MemexFacadeSuite) writeMemexFixture(root string) {
 	s.Require().NoError(os.MkdirAll(filepath.Join(root, "wiki", "concepts"), 0o700))
 	s.Require().NoError(os.MkdirAll(filepath.Join(root, ".llm-wiki"), 0o700))
