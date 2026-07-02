@@ -23,6 +23,15 @@ RECALL_INDEX_SCHEMA = "paxl.memex.recall-index.v1"
 LINT_SCHEMA = "paxl.memex.lint.v1"
 INBOX_SCHEMA = "paxl.memex.inbox.v1"
 VISUALIZATION_SCHEMA = "paxl.memex.visualization.v1"
+INDEX_DIRNAME = "_indexes"
+TRAIL_REQUIRED_SECTIONS = [
+    "Question",
+    "Search Trail",
+    "Rationale Summary",
+    "Findings",
+    "Reusable Result",
+    "Related",
+]
 
 
 def utc_now() -> str:
@@ -352,7 +361,11 @@ def parse_frontmatter(content: str) -> dict[str, str]:
 def qmd_pages(layout: Layout) -> list[Path]:
     if not layout.wiki_dir.exists():
         return []
-    return sorted(path for path in layout.wiki_dir.rglob("*.qmd") if path.is_file())
+    return sorted(
+        path
+        for path in layout.wiki_dir.rglob("*.qmd")
+        if path.is_file() and INDEX_DIRNAME not in path.relative_to(layout.wiki_dir).parts
+    )
 
 
 def build_node_aliases(nodes: dict[str, dict[str, Any]]) -> dict[str, str]:
@@ -756,11 +769,409 @@ def xml_escape(value: str) -> str:
     return xml.sax.saxutils.escape(value, {'"': "&quot;"})
 
 
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+
+
+def parse_list_scalar(value: str) -> list[str]:
+    value = value.strip()
+    if not value:
+        return []
+    if value.startswith("[") and value.endswith("]"):
+        value = value[1:-1]
+    return [item.strip().strip('"').strip("'") for item in value.split(",") if item.strip()]
+
+
+def strip_frontmatter(content: str) -> str:
+    return FRONTMATTER_RE.sub("", content, count=1)
+
+
+def extract_heading_title(path: Path, content: str) -> str:
+    for line in strip_frontmatter(content).splitlines():
+        match = HEADING_RE.match(line.strip())
+        if match and len(match.group(1)) == 1:
+            return match.group(2).strip()
+    return path.stem.replace("-", " ").title()
+
+
+def extract_preview(content: str) -> str:
+    for line in strip_frontmatter(content).splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("- "):
+            continue
+        return collapse_ws(stripped)[:240]
+    return ""
+
+
+def collapse_ws(value: str) -> str:
+    return " ".join(value.split())
+
+
+def extract_sections(content: str) -> dict[str, str]:
+    sections: dict[str, list[str]] = {}
+    current = ""
+    for line in strip_frontmatter(content).splitlines():
+        match = HEADING_RE.match(line.strip())
+        if match:
+            current = normalize_section(match.group(2))
+            sections.setdefault(current, [])
+            continue
+        if current:
+            sections[current].append(line)
+    return {key: "\n".join(lines).strip() for key, lines in sections.items()}
+
+
+def normalize_section(value: str) -> str:
+    return " ".join(value.lower().split())
+
+
+def wikilinks(content: str) -> list[str]:
+    links: list[str] = []
+    for raw in WIKILINK_RE.findall(content):
+        target = raw.split("|", 1)[0].strip()
+        if target and target not in links:
+            links.append(target)
+    return links
+
+
+def page_records(layout: Layout) -> list[dict[str, Any]]:
+    graph = load_graph(layout)
+    nodes_by_path = {
+        str(node.get("path")): node
+        for node in graph.get("nodes", []) or []
+        if node.get("path")
+    }
+    nodes_by_id = {
+        str(node.get("id")): node
+        for node in graph.get("nodes", []) or []
+        if node.get("id")
+    }
+    records: list[dict[str, Any]] = []
+    for page in qmd_pages(layout):
+        rel = relpath(page, layout.project_root)
+        content = page.read_text(encoding="utf-8")
+        fm = parse_frontmatter(content)
+        node = nodes_by_path.get(rel) or nodes_by_id.get(fm.get("id", ""))
+        page_type = fm.get("type") or (node or {}).get("type") or infer_page_type(rel)
+        title = fm.get("title") or (node or {}).get("title") or extract_heading_title(page, content)
+        aliases = parse_list_scalar(fm.get("aliases", ""))
+        tags = parse_list_scalar(fm.get("tags", "")) or parse_list_scalar(fm.get("topics", ""))
+        if not tags:
+            tags = [str(topic) for topic in (node or {}).get("topics", []) or []]
+        sections = extract_sections(content)
+        records.append(
+            {
+                "id": fm.get("id") or (node or {}).get("id") or "",
+                "type": page_type,
+                "title": title,
+                "aliases": aliases,
+                "tags": tags,
+                "summary": fm.get("summary") or (node or {}).get("summary") or extract_preview(content),
+                "status": fm.get("status") or (node or {}).get("status") or "",
+                "path": rel,
+                "query": fm.get("query", ""),
+                "links": wikilinks(content),
+                "sections": sections,
+                "node": node or {},
+            }
+        )
+    return records
+
+
+def infer_page_type(rel_path: str) -> str:
+    parts = Path(rel_path).parts
+    if "trails" in parts:
+        return "query-trail"
+    if "concepts" in parts:
+        return "concept"
+    if "decisions" in parts:
+        return "decision"
+    if "failures" in parts:
+        return "failure"
+    return "qmd"
+
+
+def qmd_line(label: str, value: Any) -> str:
+    if isinstance(value, list):
+        rendered = ", ".join(str(item) for item in value if str(item))
+    else:
+        rendered = str(value or "")
+    return f"{label}: {rendered}"
+
+
+def trail_missing_sections(record: dict[str, Any]) -> list[str]:
+    sections = record.get("sections", {})
+    missing: list[str] = []
+    for section in TRAIL_REQUIRED_SECTIONS:
+        if not sections.get(normalize_section(section)):
+            missing.append(section)
+    return missing
+
+
+def render_all_index(layout: Layout, records: list[dict[str, Any]]) -> str:
+    lines = generated_header("All Memex Pages")
+    lines.extend(
+        [
+            "This grep-native index materializes page metadata so agents can use `rg`, `grep`, and qmd reads without parsing JSON.",
+            "",
+        ]
+    )
+    for record in sorted(records, key=lambda item: (item["type"], item["title"], item["path"])):
+        lines.extend(
+            [
+                f"## {record['title']}",
+                qmd_line("id", record["id"]),
+                qmd_line("type", record["type"]),
+                qmd_line("title", record["title"]),
+                qmd_line("aliases", record["aliases"]),
+                qmd_line("tags", record["tags"]),
+                qmd_line("status", record["status"]),
+                qmd_line("summary", record["summary"]),
+                qmd_line("path", record["path"]),
+                qmd_line("related", record["links"]),
+                "",
+            ]
+        )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_concepts_index(records: list[dict[str, Any]]) -> str:
+    lines = generated_header("Concept And Knowledge Pages")
+    lines.extend(["Use this index for broad `rg` entry points across non-trail qmd pages.", ""])
+    for record in sorted(records, key=lambda item: (item["type"], item["title"])):
+        if record["type"] == "query-trail":
+            continue
+        lines.extend(
+            [
+                f"## {record['title']}",
+                qmd_line("id", record["id"]),
+                qmd_line("type", record["type"]),
+                qmd_line("tags", record["tags"]),
+                qmd_line("aliases", record["aliases"]),
+                qmd_line("summary", record["summary"]),
+                qmd_line("path", record["path"]),
+                "",
+            ]
+        )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_trails_index(records: list[dict[str, Any]]) -> str:
+    lines = generated_header("Query Trails")
+    lines.extend(["Query trails are reusable retrieval paths with grep-visible questions and reusable results.", ""])
+    for record in sorted(records, key=lambda item: item["title"]):
+        if record["type"] != "query-trail":
+            continue
+        sections = record.get("sections", {})
+        missing = trail_missing_sections(record)
+        lines.extend(
+            [
+                f"## {record['title']}",
+                qmd_line("id", record["id"]),
+                "type: query-trail",
+                qmd_line("query", record["query"] or collapse_ws(sections.get("question", ""))),
+                qmd_line("tags", record["tags"]),
+                qmd_line("path", record["path"]),
+                qmd_line("search", collapse_ws(sections.get("search trail", ""))),
+                qmd_line("rationale", collapse_ws(sections.get("rationale summary", ""))),
+                qmd_line("findings", collapse_ws(sections.get("findings", ""))),
+                qmd_line("reusable", collapse_ws(sections.get("reusable result", ""))),
+                qmd_line("missing", missing),
+                "",
+            ]
+        )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def build_backlinks(layout: Layout, records: list[dict[str, Any]]) -> dict[str, dict[str, list[str]]]:
+    graph = load_graph(layout)
+    path_by_id = {
+        record["id"]: record["path"]
+        for record in records
+        if record.get("id")
+    }
+    backlinks: dict[str, dict[str, list[str]]] = {
+        record["path"]: {"inbound": [], "outbound": []}
+        for record in records
+    }
+    for edge in graph.get("edges", []) or []:
+        source = str(edge.get("source", ""))
+        target = str(edge.get("target", ""))
+        edge_type = str(edge.get("type", ""))
+        source_path = path_by_id.get(source)
+        target_path = path_by_id.get(target)
+        if source_path:
+            backlinks.setdefault(source_path, {"inbound": [], "outbound": []})["outbound"].append(
+                f"{source} {edge_type} {target}"
+            )
+        if target_path:
+            backlinks.setdefault(target_path, {"inbound": [], "outbound": []})["inbound"].append(
+                f"{source} {edge_type} {target}"
+            )
+    return backlinks
+
+
+def render_backlinks_index(layout: Layout, records: list[dict[str, Any]]) -> str:
+    backlinks = build_backlinks(layout, records)
+    lines = generated_header("Materialized Backlinks")
+    lines.extend(["Backlinks are generated qmd so agents do not need to parse `memex.graph.json`.", ""])
+    for record in sorted(records, key=lambda item: item["path"]):
+        links = backlinks.get(record["path"], {"inbound": [], "outbound": []})
+        lines.extend([f"## {record['title']}", qmd_line("page", record["path"])])
+        for inbound in links["inbound"]:
+            lines.append(qmd_line("inbound", inbound))
+        for outbound in links["outbound"]:
+            lines.append(qmd_line("outbound", outbound))
+        if not links["inbound"] and not links["outbound"]:
+            lines.append("links: none")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_reasoning_paths_index(layout: Layout) -> str:
+    lines = generated_header("Materialized Reasoning Paths")
+    lines.extend(
+        [
+            "Recall traces are private raw input under `.llm-wiki/`; this qmd file is the grep-native consumption surface.",
+            "",
+        ]
+    )
+    traces = load_traces(layout)
+    if not traces:
+        lines.extend(["No recall traces found.", ""])
+        return "\n".join(lines).rstrip() + "\n"
+    for path, trace in traces:
+        trace_path = relpath(path, layout.project_root)
+        used_edges = [
+            f"{edge.get('source', '')} {edge.get('type', '')} {edge.get('target', '')}"
+            for edge in trace.get("usedEdges", []) or []
+            if isinstance(edge, dict)
+        ]
+        lines.extend(
+            [
+                f"## {trace.get('question', trace_path)}",
+                qmd_line("trace", trace_path),
+                qmd_line("created_at", trace.get("createdAt", "")),
+                qmd_line("Entry Question", trace.get("question", "")),
+                qmd_line("Reused Trails", trace.get("usedTrails", []) or []),
+                qmd_line("Used Nodes", trace.get("usedNodes", []) or []),
+                qmd_line("Traversed Edges", used_edges),
+                qmd_line("Answer Sources", trace.get("answerSources", []) or []),
+                qmd_line("Answer Summary", trace.get("answerSummary", "")),
+                qmd_line("fallback_session_search", trace.get("fallbackSessionSearch", False)),
+                "",
+            ]
+        )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_maintenance_index(
+    layout: Layout,
+    records: list[dict[str, Any]],
+    lint: dict[str, Any],
+    inbox: dict[str, Any],
+) -> str:
+    lines = generated_header("Memex Maintenance")
+    lines.extend(["Generated maintenance qmd for weak trails, lint findings, and recall-demand inbox items.", ""])
+    lines.extend(["## Weak Trails", ""])
+    weak_count = 0
+    for record in sorted(records, key=lambda item: item["path"]):
+        if record["type"] != "query-trail":
+            continue
+        missing = trail_missing_sections(record)
+        if not missing:
+            continue
+        weak_count += 1
+        lines.extend(
+            [
+                qmd_line("- weak trail", record["path"]),
+                f"  {qmd_line('missing', missing)}",
+                "",
+            ]
+        )
+    if weak_count == 0:
+        lines.extend(["No weak trails found.", ""])
+    lines.extend(["## Lint Findings", ""])
+    for item in lint.get("issues", []) or []:
+        lines.append(
+            f"- {item.get('severity', '')}: {item.get('code', '')}: {item.get('message', '')}"
+        )
+    if not lint.get("issues"):
+        lines.append("No lint issues found.")
+    lines.extend(["", "## Inbox", ""])
+    for item in inbox.get("items", []) or []:
+        lines.extend(
+            [
+                f"- {item.get('type', '')}: {item.get('question', '')}",
+                f"  sourceTrace: {item.get('sourceTrace', '')}",
+                f"  reason: {item.get('reason', '')}",
+            ]
+        )
+    if not inbox.get("items"):
+        lines.append("No inbox items found.")
+    lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def generated_header(title: str) -> list[str]:
+    return [
+        "---",
+        "type: generated-index",
+        f"title: \"{title}\"",
+        f"updated_at: \"{utc_now()}\"",
+        "tags: [memex, grep-native, generated]",
+        "---",
+        "",
+        f"# {title}",
+        "",
+    ]
+
+
+def write_qmd_indexes(
+    layout: Layout,
+    lint: dict[str, Any],
+    inbox: dict[str, Any],
+) -> dict[str, Path]:
+    records = page_records(layout)
+    index_dir = layout.wiki_dir / INDEX_DIRNAME
+    index_dir.mkdir(parents=True, exist_ok=True)
+    outputs = {
+        "all": index_dir / "all.qmd",
+        "concepts": index_dir / "concepts.qmd",
+        "trails": index_dir / "trails.qmd",
+        "reasoningPaths": index_dir / "reasoning-paths.qmd",
+        "backlinks": index_dir / "backlinks.qmd",
+        "maintenance": index_dir / "maintenance.qmd",
+    }
+    rendered = {
+        "all": render_all_index(layout, records),
+        "concepts": render_concepts_index(records),
+        "trails": render_trails_index(records),
+        "reasoningPaths": render_reasoning_paths_index(layout),
+        "backlinks": render_backlinks_index(layout, records),
+        "maintenance": render_maintenance_index(layout, records, lint, inbox),
+    }
+    for name, path in outputs.items():
+        path.write_text(rendered[name], encoding="utf-8")
+    return outputs
+
+
+def command_indexes(args: argparse.Namespace) -> int:
+    layout = Layout(Path(args.wiki_root))
+    lint = read_json(layout.lint_path, lint_memex(layout))
+    inbox = read_json(layout.inbox_path, build_inbox(layout))
+    outputs = write_qmd_indexes(layout, lint, inbox)
+    print(json.dumps({name: str(path) for name, path in outputs.items()}, indent=2))
+    return 0
+
+
 def command_refresh(args: argparse.Namespace) -> int:
     layout = Layout(Path(args.wiki_root))
     write_json(layout.recall_index_path, build_recall_index(layout))
-    write_json(layout.lint_path, lint_memex(layout))
-    write_json(layout.inbox_path, build_inbox(layout))
+    lint = lint_memex(layout)
+    write_json(layout.lint_path, lint)
+    inbox = build_inbox(layout)
+    write_json(layout.inbox_path, inbox)
+    index_outputs = write_qmd_indexes(layout, lint, inbox)
     payload = visualization_data(layout)
     write_json(layout.visualization_path, payload)
     (layout.wiki_dir / "memex.graph.mmd").write_text(render_mermaid(payload), encoding="utf-8")
@@ -774,6 +1185,7 @@ def command_refresh(args: argparse.Namespace) -> int:
                 "visualization": str(layout.visualization_path),
                 "mermaid": str(layout.wiki_dir / "memex.graph.mmd"),
                 "svg": str(layout.wiki_dir / "memex.graph.svg"),
+                "indexes": {name: str(path) for name, path in index_outputs.items()},
             },
             indent=2,
         )
@@ -838,7 +1250,11 @@ def build_parser() -> argparse.ArgumentParser:
     visualize.add_argument("--output-svg", help="Optional SVG output path.")
     visualize.set_defaults(func=command_visualize)
 
-    refresh = subparsers.add_parser("refresh", help="Run aggregate, lint, inbox, and visualize.")
+    indexes = subparsers.add_parser("indexes", help="Generate grep-native qmd indexes.")
+    add_common(indexes)
+    indexes.set_defaults(func=command_indexes)
+
+    refresh = subparsers.add_parser("refresh", help="Run aggregate, lint, inbox, qmd indexes, and visualize.")
     add_common(refresh)
     refresh.set_defaults(func=command_refresh)
     return parser
