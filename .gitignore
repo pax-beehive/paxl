@@ -46,3 +46,5 @@ wiki/
 # Tool caches
 .cache/
 .golangci-cache/
+__pycache__/
+*.pyc

@@ -8,11 +8,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -136,6 +139,152 @@ func TestRenderSearchResultsTableSnippets(t *testing.T) {
 	}
 }
 
+func TestMemexRenderHandlerServesHTMLAndAssets(t *testing.T) {
+	svgPath := filepath.Join(t.TempDir(), "memex.graph.svg")
+	if err := os.WriteFile(svgPath, []byte(`<svg><text>memex</text></svg>`), 0o600); err != nil {
+		t.Fatalf("write svg: %v", err)
+	}
+	handler := newMemexRenderHandler(&facade.RenderMemexResponse{
+		HTML: `<html><body><img src="/assets/memex.graph.svg"></body></html>`,
+		Assets: []*facade.MemexRenderAsset{
+			{
+				URLPath:     "/assets/memex.graph.svg",
+				FilePath:    svgPath,
+				ContentType: "image/svg+xml",
+			},
+		},
+	})
+
+	htmlResp := httptest.NewRecorder()
+	handler.ServeHTTP(
+		htmlResp,
+		httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil),
+	)
+	if htmlResp.Code != http.StatusOK ||
+		!strings.Contains(htmlResp.Body.String(), "memex.graph.svg") {
+		t.Fatalf("html response = %d %q", htmlResp.Code, htmlResp.Body.String())
+	}
+
+	assetResp := httptest.NewRecorder()
+	handler.ServeHTTP(
+		assetResp,
+		httptest.NewRequestWithContext(
+			context.Background(),
+			http.MethodGet,
+			"/assets/memex.graph.svg",
+			nil,
+		),
+	)
+	if assetResp.Code != http.StatusOK || !strings.Contains(assetResp.Body.String(), "<svg>") {
+		t.Fatalf("asset response = %d %q", assetResp.Code, assetResp.Body.String())
+	}
+}
+
+func TestServeMemexHTMLServesUntilContextCancelled(t *testing.T) {
+	oldListenMemexHTML := listenMemexHTML
+	listener := newBlockingMemexListener("127.0.0.1:8787")
+	listenMemexHTML = func(context.Context, string, string) (net.Listener, error) {
+		return listener, nil
+	}
+	defer func() {
+		listenMemexHTML = oldListenMemexHTML
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stdout := &memexRenderURLWriter{written: make(chan string, 1)}
+	done := make(chan error, 1)
+	go func() {
+		done <- serveMemexHTML(ctx, stdout, "127.0.0.1", 0, &facade.RenderMemexResponse{
+			HTML: `<html><body>Paxl Memex</body></html>`,
+		})
+	}()
+
+	url := waitForMemexRenderURL(t, stdout.written, done)
+	if url != "http://127.0.0.1:8787/" {
+		t.Fatalf("memex render URL = %q", url)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serve memex html: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("serve memex html did not stop")
+	}
+}
+
+type memexRenderURLWriter struct {
+	written chan string
+}
+
+func (w *memexRenderURLWriter) Write(payload []byte) (int, error) {
+	select {
+	case w.written <- string(payload):
+	default:
+	}
+	return len(payload), nil
+}
+
+type blockingMemexListener struct {
+	addr      net.Addr
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func newBlockingMemexListener(address string) *blockingMemexListener {
+	return &blockingMemexListener{
+		addr:   memexListenerAddr(address),
+		closed: make(chan struct{}),
+	}
+}
+
+func (l *blockingMemexListener) Accept() (net.Conn, error) {
+	<-l.closed
+	return nil, net.ErrClosed
+}
+
+func (l *blockingMemexListener) Close() error {
+	l.closeOnce.Do(func() {
+		close(l.closed)
+	})
+	return nil
+}
+
+func (l *blockingMemexListener) Addr() net.Addr {
+	return l.addr
+}
+
+type memexListenerAddr string
+
+func (a memexListenerAddr) Network() string {
+	return "tcp"
+}
+
+func (a memexListenerAddr) String() string {
+	return string(a)
+}
+
+func waitForMemexRenderURL(t *testing.T, written <-chan string, done <-chan error) string {
+	t.Helper()
+	select {
+	case output := <-written:
+		fields := strings.Fields(output)
+		for _, field := range fields {
+			if strings.HasPrefix(field, "http://") {
+				return field
+			}
+		}
+		t.Fatalf("memex render URL was not printed: %q", output)
+	case err := <-done:
+		t.Fatalf("serve memex html stopped before printing URL: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatalf("memex render URL was not printed")
+	}
+	return ""
+}
+
 func TestDownloadUpdateBinaryRejectsSizeMismatch(t *testing.T) {
 	client := commandRoundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -228,6 +377,18 @@ func (s *CommandSuite) TestAgentEnvPrintsHookEnvironmentPayload() {
 	s.Equal("hermes", env["PAXL_CALLER_AGENT"])
 	s.Equal("hermes", env["PAXL_AGENT"])
 	s.Contains(payload["additionalContext"], "paxl caller agent: hermes")
+}
+
+func (s *CommandSuite) TestMemexRenderRequiresHTMLFlag() {
+	err := run(
+		context.Background(),
+		[]string{"memex", "render"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().Error(err)
+	s.Contains(err.Error(), "--html is required")
 }
 
 func (s *CommandSuite) TestRunWritesCommandErrorsToExecutionLog() {

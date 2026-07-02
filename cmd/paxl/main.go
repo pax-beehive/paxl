@@ -118,6 +118,7 @@ func newCommandWithDiagnostics(
 			newSetupCommand(stdout),
 			newAgentCommand(agentFacade, stdout, stderr, diagnostics),
 			newSessionCommand(stdout, stderr, diagnostics),
+			newMemexCommand(stdout, stderr),
 			newCapsuleCommand(stdin, stdout, stderr, diagnostics),
 			newInboxCommand(stdout),
 			newOutboxCommand(stdout),

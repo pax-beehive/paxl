@@ -1,4 +1,4 @@
 interface:
   display_name: "Wiki Recall"
-  short_description: "Recall context from qmd LLM wiki"
-  default_prompt: "Use $wiki-recall to recall relevant context from the local qmd LLM wiki."
+  short_description: "Rank recall context and record reuse"
+  default_prompt: "Use $wiki-recall to rank relevant context from the local qmd LLM wiki, recall-index, memex.graph.json, backlinks, and query trails, then write a recall trace before falling back to raw session search."

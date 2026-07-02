@@ -153,8 +153,22 @@ cp -R skills/wiki-recall ~/.codex/skills/
 
 - `knowledge-transfer`：迁移上下文、创建 capsule、注入 capsule、mirror session。
 - `session-search`：搜索本地 session history，并可把可复用 query trail 写入 qmd wiki。
-- `session-condense`：从变化的 paxl sessions 和 query trails 维护 Karpathy 风格的 qmd LLM wiki。
-- `wiki-recall`：先从 qmd LLM wiki 召回答案，再按需回退到 raw session search。
+- `session-condense`：维护本地 memex，从变化的 paxl sessions 中提取稳定的决策、
+  约束、事实、失败模式、命令、产物和开放问题，也消费 `.llm-wiki/recalls/`
+  里的查询复用记录，并更新 qmd wiki、双向链接、`memex.graph.json`、
+  recall-index、inbox、lint 和可视化产物。
+- `wiki-recall`：先从 qmd LLM wiki、`memex.graph.json`、双向链接和 query trails
+  召回答案，并结合 recall-index 做排序，然后写入 recall trace，让 memex 在后续
+  查询中越用越聪明；必要时再回退到 raw session search。
+
+本地预览维护后的 memex：
+
+```sh
+paxl memex render --html --port 8787
+```
+
+默认会读取当前项目的 `wiki/` 和 `.llm-wiki/`。也可以用 `--wiki-root` 指向其他
+项目根目录，或直接指向某个 `wiki/` 目录。
 
 ## 数据模型
 

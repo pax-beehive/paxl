@@ -162,10 +162,24 @@ cp -R skills/wiki-recall ~/.codex/skills/
   mirror sessions.
 - `session-search`: search local session history and optionally record reusable
   query trails into the qmd wiki.
-- `session-condense`: maintain a Karpathy-style qmd LLM wiki from changed paxl
-  sessions and query trails.
-- `wiki-recall`: recall answers from the qmd LLM wiki before falling back to raw
-  session search.
+- `session-condense`: maintain the local memex by extracting durable decisions,
+  constraints, facts, failures, commands, artifacts, and open questions from
+  changed paxl sessions and `.llm-wiki/recalls/`, then updating qmd wiki pages,
+  backlinks, `memex.graph.json`, recall-index, inbox, lint, and visualization
+  artifacts.
+- `wiki-recall`: recall answers from the qmd LLM wiki, `memex.graph.json`,
+  recall-index, backlinks, and query trails, then write recall traces so the
+  memex improves from later queries before falling back to raw session search.
+
+Preview the maintained memex locally:
+
+```sh
+paxl memex render --html --port 8787
+```
+
+The command reads `wiki/` and `.llm-wiki/` from the current project by default.
+Use `--wiki-root` to point at another project root or directly at a `wiki/`
+directory.
 
 ## Data Model
 
