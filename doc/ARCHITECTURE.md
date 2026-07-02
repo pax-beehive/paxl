@@ -184,6 +184,17 @@ their native CLIs instead of pretending they are attachable ACP sessions.
 
 ## Session Mirror
 
+`LocalCollaborationFacade` is the local multi-agent collaboration seam. It
+exposes user-intent operations such as moving session context between agents,
+then hides whether the implementation uses mirror capsules, native CLI resume,
+hook injection, or a future local memory surface. The interface returns a
+normalized communication view so callers can reason about source agent, target
+agent, session IDs, and delivery method without knowing the adapter transport.
+`MoveSessionContext` is for live continuity. `ShareSessionMemory` is for
+creating reusable memory first, then optionally delivering or queueing it for a
+target agent. Hook-time memory delivery is described with `LocalMemoryRoute`
+instead of the lower-level capsule `MatchType` and `MatchValue` fields.
+
 `session mirror` moves source session context into another agent session.
 
 Important semantics:

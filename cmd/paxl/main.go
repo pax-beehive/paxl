@@ -35,6 +35,18 @@ var authHTTPClient facade.AuthHTTPClient = http.DefaultClient
 var executablePath = os.Executable
 var scheduleSessionQueryBackgroundSync = startSessionQueryBackgroundSync
 
+type localCollaborationFacade interface {
+	MoveSessionContext(
+		context.Context,
+		*facade.MoveSessionContextRequest,
+		...func(*facade.Option),
+	) (*facade.MoveSessionContextResponse, error)
+}
+
+var newLocalCollaborationFacade = func(sessionStore *store.Store) localCollaborationFacade {
+	return facade.NewLocalCollaborationFacade(nil, sessionStore)
+}
+
 func main() {
 	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "Error:", err)
@@ -1692,19 +1704,47 @@ func sessionMirror(
 		return fmt.Errorf("open session store: %w", err)
 	}
 	defer closeStore(opened.Store)
-	capsuleFacade := facade.NewCapsuleFacade(nil, opened.Store)
-	resp, err := capsuleFacade.MirrorSession(
+	collaborationFacade := newLocalCollaborationFacade(opened.Store)
+	resp, err := collaborationFacade.MoveSessionContext(
 		runCtx,
-		req,
+		moveSessionContextRequestFromMirror(req),
 		facade.WithVerboseWriter(verboseWriter(cmd, stderr, diagnostics)),
 	)
 	if err != nil {
 		return fmt.Errorf("mirror session: %w", err)
 	}
-	if err := renderMirrorResult(stdout, resp, cmd.String("format")); err != nil {
+	mirrorResp := mirrorSessionResponseFromMoveContext(resp)
+	if err := renderMirrorResult(stdout, mirrorResp, cmd.String("format")); err != nil {
 		return fmt.Errorf("render mirror result: %w", err)
 	}
 	return nil
+}
+
+func moveSessionContextRequestFromMirror(
+	req *facade.MirrorSessionRequest,
+) *facade.MoveSessionContextRequest {
+	if req == nil {
+		return nil
+	}
+	return &facade.MoveSessionContextRequest{
+		SourceSessionID: req.SourceSessionID,
+		SourceAgent:     req.Agent,
+		TargetSessionID: req.TargetSessionID,
+		TargetAgent:     req.TargetAgent,
+	}
+}
+
+func mirrorSessionResponseFromMoveContext(
+	resp *facade.MoveSessionContextResponse,
+) *facade.MirrorSessionResponse {
+	if resp == nil {
+		return nil
+	}
+	return &facade.MirrorSessionResponse{
+		Capsule:   resp.Capsule,
+		Injection: resp.Injection,
+		Message:   resp.Message,
+	}
 }
 
 func sessionQuery(

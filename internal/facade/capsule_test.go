@@ -658,6 +658,281 @@ func (s *CapsuleFacadeSuite) TestMirrorSessionDeliversToExistingSession() {
 	s.Contains(string(rawPrompt), "Assistant context")
 }
 
+func (s *CapsuleFacadeSuite) TestLocalCollaborationMovesSessionContextThroughUnifiedHandoff() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	s.T().Setenv("PAXL_NODE_ID", "local-node")
+	collaborationFacade := facade.NewLocalCollaborationFacade(nil, s.store)
+	s.seedTargetSession()
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	s.installFakeCodex(capturePath)
+
+	resp, err := collaborationFacade.MoveSessionContext(
+		s.ctx,
+		&facade.MoveSessionContextRequest{
+			SourceSessionID: "codex:sess",
+			TargetSessionID: "codex:target",
+		},
+	)
+
+	s.Require().NoError(err)
+	s.Equal(facade.LocalCommunicationKindSessionHandoff, resp.Communication.Kind)
+	s.Equal("codex:sess", resp.Communication.SourceSessionID)
+	s.Equal("codex:target", resp.Communication.TargetSessionID)
+	s.Equal(model.AgentNameCodex, resp.Communication.SourceAgent)
+	s.Equal(model.AgentNameCodex, resp.Communication.TargetAgent)
+	s.Equal("cli_resume", resp.Communication.DeliveryMethod)
+	s.Contains(resp.Message, "system_handoff")
+
+	injections, err := s.store.ListKnowledgeInjections(
+		s.ctx,
+		&store.ListKnowledgeInjectionsRequest{TargetSessionID: "codex:target"},
+	)
+	s.Require().NoError(err)
+	s.Require().Len(injections.Injections, 1)
+	s.Equal("delivered", injections.Injections[0].Status)
+
+	rawPrompt, err := os.ReadFile(capturePath)
+	s.Require().NoError(err)
+	s.Contains(string(rawPrompt), "This context was mirrored by paxl")
+	s.Contains(string(rawPrompt), "From:\nNode: local-node\nAgent: codex\nSession: codex:sess")
+	s.Contains(string(rawPrompt), "To:\nNode: local-node\nAgent: codex\nSession: codex:target")
+	s.Contains(string(rawPrompt), "Bridge content")
+}
+
+func (s *CapsuleFacadeSuite) TestLocalCollaborationSharesSessionMemoryThroughReusableCapsule() {
+	s.T().Setenv("PAXL_NODE_ID", "local-node")
+	collaborationFacade := facade.NewLocalCollaborationFacade(nil, s.store)
+	s.seedTargetSession()
+
+	resp, err := collaborationFacade.ShareSessionMemory(
+		s.ctx,
+		&facade.ShareSessionMemoryRequest{
+			SourceSessionID: "codex:sess",
+			Keyword:         "bridge",
+			Local:           true,
+			Route: &facade.LocalMemoryRoute{
+				Kind:      facade.LocalMemoryRouteKindSession,
+				SessionID: "codex:target",
+			},
+			ActionItems: []string{"review the bridge memory"},
+		},
+	)
+
+	s.Require().NoError(err)
+	s.Equal(facade.LocalCommunicationKindMemoryHandoff, resp.Communication.Kind)
+	s.Equal("bridge", resp.Capsule.Keyword)
+	s.Contains(resp.Capsule.Content, "Bridge content")
+	s.Equal("pending", resp.Injection.Status)
+	s.Equal("hook", resp.Injection.DeliveryMethod)
+	s.Equal("session", resp.Injection.RouteMatchType)
+	s.Equal("codex:target", resp.Injection.TargetSessionID)
+	s.Equal(model.AgentNameCodex, resp.Injection.TargetAgent)
+	s.Empty(resp.Message)
+
+	hookFacade := facade.NewAgentHookFacade(s.store)
+	consumed, err := hookFacade.Run(s.ctx, &facade.AgentHookRequest{
+		Agent:     model.AgentNameCodex,
+		Event:     "user-prompt",
+		SessionID: "target",
+		Prompt:    "continue",
+	})
+	s.Require().NoError(err)
+	s.Contains(consumed.Message, "system_handoff")
+	s.Contains(consumed.Message, "Bridge content")
+	s.Contains(consumed.Message, "1. review the bridge memory")
+}
+
+func (s *CapsuleFacadeSuite) TestLocalCollaborationCreatesMemoryWithoutDelivery() {
+	collaborationFacade := facade.NewLocalCollaborationFacade(nil, s.store)
+
+	resp, err := collaborationFacade.ShareSessionMemory(
+		s.ctx,
+		&facade.ShareSessionMemoryRequest{
+			SourceSessionID: "codex:sess",
+			Keyword:         "bridge",
+			Local:           true,
+		},
+	)
+
+	s.Require().NoError(err)
+	s.Equal(facade.LocalCommunicationKindMemoryHandoff, resp.Communication.Kind)
+	s.Equal("codex:sess", resp.Communication.SourceSessionID)
+	s.Equal(model.AgentNameCodex, resp.Communication.SourceAgent)
+	s.Equal("bridge", resp.Capsule.Keyword)
+	s.Nil(resp.Injection)
+	s.Empty(resp.Message)
+}
+
+func (s *CapsuleFacadeSuite) TestLocalCollaborationQueuesExistingMemoryByKeywordRoute() {
+	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
+	created, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
+		SourceSessionID: "codex:sess",
+		Keyword:         "bridge",
+		Local:           true,
+	})
+	s.Require().NoError(err)
+	collaborationFacade := facade.NewLocalCollaborationFacade(nil, s.store)
+
+	resp, err := collaborationFacade.QueueMemoryDelivery(
+		s.ctx,
+		&facade.QueueMemoryDeliveryRequest{
+			CapsuleID: created.Capsule.CapsuleID,
+			Route: &facade.LocalMemoryRoute{
+				Kind:    facade.LocalMemoryRouteKindKeyword,
+				Agent:   model.AgentNameClaude,
+				Keyword: "handoff",
+			},
+			ActionItems: []string{"apply the queued memory"},
+		},
+	)
+
+	s.Require().NoError(err)
+	s.Equal(facade.LocalCommunicationKindMemoryHandoff, resp.Communication.Kind)
+	s.Equal("pending", resp.Injection.Status)
+	s.Equal("hook", resp.Injection.DeliveryMethod)
+	s.Equal("keyword", resp.Injection.RouteMatchType)
+	s.Equal("handoff", resp.Injection.RouteMatchValue)
+	s.Equal(model.AgentNameClaude, resp.Injection.TargetAgent)
+
+	hookFacade := facade.NewAgentHookFacade(s.store)
+	noop, err := hookFacade.Run(s.ctx, &facade.AgentHookRequest{
+		Agent:     model.AgentNameClaude,
+		Event:     "user-prompt",
+		SessionID: "claude-session",
+		Prompt:    "unrelated",
+	})
+	s.Require().NoError(err)
+	s.Empty(noop.Message)
+
+	consumed, err := hookFacade.Run(s.ctx, &facade.AgentHookRequest{
+		Agent:     model.AgentNameClaude,
+		Event:     "user-prompt",
+		SessionID: "claude-session",
+		Prompt:    "please use this handoff",
+	})
+	s.Require().NoError(err)
+	s.Contains(consumed.Message, "system_handoff")
+	s.Contains(consumed.Message, "Bridge content")
+	s.Contains(consumed.Message, "1. apply the queued memory")
+}
+
+func (s *CapsuleFacadeSuite) TestLocalCollaborationQueuesExistingMemoryByBroadRoutes() {
+	capsuleFacade := facade.NewCapsuleFacade(nil, s.store)
+	created, err := capsuleFacade.Create(s.ctx, &facade.CreateCapsuleRequest{
+		SourceSessionID: "codex:sess",
+		Keyword:         "bridge",
+		Local:           true,
+	})
+	s.Require().NoError(err)
+	collaborationFacade := facade.NewLocalCollaborationFacade(nil, s.store)
+	cases := []struct {
+		name       string
+		route      *facade.LocalMemoryRoute
+		matchType  string
+		matchValue string
+	}{
+		{
+			name:      "any",
+			route:     &facade.LocalMemoryRoute{Kind: facade.LocalMemoryRouteKindAny},
+			matchType: "any",
+		},
+		{
+			name: "project",
+			route: &facade.LocalMemoryRoute{
+				Kind:    facade.LocalMemoryRouteKindProject,
+				Agent:   model.AgentNameClaude,
+				Project: "paxl",
+			},
+			matchType:  "project",
+			matchValue: "paxl",
+		},
+	}
+
+	for _, tc := range cases {
+		s.Run(tc.name, func() {
+			resp, err := collaborationFacade.QueueMemoryDelivery(
+				s.ctx,
+				&facade.QueueMemoryDeliveryRequest{
+					CapsuleID: created.Capsule.CapsuleID,
+					Route:     tc.route,
+				},
+			)
+
+			s.Require().NoError(err)
+			s.Equal("pending", resp.Injection.Status)
+			s.Equal("hook", resp.Injection.DeliveryMethod)
+			s.Equal(tc.matchType, resp.Injection.RouteMatchType)
+			s.Equal(tc.matchValue, resp.Injection.RouteMatchValue)
+		})
+	}
+}
+
+func (s *CapsuleFacadeSuite) TestLocalCollaborationSharesSessionMemoryToNewSessionRoute() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	s.T().Setenv("PAXL_NODE_ID", "local-node")
+	collaborationFacade := facade.NewLocalCollaborationFacade(nil, s.store)
+	capturePath := filepath.Join(s.T().TempDir(), "prompt.txt")
+	s.installFakeClaude(capturePath)
+
+	resp, err := collaborationFacade.ShareSessionMemory(
+		s.ctx,
+		&facade.ShareSessionMemoryRequest{
+			SourceSessionID: "codex:sess",
+			Keyword:         "bridge",
+			Local:           true,
+			Route: &facade.LocalMemoryRoute{
+				Kind:  facade.LocalMemoryRouteKindNewSession,
+				Agent: model.AgentNameClaude,
+			},
+		},
+	)
+
+	s.Require().NoError(err)
+	s.Equal(facade.LocalCommunicationKindMemoryHandoff, resp.Communication.Kind)
+	s.Equal("delivered", resp.Injection.Status)
+	s.Equal("cli_new_session", resp.Injection.DeliveryMethod)
+	s.Equal(model.AgentNameClaude, resp.Injection.TargetAgent)
+	s.Contains(resp.Message, "system_handoff")
+	rawPrompt, err := os.ReadFile(capturePath)
+	s.Require().NoError(err)
+	s.Equal(resp.Message, string(rawPrompt))
+}
+
+func (s *CapsuleFacadeSuite) TestLocalCollaborationRejectsInvalidMemoryRoutes() {
+	collaborationFacade := facade.NewLocalCollaborationFacade(nil, s.store)
+	cases := []struct {
+		name string
+		req  *facade.QueueMemoryDeliveryRequest
+	}{
+		{name: "nil route", req: &facade.QueueMemoryDeliveryRequest{CapsuleID: "kcap_1"}},
+		{
+			name: "unknown route",
+			req: &facade.QueueMemoryDeliveryRequest{
+				CapsuleID: "kcap_1",
+				Route:     &facade.LocalMemoryRoute{Kind: facade.LocalMemoryRouteKindUnknown},
+			},
+		},
+		{
+			name: "unsupported route",
+			req: &facade.QueueMemoryDeliveryRequest{
+				CapsuleID: "kcap_1",
+				Route:     &facade.LocalMemoryRoute{Kind: "agent"},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		s.Run(tc.name, func() {
+			_, err := collaborationFacade.QueueMemoryDelivery(s.ctx, tc.req)
+			s.Error(err)
+		})
+	}
+}
+
 func (s *CapsuleFacadeSuite) TestMirrorSessionStartsNewTargetSession() {
 	if runtime.GOOS == "windows" {
 		s.T().Skip("The fake CLI script uses POSIX shell syntax.")

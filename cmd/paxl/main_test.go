@@ -29,6 +29,23 @@ type CommandSuite struct {
 	stderr bytes.Buffer
 }
 
+type fakeLocalCollaborationFacade struct {
+	req  *facade.MoveSessionContextRequest
+	resp *facade.MoveSessionContextResponse
+	err  error
+}
+
+func (f *fakeLocalCollaborationFacade) MoveSessionContext(
+	ctx context.Context,
+	req *facade.MoveSessionContextRequest,
+	opts ...func(*facade.Option),
+) (*facade.MoveSessionContextResponse, error) {
+	_ = ctx
+	_ = opts
+	f.req = req
+	return f.resp, f.err
+}
+
 func TestCommandSuite(t *testing.T) {
 	suite.Run(t, new(CommandSuite))
 }
@@ -3064,6 +3081,79 @@ func (s *CommandSuite) TestSessionMirrorDeliversHandoffToExistingSession() {
 	s.Contains(string(rawPrompt), "To:\nNode: local-node\nAgent: codex\nSession: codex:target")
 	s.Contains(string(rawPrompt), "Bridge context")
 	s.Contains(string(rawPrompt), "Bridge answer")
+}
+
+func (s *CommandSuite) TestSessionMirrorUsesLocalCollaborationFacade() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	oldFactory := newLocalCollaborationFacade
+	fakeFacade := &fakeLocalCollaborationFacade{
+		resp: &facade.MoveSessionContextResponse{
+			Capsule: &model.KnowledgeCapsule{
+				CapsuleID:       "kcap_1",
+				SourceNodeID:    "node_source",
+				SourceSessionID: "codex:sess-1",
+				SourceAgent:     model.AgentNameCodex,
+				Title:           "Session mirror: codex:sess-1",
+			},
+			Injection: &model.KnowledgeInjection{
+				InjectionID:     "mir_1",
+				TargetNodeID:    "node_target",
+				TargetAgent:     model.AgentNameClaude,
+				TargetSessionID: "claude:target",
+				DeliveryMethod:  "cli_resume",
+			},
+			Message: "system_handoff",
+		},
+	}
+	newLocalCollaborationFacade = func(_ *store.Store) localCollaborationFacade {
+		return fakeFacade
+	}
+	s.T().Cleanup(func() { newLocalCollaborationFacade = oldFactory })
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"session", "mirror", "codex:sess-1",
+			"--to-session", "claude:target",
+			"--format", "jsonl",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Require().NotNil(fakeFacade.req)
+	s.Equal("codex:sess-1", fakeFacade.req.SourceSessionID)
+	s.Equal("claude:target", fakeFacade.req.TargetSessionID)
+	s.Contains(s.stdout.String(), `"schemaVersion":"paxl.session.mirror.v1"`)
+	s.Contains(s.stdout.String(), `"mirrorId":"mir_1"`)
+}
+
+func (s *CommandSuite) TestSessionMirrorCollaborationConversionHelpers() {
+	req := moveSessionContextRequestFromMirror(&facade.MirrorSessionRequest{
+		SourceSessionID: "codex:sess-1",
+		Agent:           model.AgentNameCodex,
+		TargetSessionID: "claude:target",
+		TargetAgent:     model.AgentNameClaude,
+	})
+
+	s.Equal("codex:sess-1", req.SourceSessionID)
+	s.Equal(model.AgentNameCodex, req.SourceAgent)
+	s.Equal("claude:target", req.TargetSessionID)
+	s.Equal(model.AgentNameClaude, req.TargetAgent)
+	s.Nil(moveSessionContextRequestFromMirror(nil))
+
+	resp := mirrorSessionResponseFromMoveContext(&facade.MoveSessionContextResponse{
+		Capsule:   &model.KnowledgeCapsule{CapsuleID: "kcap_1"},
+		Injection: &model.KnowledgeInjection{InjectionID: "mir_1"},
+		Message:   "system_handoff",
+	})
+
+	s.Equal("kcap_1", resp.Capsule.CapsuleID)
+	s.Equal("mir_1", resp.Injection.InjectionID)
+	s.Equal("system_handoff", resp.Message)
+	s.Nil(mirrorSessionResponseFromMoveContext(nil))
 }
 
 func (s *CommandSuite) TestSessionMirrorStartsNewTargetSession() {
