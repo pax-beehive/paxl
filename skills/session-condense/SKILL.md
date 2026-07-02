@@ -36,6 +36,7 @@ wiki/
   decisions/
   failures/
   trails/
+  _indexes/
 .llm-wiki/
   session-condense-state.json
   recall-index.json
@@ -52,6 +53,9 @@ wiki/
   and wiki maintenance runs.
 - `trails/` stores reusable query artifacts produced by `session-search` or by
   this skill when a session-maintenance pass answers an implicit question.
+- `_indexes/` stores generated qmd indexes for agents that can only use `rg`,
+  `grep`, and normal file reads. These files materialize page metadata,
+  aliases, query trails, backlinks, reasoning paths, and maintenance gaps.
 - `memex.graph.json` stores a lightweight graph of reader-facing wiki pages and
   knowledge-unit links. It is publishable and must not contain raw transcripts or
   hidden run provenance.
@@ -202,6 +206,7 @@ Store processing state outside the reader-facing wiki:
   runs/
 wiki/
   index.qmd
+  _indexes/
 ```
 
 Use this state shape unless the repo already has a local convention:
@@ -235,13 +240,16 @@ python3 /path/to/wiki-recall/scripts/memex_tools.py aggregate --wiki-root .
 python3 /path/to/wiki-recall/scripts/memex_tools.py lint --wiki-root .
 python3 /path/to/wiki-recall/scripts/memex_tools.py inbox --wiki-root .
 python3 /path/to/wiki-recall/scripts/memex_tools.py visualize --wiki-root .
+python3 /path/to/wiki-recall/scripts/memex_tools.py indexes --wiki-root .
 python3 /path/to/wiki-recall/scripts/memex_tools.py mark-processed --wiki-root . \
   --trace .llm-wiki/recalls/TRACE.json \
   --outcome "promoted to durable qmd page" \
   --output-path wiki/concepts/example.qmd
 ```
 
-`refresh` runs aggregate, lint, inbox, and visualization in order.
+`refresh` runs aggregate, lint, inbox, qmd index generation, and visualization
+in order. Run `indexes` alone when only the generated qmd retrieval surface needs
+to be refreshed.
 
 ## Recall Trace Consumption
 
@@ -281,6 +289,13 @@ Use recall traces to make the memex improve with use:
   the result will likely be useful again.
 - Use `.llm-wiki/recall-index.json` to identify hot nodes, hot edges, frequently
   cited sources, repeated fallback questions, and common maintenance signals.
+- Use `wiki/_indexes/reasoning-paths.qmd` as the grep-native form of recall
+  trace consumption. It should expose prior questions, reused trails, used
+  nodes, traversed edges, answer sources, and summaries without requiring future
+  agents to parse JSON.
+- Use `wiki/_indexes/backlinks.qmd` and `wiki/_indexes/all.qmd` to make
+  relationship traversal, aliases, tags, summaries, and page paths searchable
+  with normal text tools.
 - Use `.llm-wiki/inbox.json` as the weak-answer queue. Each item must be
   promoted, fixed, merged, or explicitly recorded as no-op in a run log.
 - Record processed recall trace paths and content hashes in
@@ -331,11 +346,10 @@ The generated SVG uses node radius for recall count, edge stroke width for
 traversal count, and red nodes for lint issues. The Mermaid file gives a compact
 text-reviewable graph.
 
-When the local `paxl` binary includes memex rendering, inspect the generated
-reader-facing pages and private maintenance artifacts with:
+Inspect the generated reader-facing retrieval surface with ordinary text tools:
 
 ```sh
-paxl memex render --html --port 8787
+rg -n "keyword|alias|Entry Question|Reused Trails|inbound:|outbound:" wiki/_indexes wiki
 ```
 
 ## Workflow
@@ -388,8 +402,8 @@ A maintenance pass is incomplete unless one of these is true:
   as no-op usage signals, or listed in the run log with a clear reason for no
   promotion.
 - `.llm-wiki/recall-index.json`, `.llm-wiki/inbox.json`,
-  `.llm-wiki/memex-lint.json`, and visualization artifacts were refreshed after
-  qmd or graph changes.
+  `.llm-wiki/memex-lint.json`, `wiki/_indexes/*.qmd`, and visualization
+  artifacts were refreshed after qmd or graph changes.
 - Recent candidate sessions were listed, all were already processed at the same
   `currentSyncVersion`, and `log.qmd` records a no-op maintenance run.
 - Session listing or fetching failed; the final answer states the exact command
@@ -461,8 +475,8 @@ The short answer future agents should reuse.
 - Keep recall traces in `.llm-wiki/recalls/`; summarize only durable lessons in
   reader-facing qmd pages.
 - Keep `.llm-wiki/recall-index.json`, `.llm-wiki/inbox.json`,
-  `.llm-wiki/memex-lint.json`, and visualization artifacts generated from the
-  current qmd graph and recall traces.
+  `.llm-wiki/memex-lint.json`, `wiki/_indexes/*.qmd`, and visualization
+  artifacts generated from the current qmd graph and recall traces.
 - If a session is noisy or task-specific with no durable knowledge, record it as
   processed in state and do not change the wiki.
 - Treat the wiki as a maintained codebase: keep links current, remove stale

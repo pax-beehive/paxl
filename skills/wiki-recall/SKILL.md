@@ -5,9 +5,11 @@ description: Recall, retrieve, remember, look back, or recover context from a lo
 
 # Wiki Recall
 
-Use the local qmd LLM wiki and `memex.graph.json` as the first recall layer.
-This skill consumes the wiki produced by `session-condense` and query trails
-produced by `session-search`. It should answer from durable wiki pages and graph
+Use the local qmd LLM wiki as the first recall layer. Agents should be able to
+find useful context with `rg`, `grep`, and normal qmd reads even when they never
+call a custom search command. This skill consumes the wiki produced by
+`session-condense` and query trails produced by `session-search`. It should
+answer from durable wiki pages, generated qmd indexes, trails, and explicit
 relationships before searching raw sessions, then record what was reused so the
 memex becomes smarter from later maintenance passes.
 
@@ -15,29 +17,24 @@ memex becomes smarter from later maintenance passes.
 
 1. Find the wiki root. Prefer the user's explicit path; otherwise look for
    `wiki/`, `docs/wiki/`, `.llm-wiki/`, or directories containing `.qmd` files.
-2. Read `memex.graph.json` first when it exists. Treat it as the machine map of
-   reader-facing nodes and relationships.
-3. Build or read `.llm-wiki/recall-index.json` from recall traces when it
-   exists. Treat it as usage memory: nodes, edges, trails, and sources that
-   previous questions actually reused.
-4. Rank candidate graph nodes with `memex_tools.py rank` when the graph exists.
-   Combine lexical match with recall frequency and traversed edge frequency.
-5. Read `index.qmd` when it exists. Treat it as the human map of concepts,
+2. Read `wiki/_indexes/*.qmd` when present. Treat these generated files as the
+   grep-native map of pages, trails, aliases, backlinks, reasoning paths, and
+   maintenance gaps.
+3. Read `index.qmd` when it exists. Treat it as the human map of concepts,
    decisions, failures, trails, and high-value entry points.
-6. Select candidate graph nodes by matching the user question against node
-   `title`, `summary`, `topics`, `type`, and `path`.
-7. Follow graph edges one hop from the strongest candidates. Include both
-   outgoing and incoming neighbors when the edge type is relevant.
-8. Read the candidate node pages and neighbor pages before broad text search.
+4. Search qmd files with `rg` or `grep`, starting with `wiki/_indexes` and then
+   the rest of `wiki`. Match query terms against titles, aliases, tags, paths,
+   questions, reusable results, and related/backlink lines.
+5. Read the candidate pages and neighbor pages before broad text search.
    Prefer `concept`, `decision`, `failure`, and `query-trail` pages over raw
    logs.
-9. Search qmd files with `rg`, `grep`, and normal file reads when the graph or
-   index does not surface enough context.
-10. Read `log.qmd` only for recent changes or chronology-sensitive questions.
-11. Answer from the wiki with file paths and headings as evidence.
-12. Write a recall trace when the answer used graph nodes, qmd pages, query
+6. Read `memex.graph.json` only as supporting structure when qmd indexes are
+   missing or contradictory. The qmd indexes are the preferred retrieval surface.
+7. Read `log.qmd` only for recent changes or chronology-sensitive questions.
+8. Answer from the wiki with file paths and headings as evidence.
+9. Write a recall trace when the answer used graph nodes, qmd pages, query
     trails, fallback session search, or maintenance-worthy gaps.
-13. Use `session-search` only when the wiki is missing, stale, or contradicts
+10. Use `session-search` only when the wiki is missing, stale, or contradicts
    itself.
 
 ## Graph Recall
@@ -88,7 +85,13 @@ the graph to choose which qmd pages to read, then answer from those pages.
 
 ## Recall Ranking
 
-When `.llm-wiki/recalls/*.json` exists, build the usage index before answering:
+When `wiki/_indexes/reasoning-paths.qmd` exists, prefer it as the usage-memory
+surface. It materializes prior recall traces into qmd lines that `rg` can find:
+entry questions, reused trails, used nodes, traversed edges, answer sources, and
+answer summaries.
+
+The JSON usage index remains useful for maintainers and deterministic tooling.
+When `.llm-wiki/recalls/*.json` exists, it can be rebuilt with:
 
 ```sh
 python3 /path/to/wiki-recall/scripts/memex_tools.py aggregate --wiki-root .
@@ -108,13 +111,13 @@ pages before responding. The ranking combines:
 Examples:
 
 ```sh
-python3 /path/to/wiki-recall/scripts/memex_tools.py aggregate --wiki-root .
-python3 /path/to/wiki-recall/scripts/memex_tools.py rank --wiki-root . --query "keyword or question"
-jq '.nodes[] | {id,type,title,topics,path,summary,status}' wiki/memex.graph.json
-jq '.edges[] | select(.source=="NODE_ID" or .target=="NODE_ID")' wiki/memex.graph.json
-rg -n "keyword|related phrase" wiki docs/wiki
-rg -n "type: query-trail|Reusable Result|Question" wiki/trails docs/wiki
+rg -n "keyword|related phrase" wiki/_indexes wiki docs/wiki
+rg -n "aliases:|tags:|path:|related:" wiki/_indexes/all.qmd
+rg -n "Entry Question|Reused Trails|Answer Sources|keyword" wiki/_indexes/reasoning-paths.qmd
+rg -n "inbound:|outbound:|page: wiki/concepts/example.qmd" wiki/_indexes/backlinks.qmd
+rg -n "type: query-trail|Reusable Result|Question|reusable:" wiki/_indexes wiki/trails docs/wiki
 find wiki docs/wiki -name '*.qmd' -maxdepth 4
+python3 /path/to/wiki-recall/scripts/memex_tools.py indexes --wiki-root .
 python3 /path/to/wiki-recall/scripts/memex_tools.py write-trace --wiki-root . \
   --question "What did we decide about local memex?" \
   --used-node decision-keep-local-memex-in-session-condense \

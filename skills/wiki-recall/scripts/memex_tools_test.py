@@ -36,6 +36,7 @@ title: "Index"
 type: concept
 id: concept-alpha
 title: "Alpha"
+aliases: [retrieval as reasoning, 检索即推理]
 updated_at: "2026-07-02T00:00:00Z"
 ---
 
@@ -54,6 +55,38 @@ updated_at: "2026-07-02T00:00:00Z"
 ---
 
 # Beta
+""",
+            encoding="utf-8",
+        )
+        (self.root / "wiki" / "trails").mkdir(parents=True)
+        (self.root / "wiki" / "trails" / "alpha.qmd").write_text(
+            """---
+type: query-trail
+query: "How does alpha recall work?"
+tags: [alpha, recall]
+---
+
+# Query Trail: Alpha Recall
+
+## Question
+
+How does alpha recall work?
+
+## Search Trail
+
+- Ran `rg "alpha" wiki`.
+
+## Rationale Summary
+
+Alpha is the durable concept page connected to beta.
+
+## Findings
+
+- Alpha links to beta.
+
+## Reusable Result
+
+Use Alpha as the grep-native entry point for retrieval as reasoning.
 """,
             encoding="utf-8",
         )
@@ -87,10 +120,20 @@ updated_at: "2026-07-02T00:00:00Z"
                     "status": "active",
                     "topics": ["beta"],
                 },
+                {
+                    "id": "trail-alpha",
+                    "type": "query-trail",
+                    "path": "wiki/trails/alpha.qmd",
+                    "title": "Alpha Recall Trail",
+                    "summary": "Reusable trail for alpha recall.",
+                    "status": "active",
+                    "topics": ["alpha", "recall"],
+                },
             ],
             "edges": [
                 {"source": "index-test", "target": "concept-alpha", "type": "mentions"},
                 {"source": "concept-alpha", "target": "concept-beta", "type": "relates_to"},
+                {"source": "trail-alpha", "target": "concept-alpha", "type": "supports"},
             ],
         }
         (self.root / "wiki" / "memex.graph.json").write_text(json.dumps(graph), encoding="utf-8")
@@ -99,8 +142,11 @@ updated_at: "2026-07-02T00:00:00Z"
             "createdAt": "2026-07-02T00:00:00Z",
             "question": "alpha question",
             "answerSummary": "Alpha answer",
-            "usedNodes": ["concept-alpha"],
-            "usedEdges": [{"source": "concept-alpha", "type": "relates_to", "target": "concept-beta"}],
+            "usedNodes": ["trail-alpha", "concept-alpha"],
+            "usedEdges": [
+                {"source": "trail-alpha", "type": "supports", "target": "concept-alpha"},
+                {"source": "concept-alpha", "type": "relates_to", "target": "concept-beta"},
+            ],
             "usedTrails": ["wiki/trails/alpha.qmd"],
             "answerSources": ["wiki/concepts/alpha.qmd#Alpha"],
             "fallbackSessionSearch": True,
@@ -129,6 +175,12 @@ updated_at: "2026-07-02T00:00:00Z"
         self.assertTrue((self.root / ".llm-wiki" / "memex-visualization.json").exists())
         self.assertTrue((self.root / "wiki" / "memex.graph.mmd").exists())
         self.assertTrue((self.root / "wiki" / "memex.graph.svg").exists())
+        self.assertTrue((self.root / "wiki" / "_indexes" / "all.qmd").exists())
+        self.assertTrue((self.root / "wiki" / "_indexes" / "trails.qmd").exists())
+        self.assertTrue((self.root / "wiki" / "_indexes" / "concepts.qmd").exists())
+        self.assertTrue((self.root / "wiki" / "_indexes" / "reasoning-paths.qmd").exists())
+        self.assertTrue((self.root / "wiki" / "_indexes" / "backlinks.qmd").exists())
+        self.assertTrue((self.root / "wiki" / "_indexes" / "maintenance.qmd").exists())
 
         memex_tools.main(
             [
@@ -160,8 +212,42 @@ updated_at: "2026-07-02T00:00:00Z"
         self.assertEqual(ranked[0]["id"], "concept-alpha")
         self.assertGreater(ranked[0]["recalls"], 0)
 
+    def test_refresh_builds_grep_native_qmd_indexes(self) -> None:
+        exit_code = memex_tools.main(["refresh", "--wiki-root", str(self.root)])
+
+        self.assertEqual(exit_code, 0)
+        all_index = self.read_text("wiki/_indexes/all.qmd")
+        self.assertIn("id: concept-alpha", all_index)
+        self.assertIn("type: concept", all_index)
+        self.assertIn("aliases: retrieval as reasoning, 检索即推理", all_index)
+        self.assertIn("path: wiki/concepts/alpha.qmd", all_index)
+
+        trails = self.read_text("wiki/_indexes/trails.qmd")
+        self.assertIn("query: How does alpha recall work?", trails)
+        self.assertIn("reusable: Use Alpha as the grep-native entry point", trails)
+        self.assertIn("missing: Related", trails)
+
+        reasoning = self.read_text("wiki/_indexes/reasoning-paths.qmd")
+        self.assertIn("Entry Question: alpha question", reasoning)
+        self.assertIn("Reused Trails: wiki/trails/alpha.qmd", reasoning)
+        self.assertIn("Used Nodes: trail-alpha, concept-alpha", reasoning)
+        self.assertIn("Answer Sources: wiki/concepts/alpha.qmd#Alpha", reasoning)
+
+        backlinks = self.read_text("wiki/_indexes/backlinks.qmd")
+        self.assertIn("page: wiki/concepts/alpha.qmd", backlinks)
+        self.assertIn("inbound: trail-alpha supports", backlinks)
+        self.assertIn("outbound: concept-alpha relates_to concept-beta", backlinks)
+
+        maintenance = self.read_text("wiki/_indexes/maintenance.qmd")
+        self.assertIn("weak trail: wiki/trails/alpha.qmd", maintenance)
+        self.assertIn("missing: Related", maintenance)
+        self.assertIn("maintenance-signal", maintenance)
+
     def read_json(self, path: str) -> dict:
         return json.loads((self.root / path).read_text(encoding="utf-8"))
+
+    def read_text(self, path: str) -> str:
+        return (self.root / path).read_text(encoding="utf-8")
 
 
 if __name__ == "__main__":
