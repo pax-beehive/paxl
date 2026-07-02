@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -33,8 +34,9 @@ type RenderMemexRequest struct {
 }
 
 type RenderMemexResponse struct {
-	HTML   string
-	Assets []*MemexRenderAsset
+	HTML     string
+	Assets   []*MemexRenderAsset
+	PageHTML map[string]string
 }
 
 type MemexRenderAsset struct {
@@ -50,9 +52,20 @@ type memexRoots struct {
 }
 
 type memexPage struct {
-	RelPath string
-	Title   string
-	Preview string
+	RelPath  string
+	URLPath  string
+	Title    string
+	Preview  string
+	Content  string
+	NodeID   string
+	NodeType string
+	Summary  string
+	Status   string
+	Topics   []string
+	Recalls  int
+	HasIssue bool
+	Outgoing []*memexPageEdge
+	Incoming []*memexPageEdge
 }
 
 type memexArtifact struct {
@@ -60,6 +73,61 @@ type memexArtifact struct {
 	RelPath string
 	Pretty  string
 	Counts  []string
+}
+
+type memexGraph struct {
+	Nodes []*memexGraphNode `json:"nodes"`
+	Edges []*memexGraphEdge `json:"edges"`
+}
+
+type memexGraphNode struct {
+	ID      string   `json:"id"`
+	Type    string   `json:"type"`
+	Path    string   `json:"path"`
+	Title   string   `json:"title"`
+	Summary string   `json:"summary"`
+	Status  string   `json:"status"`
+	Topics  []string `json:"topics"`
+}
+
+type memexGraphEdge struct {
+	Source string `json:"source"`
+	Type   string `json:"type"`
+	Target string `json:"target"`
+}
+
+type memexRecallIndex struct {
+	TraceCount int                 `json:"traceCount"`
+	Nodes      []*memexRecallNode  `json:"nodes"`
+	Edges      []*memexRecallEdge  `json:"edges"`
+	Traces     []*memexRecallTrace `json:"traces"`
+}
+
+type memexRecallNode struct {
+	ID      string `json:"id"`
+	Recalls int    `json:"recalls"`
+}
+
+type memexRecallEdge struct {
+	Source     string `json:"source"`
+	Type       string `json:"type"`
+	Target     string `json:"target"`
+	Traversals int    `json:"traversals"`
+}
+
+type memexRecallTrace struct {
+	Path      string `json:"path"`
+	Question  string `json:"question"`
+	CreatedAt string `json:"createdAt"`
+}
+
+type memexPageEdge struct {
+	Type       string
+	Direction  string
+	OtherTitle string
+	OtherPath  string
+	OtherURL   string
+	Traversals int
 }
 
 func NewMemexFacade() *MemexFacade {
@@ -86,15 +154,20 @@ func (f *MemexFacade) Render(
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	pages, err := collectMemexPages(ctx, roots)
+	graph := loadMemexGraph(roots)
+	recallIndex := loadMemexRecallIndex(roots)
+	lintSignals := loadMemexLintSignals(roots)
+	pages, err := collectMemexPages(ctx, roots, graph, recallIndex, lintSignals)
 	if err != nil {
 		return nil, fmt.Errorf("collect memex pages: %w", err)
 	}
+	attachMemexPageEdges(pages, graph, recallIndex)
 	artifacts := collectMemexArtifacts(roots)
 	assets := collectMemexAssets(roots)
 	return &RenderMemexResponse{
-		HTML:   renderMemexHTML(roots, pages, artifacts, assets),
-		Assets: assets,
+		HTML:     renderMemexHTML(roots, pages, artifacts, assets, graph, recallIndex),
+		Assets:   assets,
+		PageHTML: renderMemexPageHTML(roots, pages),
 	}, nil
 }
 
@@ -140,7 +213,81 @@ func looksLikeMemexWikiRoot(root string) bool {
 		directoryExists(filepath.Join(root, "concepts"))
 }
 
-func collectMemexPages(ctx context.Context, roots *memexRoots) ([]*memexPage, error) {
+func loadMemexGraph(roots *memexRoots) *memexGraph {
+	path := filepath.Join(roots.WikiRoot, "memex.graph.json")
+	if !fileExists(path) {
+		return &memexGraph{}
+	}
+	// #nosec G304 -- The graph path is a fixed name under the resolved local wiki root.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return &memexGraph{}
+	}
+	var graph memexGraph
+	if err := json.Unmarshal(raw, &graph); err != nil {
+		return &memexGraph{}
+	}
+	return &graph
+}
+
+func loadMemexRecallIndex(roots *memexRoots) *memexRecallIndex {
+	path := filepath.Join(roots.StateRoot, "recall-index.json")
+	if !fileExists(path) {
+		return &memexRecallIndex{}
+	}
+	// #nosec G304 -- The recall-index path is a fixed name under the resolved local state root.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return &memexRecallIndex{}
+	}
+	var index memexRecallIndex
+	if err := json.Unmarshal(raw, &index); err != nil {
+		return &memexRecallIndex{}
+	}
+	return &index
+}
+
+func loadMemexLintSignals(roots *memexRoots) map[string]bool {
+	path := filepath.Join(roots.StateRoot, "memex-lint.json")
+	if !fileExists(path) {
+		return map[string]bool{}
+	}
+	// #nosec G304 -- The lint path is a fixed name under the resolved local state root.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return map[string]bool{}
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return map[string]bool{}
+	}
+	signals := map[string]bool{}
+	issues, ok := payload["issues"].([]any)
+	if !ok {
+		return signals
+	}
+	for _, item := range issues {
+		issue, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, key := range []string{"path", "nodeId", "nodeID", "node"} {
+			value, ok := issue[key].(string)
+			if ok && strings.TrimSpace(value) != "" {
+				signals[filepath.ToSlash(strings.TrimSpace(value))] = true
+			}
+		}
+	}
+	return signals
+}
+
+func collectMemexPages(
+	ctx context.Context,
+	roots *memexRoots,
+	graph *memexGraph,
+	recallIndex *memexRecallIndex,
+	lintSignals map[string]bool,
+) ([]*memexPage, error) {
 	pagePaths := make([]string, 0)
 	err := filepath.WalkDir(
 		roots.WikiRoot,
@@ -171,6 +318,8 @@ func collectMemexPages(ctx context.Context, roots *memexRoots) ([]*memexPage, er
 	if len(pagePaths) > maxMemexPages {
 		pagePaths = pagePaths[:maxMemexPages]
 	}
+	nodeByPath := memexGraphNodesByPath(graph)
+	recallsByNodeID := memexRecallsByNodeID(recallIndex)
 	pages := make([]*memexPage, 0, len(pagePaths))
 	for _, path := range pagePaths {
 		if err := ctx.Err(); err != nil {
@@ -182,16 +331,148 @@ func collectMemexPages(ctx context.Context, roots *memexRoots) ([]*memexPage, er
 			return nil, fmt.Errorf("read qmd page %q: %w", path, err)
 		}
 		relPath := displayPath(roots, path)
+		node := nodeByPath[relPath]
+		title := extractQMDTitle(relPath, string(raw))
+		summary := ""
+		status := ""
+		nodeType := ""
+		nodeID := ""
+		topics := extractQMDTopics(string(raw))
+		if node != nil {
+			nodeID = node.ID
+			nodeType = node.Type
+			if node.Title != "" {
+				title = node.Title
+			}
+			summary = node.Summary
+			status = node.Status
+			if len(node.Topics) > 0 {
+				topics = node.Topics
+			}
+		}
 		pages = append(pages, &memexPage{
-			RelPath: relPath,
-			Title:   extractQMDTitle(relPath, string(raw)),
-			Preview: extractQMDPreview(string(raw)),
+			RelPath:  relPath,
+			URLPath:  memexPageURL(relPath),
+			Title:    title,
+			Preview:  extractQMDPreview(string(raw)),
+			Content:  string(raw),
+			NodeID:   nodeID,
+			NodeType: nodeType,
+			Summary:  summary,
+			Status:   status,
+			Topics:   topics,
+			Recalls:  recallsByNodeID[nodeID],
+			HasIssue: lintSignals[relPath] || lintSignals[nodeID],
 		})
 	}
 	sort.SliceStable(pages, func(i int, j int) bool {
 		return pages[i].RelPath < pages[j].RelPath
 	})
 	return pages, nil
+}
+
+func attachMemexPageEdges(
+	pages []*memexPage,
+	graph *memexGraph,
+	recallIndex *memexRecallIndex,
+) {
+	pageByNodeID := map[string]*memexPage{}
+	for _, page := range pages {
+		if page.NodeID != "" {
+			pageByNodeID[page.NodeID] = page
+		}
+	}
+	traversalsByEdge := memexTraversalsByEdge(recallIndex)
+	for _, edge := range graph.Edges {
+		source := pageByNodeID[edge.Source]
+		target := pageByNodeID[edge.Target]
+		if source == nil || target == nil {
+			continue
+		}
+		traversals := traversalsByEdge[memexEdgeKey(edge.Source, edge.Type, edge.Target)]
+		source.Outgoing = append(source.Outgoing, &memexPageEdge{
+			Type:       edge.Type,
+			Direction:  "outgoing",
+			OtherTitle: target.Title,
+			OtherPath:  target.RelPath,
+			OtherURL:   target.URLPath,
+			Traversals: traversals,
+		})
+		target.Incoming = append(target.Incoming, &memexPageEdge{
+			Type:       edge.Type,
+			Direction:  "incoming",
+			OtherTitle: source.Title,
+			OtherPath:  source.RelPath,
+			OtherURL:   source.URLPath,
+			Traversals: traversals,
+		})
+	}
+	for _, page := range pages {
+		sortMemexPageEdges(page.Outgoing)
+		sortMemexPageEdges(page.Incoming)
+	}
+}
+
+func memexGraphNodesByPath(graph *memexGraph) map[string]*memexGraphNode {
+	nodes := map[string]*memexGraphNode{}
+	if graph == nil {
+		return nodes
+	}
+	for _, node := range graph.Nodes {
+		if node == nil || strings.TrimSpace(node.Path) == "" {
+			continue
+		}
+		nodes[filepath.ToSlash(strings.TrimSpace(node.Path))] = node
+	}
+	return nodes
+}
+
+func memexRecallsByNodeID(index *memexRecallIndex) map[string]int {
+	recalls := map[string]int{}
+	if index == nil {
+		return recalls
+	}
+	for _, node := range index.Nodes {
+		if node == nil || node.ID == "" {
+			continue
+		}
+		recalls[node.ID] = node.Recalls
+	}
+	return recalls
+}
+
+func memexTraversalsByEdge(index *memexRecallIndex) map[string]int {
+	traversals := map[string]int{}
+	if index == nil {
+		return traversals
+	}
+	for _, edge := range index.Edges {
+		if edge == nil {
+			continue
+		}
+		traversals[memexEdgeKey(edge.Source, edge.Type, edge.Target)] = edge.Traversals
+	}
+	return traversals
+}
+
+func memexEdgeKey(source string, edgeType string, target string) string {
+	return source + "\x00" + edgeType + "\x00" + target
+}
+
+func sortMemexPageEdges(edges []*memexPageEdge) {
+	sort.SliceStable(edges, func(i int, j int) bool {
+		if edges[i].Traversals != edges[j].Traversals {
+			return edges[i].Traversals > edges[j].Traversals
+		}
+		if edges[i].Type != edges[j].Type {
+			return edges[i].Type < edges[j].Type
+		}
+		return edges[i].OtherTitle < edges[j].OtherTitle
+	})
+}
+
+func memexPageURL(relPath string) string {
+	return "/page/" + url.PathEscape(filepath.ToSlash(relPath))
 }
 
 func collectMemexArtifacts(roots *memexRoots) []*memexArtifact {
@@ -268,6 +549,34 @@ func extractQMDTitle(relPath string, content string) string {
 	}
 	base := filepath.Base(relPath)
 	return strings.TrimSuffix(base, filepath.Ext(base))
+}
+
+func extractQMDTopics(content string) []string {
+	lines := strings.Split(content, "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+		return nil
+	}
+	for _, line := range lines[1:] {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "---" {
+			return nil
+		}
+		if !strings.HasPrefix(trimmed, "topics:") {
+			continue
+		}
+		raw := strings.TrimSpace(strings.TrimPrefix(trimmed, "topics:"))
+		raw = strings.Trim(raw, "[]")
+		parts := strings.Split(raw, ",")
+		topics := make([]string, 0, len(parts))
+		for _, part := range parts {
+			topic := cleanYAMLScalar(strings.TrimSpace(part))
+			if topic != "" {
+				topics = append(topics, topic)
+			}
+		}
+		return topics
+	}
+	return nil
 }
 
 func extractQMDPreview(content string) string {
@@ -354,89 +663,567 @@ func renderMemexHTML(
 	pages []*memexPage,
 	artifacts []*memexArtifact,
 	assets []*MemexRenderAsset,
+	graph *memexGraph,
+	recallIndex *memexRecallIndex,
 ) string {
 	var builder strings.Builder
-	builder.WriteString(`<!doctype html><html lang="en"><head><meta charset="utf-8">`)
-	builder.WriteString(`<meta name="viewport" content="width=device-width,initial-scale=1">`)
-	builder.WriteString(`<title>Paxl Memex</title>`)
-	builder.WriteString(`<style>
-body{margin:0;background:#f6f7f8;color:#1b1f24;font:14px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-header{background:#ffffff;border-bottom:1px solid #d7dce1;padding:22px 28px}
-main{max-width:1180px;margin:0 auto;padding:24px 28px 44px}
-h1{font-size:28px;line-height:1.15;margin:0 0 8px}
-h2{font-size:18px;margin:28px 0 12px}
-h3{font-size:15px;margin:0 0 4px}
-p{margin:0 0 10px}
-code{background:#edf0f2;border:1px solid #d7dce1;border-radius:4px;padding:1px 4px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:16px}
-.stat,.page,details{background:#ffffff;border:1px solid #d7dce1;border-radius:8px;padding:12px}
-.stat strong{display:block;font-size:22px;line-height:1.2}
-.muted{color:#59636e}
-.pages{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}
-.graph{width:100%;max-height:560px;object-fit:contain;background:#ffffff;border:1px solid #d7dce1;border-radius:8px}
-summary{cursor:pointer;font-weight:600}
-pre{white-space:pre-wrap;overflow:auto;max-height:420px;background:#101418;color:#edf0f2;border-radius:6px;padding:12px}
-</style></head><body>`)
+	writeMemexHTMLHead(&builder, "Paxl Memex")
+	builder.WriteString(`<body><header class="hero"><div class="hero-main"><div>`)
+	builder.WriteString(`<p class="eyebrow">Local Knowledge Graph</p><h1>Paxl Memex</h1>`)
 	builder.WriteString(
-		`<header><h1>Paxl Memex</h1><p class="muted">Local qmd wiki and recall trail artifacts from <code>`,
+		`<p class="hero-copy">Browse the maintained qmd wiki, graph links, recall demand signals, and private maintenance artifacts from <code>`,
 	)
 	builder.WriteString(escapeHTML(displayPath(roots, roots.ProjectRoot)))
-	builder.WriteString(`</code>.</p>`)
-	builder.WriteString(`<div class="grid">`)
-	writeMemexStat(&builder, "Pages", len(pages))
-	writeMemexStat(&builder, "Artifacts", len(artifacts))
-	writeMemexStat(&builder, "Assets", len(assets))
-	builder.WriteString(`</div></header><main>`)
+	builder.WriteString(`</code>.</p></div>`)
+	builder.WriteString(
+		`<nav class="hero-nav"><a href="#pages">Pages</a><a href="#graph">Graph</a><a href="#artifacts">Artifacts</a></nav>`,
+	)
+	builder.WriteString(`</div><div class="metric-grid">`)
+	writeMemexMetric(&builder, "Pages", len(pages), "qmd documents")
+	writeMemexMetric(&builder, "Graph Nodes", len(graph.Nodes), "reader-facing nodes")
+	writeMemexMetric(&builder, "Edges", len(graph.Edges), "typed relationships")
+	writeMemexMetric(&builder, "Recall Traces", recallIndex.TraceCount, "query demand")
+	builder.WriteString(`</div></header><main class="shell">`)
+	builder.WriteString(`<section id="graph" class="overview-grid">`)
 	if len(assets) > 0 {
-		builder.WriteString(`<section><h2>Graph</h2><img class="graph" src="`)
+		builder.WriteString(
+			`<div class="panel graph-panel"><div class="section-head"><h2>Graph</h2><p>Node size and edge weight come from recall usage.</p></div><img class="graph" src="`,
+		)
 		builder.WriteString(escapeHTML(assets[0].URLPath))
-		builder.WriteString(`" alt="Memex graph"></section>`)
+		builder.WriteString(`" alt="Memex graph"></div>`)
+	} else {
+		builder.WriteString(`<div class="panel graph-panel"><div class="section-head">`)
+		builder.WriteString(`<h2>Graph</h2><p>No graph SVG found.</p></div></div>`)
 	}
-	builder.WriteString(`<section><h2>Pages</h2><div class="pages">`)
+	builder.WriteString(
+		`<div class="panel"><div class="section-head"><h2>Recall Hotspots</h2><p>Pages repeatedly used by recall should be kept sharp.</p></div>`,
+	)
+	writeMemexHotPages(&builder, pages)
+	builder.WriteString(`</div></section>`)
+	builder.WriteString(
+		`<section id="pages"><div class="section-head"><h2>Pages</h2><p>Open a page to inspect full qmd content, backlinks, and graph edges.</p></div><div class="pages">`,
+	)
 	if len(pages) == 0 {
 		builder.WriteString(`<p class="muted">No qmd pages found.</p>`)
 	}
 	for _, page := range pages {
-		builder.WriteString(`<article class="page"><h3>`)
-		builder.WriteString(escapeHTML(page.Title))
-		builder.WriteString(`</h3><p><code>`)
-		builder.WriteString(escapeHTML(page.RelPath))
-		builder.WriteString(`</code></p>`)
-		if page.Preview != "" {
-			builder.WriteString(`<p>`)
-			builder.WriteString(escapeHTML(page.Preview))
-			builder.WriteString(`</p>`)
-		}
-		builder.WriteString(`</article>`)
+		writeMemexPageCard(&builder, page)
 	}
 	builder.WriteString(`</div></section>`)
-	builder.WriteString(`<section><h2>Artifacts</h2>`)
+	builder.WriteString(
+		`<section id="artifacts"><div class="section-head"><h2>Artifacts</h2><p>Private maintenance state is collapsed by default.</p></div>`,
+	)
 	if len(artifacts) == 0 {
 		builder.WriteString(`<p class="muted">No memex JSON artifacts found.</p>`)
 	}
 	for _, artifact := range artifacts {
-		builder.WriteString(`<details open><summary>`)
-		builder.WriteString(escapeHTML(artifact.Name))
-		builder.WriteString(` <span class="muted">`)
-		builder.WriteString(escapeHTML(artifact.RelPath))
-		if len(artifact.Counts) > 0 {
-			builder.WriteString(` | `)
-			builder.WriteString(escapeHTML(strings.Join(artifact.Counts, ", ")))
-		}
-		builder.WriteString(`</span></summary><pre>`)
-		builder.WriteString(escapeHTML(artifact.Pretty))
-		builder.WriteString(`</pre></details>`)
+		writeMemexArtifact(&builder, artifact)
 	}
 	builder.WriteString(`</section></main></body></html>`)
 	return builder.String()
 }
 
-func writeMemexStat(builder *strings.Builder, label string, count int) {
-	builder.WriteString(`<div class="stat"><span class="muted">`)
+func renderMemexPageHTML(roots *memexRoots, pages []*memexPage) map[string]string {
+	output := make(map[string]string, len(pages))
+	links := memexPageLinks(pages)
+	for _, page := range pages {
+		output[page.URLPath] = renderMemexPage(roots, page, links)
+	}
+	return output
+}
+
+func renderMemexPage(
+	roots *memexRoots,
+	page *memexPage,
+	links map[string]string,
+) string {
+	var builder strings.Builder
+	writeMemexHTMLHead(&builder, page.Title)
+	builder.WriteString(
+		`<body><header class="hero compact"><div class="hero-main"><div><p class="eyebrow"><a href="/">Paxl Memex</a> / Page</p><h1>`,
+	)
+	builder.WriteString(escapeHTML(page.Title))
+	builder.WriteString(`</h1><p class="hero-copy"><code>`)
+	builder.WriteString(escapeHTML(page.RelPath))
+	builder.WriteString(`</code></p></div></div>`)
+	builder.WriteString(`<div class="meta-row">`)
+	writeMemexBadge(&builder, firstNonEmptyString(page.NodeType, "qmd"), "type")
+	if page.Status != "" {
+		writeMemexBadge(&builder, page.Status, "status")
+	}
+	if page.Recalls > 0 {
+		writeMemexBadge(&builder, fmt.Sprintf("%d recalls", page.Recalls), "hot")
+	}
+	if page.HasIssue {
+		writeMemexBadge(&builder, "lint issue", "warn")
+	}
+	builder.WriteString(`</div>`)
+	if len(page.Topics) > 0 {
+		writeMemexTags(&builder, page.Topics)
+	}
+	builder.WriteString(`</header><main class="shell detail-grid">`)
+	builder.WriteString(`<article class="document panel">`)
+	if page.Summary != "" {
+		builder.WriteString(`<p class="summary">`)
+		builder.WriteString(escapeHTML(page.Summary))
+		builder.WriteString(`</p>`)
+	}
+	builder.WriteString(renderQMDContent(page.Content, links))
+	builder.WriteString(`</article><aside class="side">`)
+	builder.WriteString(
+		`<section class="panel"><div class="section-head"><h2>Related</h2><p>Graph edges and backlinks for this page.</p></div>`,
+	)
+	writeMemexEdgeList(&builder, "Outgoing", page.Outgoing)
+	writeMemexEdgeList(&builder, "Backlinks", page.Incoming)
+	builder.WriteString(`</section><details class="panel"><summary>Raw qmd</summary><pre>`)
+	builder.WriteString(escapeHTML(page.Content))
+	builder.WriteString(`</pre></details></aside></main></body></html>`)
+	_ = roots
+	return builder.String()
+}
+
+func memexPageLinks(pages []*memexPage) map[string]string {
+	links := map[string]string{}
+	for _, page := range pages {
+		if page.URLPath == "" {
+			continue
+		}
+		for _, value := range []string{
+			page.RelPath,
+			strings.TrimPrefix(page.RelPath, "wiki/"),
+			strings.TrimSuffix(page.RelPath, filepath.Ext(page.RelPath)),
+			strings.TrimSuffix(filepath.Base(page.RelPath), filepath.Ext(page.RelPath)),
+			page.Title,
+			slugifyMemexLink(page.Title),
+		} {
+			key := normalizeMemexLinkTarget(value)
+			if key != "" {
+				links[key] = page.URLPath
+			}
+		}
+	}
+	return links
+}
+
+func writeMemexHTMLHead(builder *strings.Builder, title string) {
+	builder.WriteString(`<!doctype html><html lang="en"><head><meta charset="utf-8">`)
+	builder.WriteString(`<meta name="viewport" content="width=device-width,initial-scale=1">`)
+	builder.WriteString(`<title>`)
+	builder.WriteString(escapeHTML(title))
+	builder.WriteString(`</title><style>`)
+	builder.WriteString(memexRenderCSS())
+	builder.WriteString(`</style></head>`)
+}
+
+func writeMemexPageCard(builder *strings.Builder, page *memexPage) {
+	builder.WriteString(`<article class="page-card">`)
+	builder.WriteString(`<div class="card-top">`)
+	writeMemexBadge(builder, firstNonEmptyString(page.NodeType, "qmd"), "type")
+	if page.Status != "" {
+		writeMemexBadge(builder, page.Status, "status")
+	}
+	if page.HasIssue {
+		writeMemexBadge(builder, "lint", "warn")
+	}
+	builder.WriteString(`</div><h3><a href="`)
+	builder.WriteString(escapeHTML(page.URLPath))
+	builder.WriteString(`">`)
+	builder.WriteString(escapeHTML(page.Title))
+	builder.WriteString(`</a></h3><p class="path"><code>`)
+	builder.WriteString(escapeHTML(page.RelPath))
+	builder.WriteString(`</code></p>`)
+	summary := firstNonEmptyString(page.Summary, page.Preview)
+	if summary != "" {
+		builder.WriteString(`<p>`)
+		builder.WriteString(escapeHTML(summary))
+		builder.WriteString(`</p>`)
+	}
+	builder.WriteString(`<div class="mini-metrics">`)
+	writeMemexMiniMetric(builder, "Recalls", page.Recalls)
+	writeMemexMiniMetric(builder, "Links", len(page.Outgoing)+len(page.Incoming))
+	builder.WriteString(`</div>`)
+	writeMemexTags(builder, page.Topics)
+	builder.WriteString(`</article>`)
+}
+
+func writeMemexHotPages(builder *strings.Builder, pages []*memexPage) {
+	hotPages := append([]*memexPage(nil), pages...)
+	sort.SliceStable(hotPages, func(i int, j int) bool {
+		if hotPages[i].Recalls != hotPages[j].Recalls {
+			return hotPages[i].Recalls > hotPages[j].Recalls
+		}
+		return hotPages[i].Title < hotPages[j].Title
+	})
+	wrote := false
+	builder.WriteString(`<div class="hot-list">`)
+	for _, page := range hotPages {
+		if page.Recalls == 0 {
+			continue
+		}
+		wrote = true
+		builder.WriteString(`<a class="hot-item" href="`)
+		builder.WriteString(escapeHTML(page.URLPath))
+		builder.WriteString(`"><span>`)
+		builder.WriteString(escapeHTML(page.Title))
+		builder.WriteString(`</span><strong>`)
+		_, _ = fmt.Fprintf(builder, "%d", page.Recalls)
+		builder.WriteString(`</strong></a>`)
+	}
+	if !wrote {
+		builder.WriteString(`<p class="muted">No recall traces have targeted qmd pages yet.</p>`)
+	}
+	builder.WriteString(`</div>`)
+}
+
+func writeMemexMetric(builder *strings.Builder, label string, count int, detail string) {
+	builder.WriteString(`<div class="metric"><span>`)
 	builder.WriteString(escapeHTML(label))
 	builder.WriteString(`</span><strong>`)
 	_, _ = fmt.Fprintf(builder, "%d", count)
-	builder.WriteString(`</strong></div>`)
+	builder.WriteString(`</strong><em>`)
+	builder.WriteString(escapeHTML(detail))
+	builder.WriteString(`</em></div>`)
+}
+
+func writeMemexMiniMetric(builder *strings.Builder, label string, count int) {
+	builder.WriteString(`<span><strong>`)
+	_, _ = fmt.Fprintf(builder, "%d", count)
+	builder.WriteString(`</strong> `)
+	builder.WriteString(escapeHTML(label))
+	builder.WriteString(`</span>`)
+}
+
+func writeMemexBadge(builder *strings.Builder, value string, className string) {
+	builder.WriteString(`<span class="tag `)
+	builder.WriteString(escapeHTML(className))
+	builder.WriteString(`">`)
+	builder.WriteString(escapeHTML(value))
+	builder.WriteString(`</span>`)
+}
+
+func writeMemexTags(builder *strings.Builder, topics []string) {
+	if len(topics) == 0 {
+		return
+	}
+	builder.WriteString(`<div class="tag-row">`)
+	for _, topic := range topics {
+		writeMemexBadge(builder, topic, "topic")
+	}
+	builder.WriteString(`</div>`)
+}
+
+func writeMemexArtifact(builder *strings.Builder, artifact *memexArtifact) {
+	builder.WriteString(`<details class="artifact"><summary><span>`)
+	builder.WriteString(escapeHTML(artifact.Name))
+	builder.WriteString(`</span><code>`)
+	builder.WriteString(escapeHTML(artifact.RelPath))
+	builder.WriteString(`</code>`)
+	if len(artifact.Counts) > 0 {
+		builder.WriteString(`<em>`)
+		builder.WriteString(escapeHTML(strings.Join(artifact.Counts, ", ")))
+		builder.WriteString(`</em>`)
+	}
+	builder.WriteString(`</summary><pre>`)
+	builder.WriteString(escapeHTML(artifact.Pretty))
+	builder.WriteString(`</pre></details>`)
+}
+
+func writeMemexEdgeList(builder *strings.Builder, title string, edges []*memexPageEdge) {
+	builder.WriteString(`<h3>`)
+	builder.WriteString(escapeHTML(title))
+	builder.WriteString(`</h3>`)
+	if len(edges) == 0 {
+		builder.WriteString(`<p class="muted">None.</p>`)
+		return
+	}
+	builder.WriteString(`<ul class="edge-list">`)
+	for _, edge := range edges {
+		builder.WriteString(`<li><a href="`)
+		builder.WriteString(escapeHTML(edge.OtherURL))
+		builder.WriteString(`">`)
+		builder.WriteString(escapeHTML(edge.OtherTitle))
+		builder.WriteString(`</a><span>`)
+		builder.WriteString(escapeHTML(edge.Type))
+		if edge.Traversals > 0 {
+			builder.WriteString(`, `)
+			_, _ = fmt.Fprintf(builder, "%d traversals", edge.Traversals)
+		}
+		builder.WriteString(`</span></li>`)
+	}
+	builder.WriteString(`</ul>`)
+}
+
+func renderQMDContent(content string, links map[string]string) string {
+	lines := strings.Split(stripQMDFrontMatter(content), "\n")
+	var builder strings.Builder
+	var paragraph []string
+	inList := false
+	inCode := false
+	flushParagraph := func() {
+		if len(paragraph) == 0 {
+			return
+		}
+		builder.WriteString(`<p>`)
+		builder.WriteString(renderInlineQMD(strings.Join(paragraph, " "), links))
+		builder.WriteString(`</p>`)
+		paragraph = nil
+	}
+	closeList := func() {
+		if inList {
+			builder.WriteString(`</ul>`)
+			inList = false
+		}
+	}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			flushParagraph()
+			closeList()
+			if inCode {
+				builder.WriteString(`</code></pre>`)
+				inCode = false
+			} else {
+				builder.WriteString(`<pre><code>`)
+				inCode = true
+			}
+			continue
+		}
+		if inCode {
+			builder.WriteString(escapeHTML(line))
+			builder.WriteString("\n")
+			continue
+		}
+		if trimmed == "" {
+			flushParagraph()
+			closeList()
+			continue
+		}
+		if headingLevel := qmdHeadingLevel(trimmed); headingLevel > 0 {
+			flushParagraph()
+			closeList()
+			text := strings.TrimSpace(trimmed[headingLevel:])
+			if text != "" {
+				_, _ = fmt.Fprintf(&builder, "<h%d>", headingLevel)
+				builder.WriteString(renderInlineQMD(text, links))
+				_, _ = fmt.Fprintf(&builder, "</h%d>", headingLevel)
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "- ") {
+			flushParagraph()
+			if !inList {
+				builder.WriteString(`<ul>`)
+				inList = true
+			}
+			builder.WriteString(`<li>`)
+			builder.WriteString(
+				renderInlineQMD(strings.TrimSpace(strings.TrimPrefix(trimmed, "- ")), links),
+			)
+			builder.WriteString(`</li>`)
+			continue
+		}
+		closeList()
+		paragraph = append(paragraph, trimmed)
+	}
+	flushParagraph()
+	closeList()
+	if inCode {
+		builder.WriteString(`</code></pre>`)
+	}
+	return builder.String()
+}
+
+func stripQMDFrontMatter(content string) string {
+	lines := strings.Split(content, "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+		return content
+	}
+	for index, line := range lines[1:] {
+		if strings.TrimSpace(line) == "---" {
+			return strings.Join(lines[index+2:], "\n")
+		}
+	}
+	return content
+}
+
+func qmdHeadingLevel(trimmed string) int {
+	level := 0
+	for level < len(trimmed) && level < 6 && trimmed[level] == '#' {
+		level++
+	}
+	if level == 0 || level >= len(trimmed) || trimmed[level] != ' ' {
+		return 0
+	}
+	return level
+}
+
+func renderInlineQMD(value string, links map[string]string) string {
+	parts := strings.Split(value, "`")
+	var builder strings.Builder
+	for index, part := range parts {
+		if index%2 == 1 {
+			builder.WriteString(`<code>`)
+			builder.WriteString(escapeHTML(part))
+			builder.WriteString(`</code>`)
+			continue
+		}
+		builder.WriteString(renderWikiLinks(part, links))
+	}
+	return builder.String()
+}
+
+func renderWikiLinks(value string, links map[string]string) string {
+	var builder strings.Builder
+	remaining := value
+	for {
+		start := strings.Index(remaining, "[[")
+		if start < 0 {
+			builder.WriteString(escapeHTML(remaining))
+			return builder.String()
+		}
+		builder.WriteString(escapeHTML(remaining[:start]))
+		afterStart := remaining[start+2:]
+		end := strings.Index(afterStart, "]]")
+		if end < 0 {
+			builder.WriteString(escapeHTML(remaining[start:]))
+			return builder.String()
+		}
+		rawTarget := afterStart[:end]
+		target, label := splitMemexWikiLink(rawTarget)
+		href := links[normalizeMemexLinkTarget(target)]
+		if href == "" {
+			builder.WriteString(`<span class="broken-wikilink">[[`)
+			builder.WriteString(escapeHTML(label))
+			builder.WriteString(`]]</span>`)
+		} else {
+			builder.WriteString(`<a class="wikilink" href="`)
+			builder.WriteString(escapeHTML(href))
+			builder.WriteString(`">`)
+			builder.WriteString(escapeHTML(label))
+			builder.WriteString(`</a>`)
+		}
+		remaining = afterStart[end+2:]
+	}
+}
+
+func splitMemexWikiLink(raw string) (string, string) {
+	parts := strings.SplitN(raw, "|", 2)
+	target := strings.TrimSpace(parts[0])
+	label := target
+	if len(parts) == 2 && strings.TrimSpace(parts[1]) != "" {
+		label = strings.TrimSpace(parts[1])
+	}
+	return target, label
+}
+
+func normalizeMemexLinkTarget(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, `"'`)
+	if before, _, ok := strings.Cut(value, "#"); ok {
+		value = before
+	}
+	value = filepath.ToSlash(value)
+	value = strings.TrimSuffix(value, ".qmd")
+	value = strings.TrimPrefix(value, "./")
+	value = strings.Trim(value, "/")
+	return strings.ToLower(value)
+}
+
+func slugifyMemexLink(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var builder strings.Builder
+	lastDash := false
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			builder.WriteRune(r)
+			lastDash = false
+		case r >= '0' && r <= '9':
+			builder.WriteRune(r)
+			lastDash = false
+		case !lastDash:
+			builder.WriteRune('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(builder.String(), "-")
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func memexRenderCSS() string {
+	return `
+:root{color-scheme:light;--bg:#f4f5f2;--panel:#ffffff;--ink:#18201c;--muted:#647067;--line:#d9dfd8;--accent:#0a6f74;--blue:#1f5f99;--amber:#9b6a00;--red:#a13d31}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+a{color:var(--blue);text-decoration:none}
+a:hover{text-decoration:underline}
+code{background:#eef1ee;border:1px solid var(--line);border-radius:4px;padding:1px 4px}
+.hero{background:linear-gradient(180deg,#ffffff 0%,#f9faf8 100%);border-bottom:1px solid var(--line);padding:26px 30px}
+.hero.compact{padding-bottom:20px}
+.hero-main{max-width:1240px;margin:0 auto;display:flex;align-items:flex-start;justify-content:space-between;gap:24px}
+.hero>.meta-row,.hero>.tag-row{max-width:1240px;margin:12px auto 0}
+.hero>.tag-row{margin-top:8px}
+.eyebrow{margin:0 0 6px;color:var(--accent);font-weight:700;text-transform:uppercase;font-size:12px;letter-spacing:.04em}
+h1{font-size:34px;line-height:1.1;margin:0 0 8px}
+.hero-copy{max-width:760px;margin:0;color:var(--muted)}
+.hero-nav{display:flex;gap:8px;flex-wrap:wrap}
+.hero-nav a{border:1px solid var(--line);border-radius:6px;background:#fff;padding:7px 10px;color:var(--ink)}
+.shell{max-width:1240px;margin:0 auto;padding:24px 30px 46px}
+.metric-grid{max-width:1240px;margin:18px auto 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.metric,.panel,.page-card,.artifact{background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 1px 2px rgba(21,27,24,.04)}
+.metric{padding:13px 14px}
+.metric span,.metric em{display:block;color:var(--muted);font-style:normal}
+.metric strong{display:block;font-size:26px;line-height:1.15}
+.overview-grid{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(280px,.8fr);gap:14px}
+.panel{padding:16px}
+.section-head{margin-bottom:12px}
+.section-head h2{font-size:20px;margin:0 0 4px}
+.section-head p{margin:0;color:var(--muted)}
+.graph{width:100%;max-height:560px;object-fit:contain;background:#fff;border:1px solid var(--line);border-radius:6px}
+.pages{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:12px}
+.page-card{padding:14px;display:flex;flex-direction:column;gap:8px}
+.card-top,.meta-row,.tag-row,.mini-metrics{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.page-card h3{font-size:17px;line-height:1.25;margin:0}
+.page-card p{margin:0;color:#313a34}
+.path{color:var(--muted)}
+.tag{display:inline-flex;align-items:center;border-radius:999px;border:1px solid var(--line);background:#f7f8f6;color:#374039;font-size:12px;line-height:1;padding:5px 7px}
+.tag.type{border-color:#c6ddd9;background:#eef8f6;color:var(--accent);font-weight:700}
+.tag.status{border-color:#dce7c7;background:#f6faee;color:#4d6b1f}
+.tag.topic{background:#f4f6fa;border-color:#d5deec;color:#2c4f7f}
+.tag.hot{background:#fff5df;border-color:#ecd398;color:var(--amber)}
+.tag.warn{background:#fff0ed;border-color:#e4bab3;color:var(--red)}
+.mini-metrics span{border:1px solid var(--line);border-radius:6px;padding:5px 7px;color:var(--muted)}
+.mini-metrics strong{color:var(--ink)}
+.hot-list{display:flex;flex-direction:column;gap:8px}
+.hot-item{display:flex;justify-content:space-between;gap:12px;border:1px solid var(--line);border-radius:7px;padding:9px 10px;background:#fbfcfb;color:var(--ink)}
+.hot-item strong{color:var(--amber)}
+.artifact{margin:8px 0}
+.artifact summary{display:flex;gap:10px;align-items:center;cursor:pointer;padding:12px}
+.artifact summary span{font-weight:700}
+.artifact summary em{margin-left:auto;color:var(--muted);font-style:normal}
+pre{white-space:pre-wrap;overflow:auto;max-height:520px;background:#101713;color:#edf2ec;border-radius:6px;padding:12px}
+.detail-grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px}
+.document h1{font-size:28px}.document h2{font-size:22px;margin-top:24px}.document h3{font-size:17px;margin-top:18px}
+.document p,.document li{font-size:15px}.document ul{padding-left:21px}
+.summary{border-left:3px solid var(--accent);padding:8px 0 8px 12px;color:#33413a;background:#f7faf8}
+.wikilink{font-weight:700;border-bottom:1px solid #b8c9df}
+.broken-wikilink{color:var(--muted);border:1px dashed var(--line);border-radius:4px;padding:1px 4px;background:#fafafa}
+.side{display:flex;flex-direction:column;gap:12px}
+.edge-list{list-style:none;margin:0 0 16px;padding:0;display:flex;flex-direction:column;gap:8px}
+.edge-list li{border:1px solid var(--line);border-radius:7px;padding:9px;background:#fbfcfb}
+.edge-list a{display:block;font-weight:700}.edge-list span{display:block;color:var(--muted);font-size:12px;margin-top:2px}
+.muted{color:var(--muted)}
+@media (max-width:860px){.hero-main,.overview-grid,.detail-grid{display:block}.hero-nav{margin-top:16px}.side{margin-top:16px}.shell{padding:18px 16px 34px}.hero{padding:20px 16px}h1{font-size:28px}}
+`
 }
 
 func displayPath(roots *memexRoots, path string) string {

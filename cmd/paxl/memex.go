@@ -136,8 +136,15 @@ func newMemexRenderHandler(resp *facade.RenderMemexResponse) http.Handler {
 	mux := http.NewServeMux()
 	htmlBody := ""
 	assets := make(map[string]*facade.MemexRenderAsset)
+	pageHTML := map[string]string{}
 	if resp != nil {
 		htmlBody = resp.HTML
+		for urlPath, body := range resp.PageHTML {
+			if !strings.HasPrefix(urlPath, "/") {
+				urlPath = "/" + urlPath
+			}
+			pageHTML[urlPath] = body
+		}
 		for _, asset := range resp.Assets {
 			if asset == nil || asset.URLPath == "" || asset.FilePath == "" {
 				continue
@@ -163,6 +170,23 @@ func newMemexRenderHandler(resp *facade.RenderMemexResponse) http.Handler {
 		}
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = io.WriteString(writer, htmlBody)
+	})
+	mux.HandleFunc("/page/", func(writer http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet && req.Method != http.MethodHead {
+			writer.Header().Set("Allow", "GET, HEAD")
+			http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		body, ok := pageHTML[req.URL.EscapedPath()]
+		if !ok {
+			body, ok = pageHTML[req.URL.Path]
+		}
+		if !ok {
+			http.NotFound(writer, req)
+			return
+		}
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(writer, body)
 	})
 	for urlPath, asset := range assets {
 		asset := asset

@@ -146,6 +146,9 @@ func TestMemexRenderHandlerServesHTMLAndAssets(t *testing.T) {
 	}
 	handler := newMemexRenderHandler(&facade.RenderMemexResponse{
 		HTML: `<html><body><img src="/assets/memex.graph.svg"></body></html>`,
+		PageHTML: map[string]string{
+			"/page/wiki%2Fconcepts%2Fsession-condense-local-memex.qmd": `<html><body>Full page</body></html>`,
+		},
 		Assets: []*facade.MemexRenderAsset{
 			{
 				URLPath:     "/assets/memex.graph.svg",
@@ -177,6 +180,20 @@ func TestMemexRenderHandlerServesHTMLAndAssets(t *testing.T) {
 	)
 	if assetResp.Code != http.StatusOK || !strings.Contains(assetResp.Body.String(), "<svg>") {
 		t.Fatalf("asset response = %d %q", assetResp.Code, assetResp.Body.String())
+	}
+
+	pageResp := httptest.NewRecorder()
+	handler.ServeHTTP(
+		pageResp,
+		httptest.NewRequestWithContext(
+			context.Background(),
+			http.MethodGet,
+			"/page/wiki%2Fconcepts%2Fsession-condense-local-memex.qmd",
+			nil,
+		),
+	)
+	if pageResp.Code != http.StatusOK || !strings.Contains(pageResp.Body.String(), "Full page") {
+		t.Fatalf("page response = %d %q", pageResp.Code, pageResp.Body.String())
 	}
 }
 
