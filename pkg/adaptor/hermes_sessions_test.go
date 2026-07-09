@@ -667,6 +667,7 @@ CREATE TABLE sessions (
 	id TEXT PRIMARY KEY,
 	source TEXT NOT NULL,
 	model TEXT,
+	model_config TEXT,
 	started_at REAL NOT NULL,
 	ended_at REAL,
 	message_count INTEGER DEFAULT 0,
@@ -687,9 +688,9 @@ CREATE TABLE messages (
 	compacted INTEGER NOT NULL DEFAULT 0
 );
 INSERT INTO sessions (
-	id, source, model, started_at, message_count, input_tokens, output_tokens, cwd, title
+	id, source, model, model_config, started_at, message_count, input_tokens, output_tokens, cwd, title
 ) VALUES (
-	'state-session', 'cli', 'gpt-5.5', 1782097441, 2, 11, 13, '/tmp/hermes-project', 'State DB Session'
+	'state-session', 'cli', 'gpt-5.5', '{"cwd":"/tmp/hermes-project"}', 1782097441, 2, 11, 13, NULL, 'State DB Session'
 );
 INSERT INTO messages (session_id, role, content, timestamp, token_count) VALUES
 	('state-session', 'user', 'Use canonical state', 1782097441, 11),

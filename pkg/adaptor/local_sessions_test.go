@@ -104,6 +104,41 @@ func (s *LocalSessionsSuite) TestListCodexSessionsPrefersStructuredUserMessageEv
 	s.Equal("Use a structured source for Codex titles.", resp.Sessions[0].Title)
 }
 
+func (s *LocalSessionsSuite) TestListCodexSessionsUsesParentThreadNameForSubagentRollout() {
+	codexHome := s.T().TempDir()
+	s.T().Setenv("CODEX_HOME", codexHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(codexHome, "session_index.jsonl"),
+		[]byte(
+			`{"id":"parent-thread","thread_name":"Fix session titles","updated_at":"2026-06-20T01:00:00Z"}`+"\n",
+		),
+		0o600,
+	))
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-test-child-thread.jsonl"),
+		[]byte(
+			`{"type":"session_meta","payload":{"id":"child-thread","session_id":"parent-thread","parent_thread_id":"parent-thread","timestamp":"2026-06-20T02:00:00Z","cwd":"/tmp/project","source":{"subagent":{"other":"guardian"}},"thread_source":"subagent"}}`+"\n"+
+				`{"timestamp":"2026-06-20T02:01:00Z","type":"event_msg","payload":{"type":"user_message","message":"# AGENTS.md instructions\nPrefer testify style assert.","images":[],"local_images":[],"text_elements":[]}}`+"\n",
+		),
+		0o600,
+	))
+
+	resp, err := listCodexSessions(context.Background(), &ListSessionsRequest{})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Sessions, 2)
+	var child *model.Session
+	for _, session := range resp.Sessions {
+		if session.NativeID == "child-thread" {
+			child = session
+		}
+	}
+	s.Require().NotNil(child)
+	s.Equal("Fix session titles", child.Title)
+}
+
 func (s *LocalSessionsSuite) TestListCodexSessionsUsesProjectNameInsteadOfRolloutFileName() {
 	codexHome := s.T().TempDir()
 	s.T().Setenv("CODEX_HOME", codexHome)
