@@ -54,12 +54,14 @@ type codexIndexEntry struct {
 type codexMetaLine struct {
 	Type    string `json:"type"`
 	Payload struct {
-		ID           string          `json:"id"`
-		Timestamp    string          `json:"timestamp"`
-		CWD          string          `json:"cwd"`
-		Originator   string          `json:"originator"`
-		Source       json.RawMessage `json:"source"`
-		ThreadSource string          `json:"thread_source"`
+		ID             string          `json:"id"`
+		SessionID      string          `json:"session_id"`
+		ParentThreadID string          `json:"parent_thread_id"`
+		Timestamp      string          `json:"timestamp"`
+		CWD            string          `json:"cwd"`
+		Originator     string          `json:"originator"`
+		Source         json.RawMessage `json:"source"`
+		ThreadSource   string          `json:"thread_source"`
 	} `json:"payload"`
 }
 
@@ -328,6 +330,7 @@ func readCodexRollouts(
 		}
 		if session.Title == "" {
 			session.Title = firstNonEmpty(
+				codexIndexedThreadTitle(sessions, meta),
 				readCodexTitle(path),
 				sessionProjectTitle(meta.Payload.CWD),
 				meta.Payload.ID,
@@ -342,6 +345,24 @@ func readCodexRollouts(
 		sessions[id] = session
 		return nil
 	})
+}
+
+func codexIndexedThreadTitle(
+	sessions map[string]*model.Session,
+	meta *codexMetaLine,
+) string {
+	if meta == nil {
+		return ""
+	}
+	for _, id := range []string{meta.Payload.ParentThreadID, meta.Payload.SessionID} {
+		if id == "" || id == meta.Payload.ID {
+			continue
+		}
+		if session := sessions["codex:"+id]; session != nil {
+			return session.Title
+		}
+	}
+	return ""
 }
 
 func readCodexMeta(path string) (*codexMetaLine, error) {

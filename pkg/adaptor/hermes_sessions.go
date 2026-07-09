@@ -313,6 +313,7 @@ SELECT
 	s.id,
 	s.source,
 	s.model,
+	s.model_config,
 	s.title,
 	s.cwd,
 	s.started_at,
@@ -404,6 +405,7 @@ func scanHermesStateSession(rows *sql.Rows) (*hermesSessionInfo, error) {
 		id            string
 		source        string
 		modelName     sql.NullString
+		modelConfig   sql.NullString
 		title         sql.NullString
 		cwd           sql.NullString
 		startedAt     float64
@@ -418,6 +420,7 @@ func scanHermesStateSession(rows *sql.Rows) (*hermesSessionInfo, error) {
 		&id,
 		&source,
 		&modelName,
+		&modelConfig,
 		&title,
 		&cwd,
 		&startedAt,
@@ -437,12 +440,20 @@ func scanHermesStateSession(rows *sql.Rows) (*hermesSessionInfo, error) {
 	if lastMessageAt.Valid {
 		updatedAt = hermesNumericTimestamp(lastMessageAt.Float64)
 	}
+	projectID := firstNonEmpty(
+		nullStringValue(cwd),
+		hermesModelConfigCWD(nullStringValue(modelConfig)),
+	)
+	workspaceRoots := []string(nil)
+	if projectID != "" {
+		workspaceRoots = []string{projectID}
+	}
 	raw := map[string]any{
 		"id":             id,
 		"source":         source,
 		"model":          nullStringValue(modelName),
 		"title":          nullStringValue(title),
-		"cwd":            nullStringValue(cwd),
+		"cwd":            projectID,
 		"started_at":     startedAt,
 		"message_count":  nullInt64Value(messageCount),
 		"input_tokens":   nullInt64Value(inputTokens),
@@ -453,18 +464,31 @@ func scanHermesStateSession(rows *sql.Rows) (*hermesSessionInfo, error) {
 	}
 	rawJSON, _ := json.Marshal(raw)
 	return &hermesSessionInfo{
-		SessionID:  id,
-		NativeID:   id,
-		AgentType:  "hermes",
-		Name:       firstNonEmpty(nullStringValue(title), titleCandidate(nullStringValue(preview))),
-		ProjectID:  nullStringValue(cwd),
-		LastActive: updatedAt,
-		Preview:    titleCandidate(nullStringValue(preview)),
-		Status:     "available",
-		TokenUsage: nullInt64Value(inputTokens) + nullInt64Value(outputTokens),
-		UpdatedAt:  updatedAt,
-		RawJSON:    string(rawJSON),
+		SessionID:      id,
+		NativeID:       id,
+		AgentType:      "hermes",
+		Name:           firstNonEmpty(nullStringValue(title), titleCandidate(nullStringValue(preview))),
+		ProjectID:      projectID,
+		WorkspaceRoots: workspaceRoots,
+		LastActive:     updatedAt,
+		Preview:        titleCandidate(nullStringValue(preview)),
+		Status:         "available",
+		TokenUsage:     nullInt64Value(inputTokens) + nullInt64Value(outputTokens),
+		UpdatedAt:      updatedAt,
+		RawJSON:        string(rawJSON),
 	}, nil
+}
+
+func hermesModelConfigCWD(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
+		return ""
+	}
+	return stringMapValue(fields, "cwd")
 }
 
 func scanHermesStateElement(rows *sql.Rows, nativeID string, seq int64) (*model.Element, error) {
