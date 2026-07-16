@@ -186,6 +186,7 @@ type UpdateDaemonAgentRequest struct {
 	WorkingDir   *string
 	Enabled      *bool
 	DesiredState *model.DaemonDesiredState
+	DesiredSlots *int
 }
 
 type ListDaemonHarnessesRequest struct {
@@ -652,6 +653,7 @@ func (f *DaemonFacade) UpdateAgent(
 			WorkingDir:   req.WorkingDir,
 			Enabled:      req.Enabled,
 			DesiredState: req.DesiredState,
+			DesiredSlots: req.DesiredSlots,
 		},
 	)
 	return daemonCommandResponse("update daemon agent", ack, err)

@@ -579,6 +579,10 @@ func newDaemonAgentCommand(stdout io.Writer) *cli.Command {
 					&cli.StringFlag{Name: "instance-id", Usage: "Agent instance id"},
 					&cli.StringFlag{Name: "agent-type", Usage: "Cloud agent type"},
 					&cli.StringFlag{Name: "working-dir", Usage: "Working directory"},
+					&cli.IntFlag{
+						Name:  "desired-slots",
+						Usage: "Desired ACP slot count (1-16)",
+					},
 					&cli.StringFlag{
 						Name:  "desired-state",
 						Usage: "Desired state: running, stopped, or deleted",
@@ -816,6 +820,13 @@ func parseDaemonAgentUpdateRequest(cmd *cli.Command) (*facade.UpdateDaemonAgentR
 	if cmd.IsSet("working-dir") {
 		value := cmd.String("working-dir")
 		req.WorkingDir = &value
+	}
+	if cmd.IsSet("desired-slots") {
+		value := cmd.Int("desired-slots")
+		if value < 1 || value > 16 {
+			return nil, fmt.Errorf("agent update: --desired-slots must be between 1 and 16")
+		}
+		req.DesiredSlots = &value
 	}
 	if cmd.Bool("enabled") && cmd.Bool("disabled") {
 		return nil, fmt.Errorf("agent update: --enabled and --disabled are mutually exclusive")

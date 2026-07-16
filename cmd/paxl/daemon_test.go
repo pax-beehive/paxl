@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/pax-oss/paxl/internal/facade"
@@ -10,6 +11,47 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestDaemonAgentUpdateSendsDesiredSlots(t *testing.T) {
+	client := &cmdFakeDaemonControlClient{
+		ack: &model.DaemonCommandAck{OK: true, Status: model.DaemonCommandStatusReceived},
+	}
+	restore := stubDaemonFacade(t, client)
+	defer restore()
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"daemon", "agent", "update", "conn_codex", "--desired-slots", "2",
+	}, &stdout, &stderr)
+	require.NoError(t, err)
+	require.NotNil(t, client.updatedAgent)
+	raw, err := json.Marshal(client.updatedAgent)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"connection_id":"","desired_slots":2}`, string(raw))
+}
+
+func TestDaemonAgentUpdateRejectsDesiredSlotsOutsideDaemonRange(t *testing.T) {
+	for _, desiredSlots := range []string{"0", "17"} {
+		t.Run(desiredSlots, func(t *testing.T) {
+			client := &cmdFakeDaemonControlClient{
+				ack: &model.DaemonCommandAck{
+					OK:     true,
+					Status: model.DaemonCommandStatusReceived,
+				},
+			}
+			restore := stubDaemonFacade(t, client)
+			defer restore()
+
+			var stdout, stderr bytes.Buffer
+			err := run(context.Background(), []string{
+				"daemon", "agent", "update", "conn_codex", "--desired-slots", desiredSlots,
+			}, &stdout, &stderr)
+
+			assert.ErrorContains(t, err, "--desired-slots must be between 1 and 16")
+			assert.Nil(t, client.updatedAgent)
+		})
+	}
+}
 
 func TestDaemonStatusCommandRendersStatus(t *testing.T) {
 	restore := stubDaemonFacade(t, &cmdFakeDaemonControlClient{
@@ -215,6 +257,7 @@ func TestDaemonAgentHarnessAndLocalCommandsUseDaemonFacade(t *testing.T) {
 	assert.Equal(t, "Work 2", *client.updatedAgent.Name)
 	assert.False(t, *client.updatedAgent.Enabled)
 	assert.Equal(t, []string{"codex-acp"}, *client.updatedAgent.Command)
+	assert.Nil(t, client.updatedAgent.DesiredSlots)
 
 	stdout.Reset()
 	err = run(
