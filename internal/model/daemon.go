@@ -103,6 +103,7 @@ type DaemonUpdateAgentConnectionCommand struct {
 	Env          *map[string]string  `json:"env,omitempty"`
 	Enabled      *bool               `json:"enabled,omitempty"`
 	DesiredState *DaemonDesiredState `json:"desired_state,omitempty"`
+	DesiredSlots *int                `json:"desired_slots,omitempty"`
 }
 
 type DaemonCommandAck struct {
