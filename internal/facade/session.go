@@ -40,11 +40,48 @@ type GetSessionResponse struct {
 	Elements []*model.Element
 }
 
+type ResumeSessionRequest struct {
+	Agent    model.AgentName
+	NativeID string
+}
+
+type ResumeSessionResponse struct{}
+
 func NewSessionFacade(registry *adaptor.Registry, sessionStore *store.Store) *SessionFacade {
 	if registry == nil {
 		registry = adaptor.NewDefaultRegistry()
 	}
 	return &SessionFacade{registry: registry, store: sessionStore}
+}
+
+func (f *SessionFacade) Resume(
+	ctx context.Context,
+	req *ResumeSessionRequest,
+	opts ...func(*Option),
+) (*ResumeSessionResponse, error) {
+	if req == nil || req.Agent == model.AgentNameUnknown || req.NativeID == "" {
+		return nil, fmt.Errorf("resume session: agent and native session id are required")
+	}
+	option := applyOptions(opts)
+	lookup, err := f.registry.Lookup(ctx, &adaptor.LookupRequest{Name: req.Agent})
+	if err != nil {
+		return nil, fmt.Errorf("resume session: %w", err)
+	}
+	resumer, ok := lookup.Adapter.(adaptor.SessionResumer)
+	if !ok {
+		return nil, fmt.Errorf(
+			"resume session: agent %s does not support interactive resume",
+			req.Agent,
+		)
+	}
+	if _, err := resumer.Resume(
+		ctx,
+		&adaptor.ResumeSessionRequest{NativeID: req.NativeID},
+		adaptor.WithStreams(option.Stdin, option.Stdout, option.Stderr),
+	); err != nil {
+		return nil, fmt.Errorf("resume session: %w", err)
+	}
+	return &ResumeSessionResponse{}, nil
 }
 
 func (f *SessionFacade) List(

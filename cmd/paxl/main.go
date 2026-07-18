@@ -117,6 +117,7 @@ func newCommandWithDiagnostics(
 			newDaemonCommand(stdout),
 			newSetupCommand(stdout),
 			newAgentCommand(agentFacade, stdout, stderr, diagnostics),
+			newResumeCommand(stdin, stdout, stderr),
 			newSessionCommand(stdout, stderr, diagnostics),
 			newMemexCommand(stdout, stderr),
 			newCapsuleCommand(stdin, stdout, stderr, diagnostics),
@@ -128,6 +129,50 @@ func newCommandWithDiagnostics(
 			newAgentEnvCommand(stdout),
 		},
 	}
+}
+
+func newResumeCommand(stdin io.Reader, stdout io.Writer, stderr io.Writer) *cli.Command {
+	return &cli.Command{
+		Name:      "resume",
+		Usage:     "Resume an agent session in its native interactive CLI",
+		ArgsUsage: "<agent:session-id>",
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			req, err := parseResumeSessionRequest(cmd)
+			if err != nil {
+				return fmt.Errorf("parse resume session request: %w", err)
+			}
+			if _, err := facade.NewSessionFacade(nil, nil).Resume(
+				ctx,
+				req,
+				facade.WithStreams(stdin, stdout, stderr),
+			); err != nil {
+				return fmt.Errorf("resume session: %w", err)
+			}
+			return nil
+		},
+	}
+}
+
+func parseResumeSessionRequest(cmd *cli.Command) (*facade.ResumeSessionRequest, error) {
+	raw := strings.TrimSpace(cmd.Args().First())
+	if raw == "" {
+		return nil, fmt.Errorf("session id is required")
+	}
+	agentRaw, nativeID, ok := strings.Cut(raw, ":")
+	if !ok || strings.TrimSpace(agentRaw) == "" || strings.TrimSpace(nativeID) == "" {
+		return nil, fmt.Errorf("session id must use agent:session-id format")
+	}
+	if cmd.Args().Len() > 1 {
+		return nil, fmt.Errorf("only one session id may be resumed")
+	}
+	agent, err := parseActiveAgentName(agentRaw)
+	if err != nil {
+		return nil, fmt.Errorf("parse agent: %w", err)
+	}
+	return &facade.ResumeSessionRequest{
+		Agent:    agent,
+		NativeID: strings.TrimSpace(nativeID),
+	}, nil
 }
 
 func newLoginCommand(stdout io.Writer) *cli.Command {
@@ -258,7 +303,7 @@ func newSetupCommand(stdout io.Writer) *cli.Command {
 		Flags: []cli.Flag{
 			&cli.StringSliceFlag{
 				Name:  "agent",
-				Usage: "Agent to set up: codex, claude, pi, kiro, hermes, or openclaw. Repeat to select multiple agents.",
+				Usage: "Agent to set up: codex, claude, pi, kiro, opencode, kimi, hermes, or openclaw. Repeat to select multiple agents.",
 			},
 			&cli.StringFlag{
 				Name:  "format",
@@ -470,7 +515,7 @@ func newSessionCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 				Flags: []cli.Flag{
 					&cli.StringFlag{
 						Name:  "agent",
-						Usage: "Agent to scan: codex, claude, pi, kiro, hermes, or openclaw",
+						Usage: "Agent to scan: codex, claude, pi, kiro, opencode, kimi, hermes, or openclaw",
 					},
 					&cli.StringFlag{
 						Name:  "updated-since",
@@ -3208,6 +3253,8 @@ func parseSetupRequest(cmd *cli.Command) (*facade.SetupRequest, error) {
 				model.AgentNameClaude,
 				model.AgentNamePi,
 				model.AgentNameKiro,
+				model.AgentNameOpenCode,
+				model.AgentNameKimi,
 				model.AgentNameHermes,
 				model.AgentNameOpenClaw:
 				agents = append(agents, agent)

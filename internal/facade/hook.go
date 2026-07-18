@@ -230,6 +230,8 @@ func (f *AgentHookFacade) Deliver(
 		model.AgentNameClaude,
 		model.AgentNamePi,
 		model.AgentNameKiro,
+		model.AgentNameOpenCode,
+		model.AgentNameKimi,
 		model.AgentNameGemini,
 		model.AgentNameOpenClaw,
 		model.AgentNamePaxl:

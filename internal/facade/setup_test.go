@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pax-oss/paxl/internal/facade"
@@ -36,6 +37,8 @@ func (s *SetupFacadeSuite) TestInstallSetsUpAllSupportedAgentHooks() {
 	s.T().Setenv("PI_HOME", filepath.Join(s.home, ".pi"))
 	s.T().Setenv("PI_CODING_AGENT_DIR", filepath.Join(s.home, ".pi", "agent"))
 	s.T().Setenv("KIRO_HOME", filepath.Join(s.home, ".kiro"))
+	s.T().Setenv("PAXL_OPENCODE_CONFIG_DIR", filepath.Join(s.home, ".config", "opencode"))
+	s.T().Setenv("KIMI_CODE_HOME", filepath.Join(s.home, ".kimi-code"))
 	s.T().Setenv("OPENCLAW_HOME", filepath.Join(s.home, ".openclaw"))
 	s.Require().NoError(os.MkdirAll(filepath.Join(s.home, ".claude"), 0o700))
 	s.Require().NoError(os.WriteFile(
@@ -47,11 +50,13 @@ func (s *SetupFacadeSuite) TestInstallSetsUpAllSupportedAgentHooks() {
 	resp, err := facade.NewSetupFacade().Install(s.ctx, &facade.SetupRequest{})
 
 	s.Require().NoError(err)
-	s.Require().Len(resp.Adapters, 6)
+	s.Require().Len(resp.Adapters, 8)
 	s.Equal(model.AgentNameCodex, resp.Adapters[0].Agent)
 	s.Equal(facade.SetupStatusInstalled, resp.Adapters[0].Status)
 	s.Equal(model.AgentNameClaude, resp.Adapters[1].Agent)
 	s.Equal(facade.SetupStatusInstalled, resp.Adapters[1].Status)
+	s.Equal(model.AgentNameOpenCode, resp.Adapters[4].Agent)
+	s.Equal(model.AgentNameKimi, resp.Adapters[5].Agent)
 	for _, result := range resp.Adapters[2:] {
 		s.Equal(facade.SetupStatusInstalled, result.Status)
 	}
@@ -60,6 +65,8 @@ func (s *SetupFacadeSuite) TestInstallSetsUpAllSupportedAgentHooks() {
 	s.agentShimContains(model.AgentNameCodex, "PAXL_CALLER_AGENT=codex")
 	s.agentShimContains(model.AgentNameCodex, "--caller-agent codex")
 	s.agentShimContains(model.AgentNameClaude, "PAXL_CALLER_AGENT=claude")
+	s.agentShimContains(model.AgentNameOpenCode, "PAXL_CALLER_AGENT=opencode")
+	s.agentShimContains(model.AgentNameKimi, "PAXL_CALLER_AGENT=kimi")
 	s.agentShimContains(model.AgentNameHermes, "PAXL_CALLER_AGENT=hermes")
 	s.FileExists(filepath.Join(s.home, ".codex", "paxl", "hooks", "user-prompt.json"))
 	s.codexConfigContains("UserPromptSubmit")
@@ -79,6 +86,8 @@ func (s *SetupFacadeSuite) TestInstallSetsUpAllSupportedAgentHooks() {
 	s.FileExists(filepath.Join(s.home, ".pi", "agent", "extensions", "paxl-hook", "index.ts"))
 	s.FileExists(filepath.Join(s.home, ".kiro", "paxl", "hooks", "user-prompt.json"))
 	s.FileExists(filepath.Join(s.home, ".kiro", "agents", "paxl.json"))
+	s.FileExists(filepath.Join(s.home, ".config", "opencode", "plugins", "paxl.ts"))
+	s.FileExists(filepath.Join(s.home, ".kimi-code", "config.toml"))
 	s.FileExists(filepath.Join(s.home, ".openclaw", "paxl", "hooks", "user-prompt.json"))
 	s.claudeHookCommandContains("paxl __agent-hook --agent claude --event user-prompt")
 }
@@ -192,6 +201,98 @@ func (s *SetupFacadeSuite) TestInstallKiroHookWritesAgentConfig() {
 	})
 	s.Require().NoError(err)
 	s.assertKiroAgentConfig(agentPath, 1)
+}
+
+func (s *SetupFacadeSuite) TestInstallOpenCodeHookWritesIdempotentGlobalPlugin() {
+	configDir := filepath.Join(s.home, ".config", "opencode")
+	s.T().Setenv("PAXL_OPENCODE_CONFIG_DIR", configDir)
+	s.T().Setenv("XDG_DATA_HOME", filepath.Join(s.home, ".data"))
+
+	setup := facade.NewSetupFacade()
+	resp, err := setup.Install(s.ctx, &facade.SetupRequest{
+		Agents:      []model.AgentName{model.AgentNameOpenCode},
+		PaxlCommand: "/opt/paxl test/bin/paxl",
+	})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Adapters, 1)
+	s.Equal(model.AgentNameOpenCode, resp.Adapters[0].Agent)
+	s.Equal(facade.SetupStatusInstalled, resp.Adapters[0].Status)
+	pluginPath := filepath.Join(configDir, "plugins", "paxl.ts")
+	s.Equal(pluginPath, resp.Adapters[0].Path)
+	raw, err := os.ReadFile(pluginPath)
+	s.Require().NoError(err)
+	plugin := string(raw)
+	s.Contains(plugin, `"chat.message"`)
+	s.Contains(plugin, `"experimental.chat.messages.transform"`)
+	s.Contains(plugin, `event.type !== "session.idle"`)
+	s.Contains(plugin, `"__agent-hook"`)
+	s.Contains(plugin, `"opencode"`)
+	s.Contains(plugin, filepath.Join(s.home, ".pax", "paxl", "shims", "opencode", "paxl"))
+	s.Contains(plugin, filepath.Join(s.home, ".data", "paxl", "paxl.sqlite"))
+
+	_, err = setup.Install(s.ctx, &facade.SetupRequest{
+		Agents:      []model.AgentName{model.AgentNameOpenCode},
+		PaxlCommand: "/opt/paxl test/bin/paxl",
+	})
+	s.Require().NoError(err)
+	again, err := os.ReadFile(pluginPath)
+	s.Require().NoError(err)
+	s.Equal(raw, again)
+	s.agentShimContains(model.AgentNameOpenCode, `/opt/paxl test/bin/paxl`)
+}
+
+func (s *SetupFacadeSuite) TestInstallKimiHookPreservesConfigAndIsIdempotent() {
+	kimiHome := filepath.Join(s.home, ".kimi-code")
+	s.T().Setenv("KIMI_CODE_HOME", kimiHome)
+	s.T().Setenv("XDG_DATA_HOME", filepath.Join(s.home, ".data"))
+	s.Require().NoError(os.MkdirAll(kimiHome, 0o700))
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(kimiHome, "config.toml"),
+		[]byte(`default_model = "kimi-code/k3"
+
+[[hooks]]
+event = "Notification"
+command = "notify-existing"
+timeout = 30
+`),
+		0o600,
+	))
+
+	setup := facade.NewSetupFacade()
+	resp, err := setup.Install(s.ctx, &facade.SetupRequest{
+		Agents:      []model.AgentName{model.AgentNameKimi},
+		PaxlCommand: "/opt/paxl test/bin/paxl",
+	})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Adapters, 1)
+	s.Equal(model.AgentNameKimi, resp.Adapters[0].Agent)
+	s.Equal(facade.SetupStatusInstalled, resp.Adapters[0].Status)
+	configPath := filepath.Join(kimiHome, "config.toml")
+	s.Equal(configPath, resp.Adapters[0].Path)
+	raw, err := os.ReadFile(configPath)
+	s.Require().NoError(err)
+	config := string(raw)
+	s.Contains(config, `default_model = "kimi-code/k3"`)
+	s.Contains(config, `event = "Notification"`)
+	s.Contains(config, `command = "notify-existing"`)
+	s.Equal(1, strings.Count(config, "# BEGIN PAXL MANAGED KIMI HOOKS"))
+	s.Equal(1, strings.Count(config, `event = "UserPromptSubmit"`))
+	s.Equal(1, strings.Count(config, `event = "Stop"`))
+	s.Contains(config, "__agent-hook --agent kimi --event user-prompt")
+	s.Contains(config, "__agent-hook --agent kimi --event turn-end")
+	s.Contains(config, filepath.Join(s.home, ".data", "paxl", "paxl.sqlite"))
+
+	_, err = setup.Install(s.ctx, &facade.SetupRequest{
+		Agents:      []model.AgentName{model.AgentNameKimi},
+		PaxlCommand: "/opt/paxl test/bin/paxl",
+	})
+	s.Require().NoError(err)
+	again, err := os.ReadFile(configPath)
+	s.Require().NoError(err)
+	s.Equal(raw, again)
+	s.agentShimContains(model.AgentNameKimi, `/opt/paxl test/bin/paxl`)
 }
 
 func (s *SetupFacadeSuite) TestInstallIsIdempotentForClaudeSettings() {

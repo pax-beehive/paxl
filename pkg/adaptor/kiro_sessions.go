@@ -29,6 +29,7 @@ func NewKiroAdapter() Adapter {
 		getSession:   getKiroSession,
 		prompt:       promptKiroSession,
 		startSession: startKiroSession,
+		resume:       nativeSessionResumer("kiro-cli", "chat", "--resume-id"),
 	}
 }
 

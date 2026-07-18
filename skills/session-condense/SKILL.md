@@ -1,6 +1,6 @@
 ---
 name: session-condense
-description: Maintain a local qmd LLM wiki from paxl session history using a Karpathy-style LLM wiki and memex trail pattern. Use when the user asks for session_condense, session-condense, knowledge-condense, continuous LLM wiki maintenance, qmd wiki updates from local agent sessions, full wiki condensation, or keeping durable docs updated from Codex, Claude, Pi, Kiro, Gemini, Hermes, query trails, or other paxl sessions.
+description: Maintain a local qmd LLM wiki from paxl session history using a Karpathy-style LLM wiki and memex trail pattern. Use when the user asks for session_condense, session-condense, knowledge-condense, continuous LLM wiki maintenance, qmd wiki updates from local agent sessions, full wiki condensation, or keeping durable docs updated from Codex, Claude, Pi, Kiro, OpenCode, Kimi Code, Gemini, Hermes, query trails, or other paxl sessions.
 ---
 
 # Session Condense

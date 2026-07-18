@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -29,6 +30,14 @@ type Adapter interface {
 		req *StartSessionRequest,
 		opts ...func(*Option),
 	) (*StartSessionResponse, error)
+}
+
+type SessionResumer interface {
+	Resume(
+		ctx context.Context,
+		req *ResumeSessionRequest,
+		opts ...func(*Option),
+	) (*ResumeSessionResponse, error)
 }
 
 type InfoRequest struct{}
@@ -82,6 +91,12 @@ type StartSessionRequest struct {
 
 type StartSessionResponse struct{}
 
+type ResumeSessionRequest struct {
+	NativeID string
+}
+
+type ResumeSessionResponse struct{}
+
 type Registry struct {
 	adapters []Adapter
 }
@@ -97,6 +112,8 @@ func NewDefaultRegistry() *Registry {
 			NewClaudeAdapter(),
 			NewPiAdapter(),
 			NewKiroAdapter(),
+			NewOpenCodeAdapter(),
+			NewKimiAdapter(),
 			NewHermesAdapter(),
 			NewOpenClawAdapter(),
 		},
@@ -156,6 +173,23 @@ type staticAdapter struct {
 	getSession   func(ctx context.Context, req *GetSessionRequest) (*GetSessionResponse, error)
 	prompt       func(ctx context.Context, req *PromptRequest, option *Option) (*PromptResponse, error)
 	startSession func(ctx context.Context, req *StartSessionRequest, option *Option) (*StartSessionResponse, error)
+	resume       func(ctx context.Context, req *ResumeSessionRequest, option *Option) (*ResumeSessionResponse, error)
+}
+
+func (a *staticAdapter) Resume(
+	ctx context.Context,
+	req *ResumeSessionRequest,
+	opts ...func(*Option),
+) (*ResumeSessionResponse, error) {
+	option := applyOptions(opts)
+	if a.resume == nil {
+		return nil, fmt.Errorf("agent %s does not support interactive resume", a.agent.Name)
+	}
+	resp, err := a.resume(ctx, req, option)
+	if err != nil {
+		return nil, fmt.Errorf("resume %s session: %w", a.agent.Name, err)
+	}
+	return resp, nil
 }
 
 func (a *staticAdapter) Info(
@@ -291,6 +325,60 @@ func runArgPromptCommand(
 	writeCommandOutput(option, "stdout", stdout.String())
 	writeCommandOutput(option, "stderr", stderr.String())
 	return &PromptResponse{DeliveryMethod: "cli_resume"}, nil
+}
+
+func runResumeCommand(
+	ctx context.Context,
+	argv []string,
+	option *Option,
+) (*ResumeSessionResponse, error) {
+	if len(argv) == 0 {
+		return nil, fmt.Errorf("resume command is required")
+	}
+	stdin := io.Reader(os.Stdin)
+	stdout := io.Writer(os.Stdout)
+	stderr := io.Writer(os.Stderr)
+	if option != nil {
+		if option.Stdin != nil {
+			stdin = option.Stdin
+		}
+		if option.Stdout != nil {
+			stdout = option.Stdout
+		}
+		if option.Stderr != nil {
+			stderr = option.Stderr
+		}
+	}
+	// The command name is selected by built-in adapters; external session ids are only CLI args.
+	command := exec.CommandContext(ctx, argv[0], argv[1:]...) // #nosec G204
+	command.Stdin = stdin
+	command.Stdout = stdout
+	command.Stderr = stderr
+	if err := command.Run(); err != nil {
+		return nil, fmt.Errorf("run %s: %w", strings.Join(argv, " "), err)
+	}
+	return &ResumeSessionResponse{}, nil
+}
+
+func nativeSessionResumer(command ...string) func(
+	context.Context,
+	*ResumeSessionRequest,
+	*Option,
+) (*ResumeSessionResponse, error) {
+	return func(
+		ctx context.Context,
+		req *ResumeSessionRequest,
+		option *Option,
+	) (*ResumeSessionResponse, error) {
+		if req == nil || req.NativeID == "" {
+			return nil, fmt.Errorf("native session id is required")
+		}
+		if err := validateNativeSessionID(req.NativeID); err != nil {
+			return nil, err
+		}
+		argv := append(append([]string{}, command...), req.NativeID)
+		return runResumeCommand(ctx, argv, option)
+	}
 }
 
 func validateNativeSessionID(nativeID string) error {

@@ -14,7 +14,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const paxlHookAdapterSchemaVersion = "paxl.agent_hook_adapter.v1"
+const (
+	paxlHookAdapterSchemaVersion = "paxl.agent_hook_adapter.v1"
+	kimiHookBlockStart           = "# BEGIN PAXL MANAGED KIMI HOOKS"
+	kimiHookBlockEnd             = "# END PAXL MANAGED KIMI HOOKS"
+)
 
 type SetupStatus string
 
@@ -130,6 +134,10 @@ func (f *SetupFacade) installAgentHook(
 		return installPiHook(command, dryRun)
 	case model.AgentNameKiro:
 		return installKiroHook(command, dryRun)
+	case model.AgentNameOpenCode:
+		return installOpenCodeHook(command, dryRun)
+	case model.AgentNameKimi:
+		return installKimiHook(command, dryRun)
 	case model.AgentNameHermes:
 		return installHermesHook(command, dryRun)
 	case model.AgentNameOpenClaw:
@@ -167,6 +175,8 @@ func setupAgents(agents []model.AgentName) []model.AgentName {
 			model.AgentNameClaude,
 			model.AgentNamePi,
 			model.AgentNameKiro,
+			model.AgentNameOpenCode,
+			model.AgentNameKimi,
 			model.AgentNameHermes,
 			model.AgentNameOpenClaw,
 		}
@@ -195,6 +205,8 @@ func supportsAgentShim(agent model.AgentName) bool {
 		model.AgentNameClaude,
 		model.AgentNamePi,
 		model.AgentNameKiro,
+		model.AgentNameOpenCode,
+		model.AgentNameKimi,
 		model.AgentNameHermes,
 		model.AgentNameOpenClaw:
 		return true
@@ -347,6 +359,67 @@ func installKiroHook(command string, dryRun bool) (*SetupAdapterResult, error) {
 	}
 	if err := setKiroDefaultAgent("paxl"); err != nil {
 		return nil, err
+	}
+	return result, nil
+}
+
+func installOpenCodeHook(command string, dryRun bool) (*SetupAdapterResult, error) {
+	dbPath, err := defaultStorePath()
+	if err != nil {
+		return nil, err
+	}
+	path := openCodePluginPath()
+	result := &SetupAdapterResult{
+		Agent:   model.AgentNameOpenCode,
+		Status:  SetupStatusInstalled,
+		Path:    path,
+		Message: "Installed OpenCode user-prompt and session-idle plugin hooks.",
+	}
+	if dryRun {
+		result.Status = SetupStatusPending
+		result.Message = "Would install OpenCode user-prompt and session-idle plugin hooks."
+		return result, nil
+	}
+	if err := writeFile(path, []byte(renderOpenCodePlugin(command, dbPath)), 0o600); err != nil {
+		return nil, fmt.Errorf("write OpenCode plugin: %w", err)
+	}
+	return result, nil
+}
+
+func installKimiHook(command string, dryRun bool) (*SetupAdapterResult, error) {
+	dbPath, err := defaultStorePath()
+	if err != nil {
+		return nil, err
+	}
+	path := kimiConfigPath()
+	result := &SetupAdapterResult{
+		Agent:   model.AgentNameKimi,
+		Status:  SetupStatusInstalled,
+		Path:    path,
+		Message: "Installed Kimi Code UserPromptSubmit and Stop hooks.",
+	}
+	if dryRun {
+		result.Status = SetupStatusPending
+		result.Message = "Would install Kimi Code UserPromptSubmit and Stop hooks."
+		return result, nil
+	}
+	raw, err := os.ReadFile(path) // #nosec G304
+	if os.IsNotExist(err) {
+		raw = nil
+	} else if err != nil {
+		return nil, fmt.Errorf("read Kimi Code config: %w", err)
+	}
+	content, err := upsertManagedTextBlock(
+		string(raw),
+		kimiHookBlockStart,
+		kimiHookBlockEnd,
+		renderKimiHookBlock(command, dbPath),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("update Kimi Code config: %w", err)
+	}
+	if err := writeFile(path, []byte(content), 0o600); err != nil {
+		return nil, fmt.Errorf("write Kimi Code config: %w", err)
 	}
 	return result, nil
 }
@@ -838,6 +911,146 @@ export default function (pi: ExtensionAPI) {
 `, strconv.Quote(strings.TrimSpace(command)), strconv.Quote(strings.TrimSpace(dbPath)))
 }
 
+func renderOpenCodePlugin(command string, dbPath string) string {
+	return fmt.Sprintf(`import type { Plugin } from "@opencode-ai/plugin";
+import { spawnSync } from "node:child_process";
+
+const paxlCommand = %s;
+const paxlDatabase = %s;
+const pendingContext = new Map<string, string>();
+
+type OpenCodePart = {
+  type?: string;
+  text?: string;
+  synthetic?: boolean;
+  ignored?: boolean;
+};
+
+function visibleText(parts: OpenCodePart[]): string {
+  return parts
+    .filter((part) => part?.type === "text" && !part.synthetic && !part.ignored)
+    .map((part) => typeof part.text === "string" ? part.text.trim() : "")
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+}
+
+function runHook(event: string, sessionID: string, prompt: string, cwd: string): string {
+  const args: string[] = [];
+  if (paxlDatabase.trim() !== "") args.push("--db", paxlDatabase);
+  args.push("__agent-hook", "--agent", "opencode", "--event", event);
+  const result = spawnSync(paxlCommand, args, {
+    input: JSON.stringify({
+      schema_version: "paxl.hook.opencode.v1",
+      agent: "opencode",
+      session_id: sessionID,
+      cwd,
+      workspace: cwd,
+      prompt,
+    }) + "\n",
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024,
+    timeout: 2_000,
+  });
+  if (result.error || result.status !== 0) {
+    console.warn("Paxl OpenCode hook failed.", result.error ?? result.stderr ?? result.stdout);
+    return "";
+  }
+  return (result.stdout ?? "").trim();
+}
+
+export const PaxlPlugin: Plugin = async ({ directory }) => ({
+  "chat.message": async (input, output) => {
+    const prompt = visibleText(output.parts as OpenCodePart[]);
+    if (prompt === "") return;
+    const context = runHook("user-prompt", String(input.sessionID ?? ""), prompt, directory);
+    if (context !== "") pendingContext.set(String(input.sessionID ?? ""), context);
+  },
+
+  "experimental.chat.messages.transform": async (_input, output) => {
+    const messages = output.messages as Array<{ info: any; parts: OpenCodePart[] }>;
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const message = messages[index];
+      if (message?.info?.role !== "user") continue;
+      const sessionID = String(message.info.sessionID ?? "");
+      const context = pendingContext.get(sessionID);
+      if (!context) return;
+      pendingContext.delete(sessionID);
+      const part = message.parts.find((candidate) =>
+        candidate?.type === "text" && !candidate.synthetic && !candidate.ignored
+      );
+      if (part && typeof part.text === "string") part.text += "\n\n" + context;
+      return;
+    }
+  },
+
+  event: async ({ event }) => {
+    if (event.type !== "session.idle") return;
+    const sessionID = String(event.properties?.sessionID ?? "");
+    if (sessionID !== "") runHook("turn-end", sessionID, "", directory);
+  },
+});
+`, strconv.Quote(strings.TrimSpace(command)), strconv.Quote(strings.TrimSpace(dbPath)))
+}
+
+func renderKimiHookBlock(command string, dbPath string) string {
+	promptCommand := setupHookCommand(command, model.AgentNameKimi, dbPath)
+	stopCommand := setupHookCommandWithEvent(
+		command,
+		model.AgentNameKimi,
+		dbPath,
+		"turn-end",
+	)
+	return `[[hooks]]
+event = "UserPromptSubmit"
+command = ` + strconv.Quote(promptCommand) + `
+timeout = 10
+
+[[hooks]]
+event = "Stop"
+command = ` + strconv.Quote(stopCommand) + `
+timeout = 10`
+}
+
+func upsertManagedTextBlock(
+	content string,
+	startMarker string,
+	endMarker string,
+	body string,
+) (string, error) {
+	startCount := strings.Count(content, startMarker)
+	endCount := strings.Count(content, endMarker)
+	if startCount != endCount || startCount > 1 {
+		return "", fmt.Errorf("managed block markers are unbalanced or duplicated")
+	}
+	block := startMarker + "\n" + strings.TrimSpace(body) + "\n" + endMarker
+	if startCount == 0 {
+		prefix := strings.TrimRight(content, "\n")
+		if strings.TrimSpace(prefix) == "" {
+			return block + "\n", nil
+		}
+		return prefix + "\n\n" + block + "\n", nil
+	}
+	start := strings.Index(content, startMarker)
+	endOffset := strings.Index(content[start:], endMarker)
+	if start < 0 || endOffset < 0 {
+		return "", fmt.Errorf("managed block markers cannot be located")
+	}
+	end := start + endOffset + len(endMarker)
+	prefix := strings.TrimRight(content[:start], "\n")
+	suffix := strings.TrimLeft(content[end:], "\n")
+	if prefix == "" && suffix == "" {
+		return block + "\n", nil
+	}
+	if suffix == "" {
+		return prefix + "\n\n" + block + "\n", nil
+	}
+	if prefix == "" {
+		return block + "\n\n" + suffix, nil
+	}
+	return prefix + "\n\n" + block + "\n\n" + suffix, nil
+}
+
 func upsertCodexConfigHook(path string, promptCommand string, stopCommand string) error {
 	raw, err := os.ReadFile(path) // #nosec G304
 	if os.IsNotExist(err) {
@@ -1037,6 +1250,26 @@ func kiroSettingsPath() string {
 	return filepath.Join(genericAgentRoot(model.AgentNameKiro), "settings", "cli.json")
 }
 
+func openCodePluginPath() string {
+	root := firstNonEmpty(
+		os.Getenv("PAXL_OPENCODE_CONFIG_DIR"),
+		os.Getenv("OPENCODE_CONFIG_DIR"),
+	)
+	if root == "" {
+		if xdgRoot := os.Getenv("XDG_CONFIG_HOME"); xdgRoot != "" {
+			root = filepath.Join(xdgRoot, "opencode")
+		} else {
+			root = homePath(".config", "opencode")
+		}
+	}
+	return filepath.Join(root, "plugins", "paxl.ts")
+}
+
+func kimiConfigPath() string {
+	root := firstNonEmpty(os.Getenv("KIMI_CODE_HOME"), homePath(".kimi-code"))
+	return filepath.Join(root, "config.toml")
+}
+
 func genericHookDescriptorPath(agent model.AgentName) string {
 	root := genericAgentRoot(agent)
 	return filepath.Join(root, "paxl", "hooks", "user-prompt.json")
@@ -1053,6 +1286,8 @@ func genericAgentRoot(agent model.AgentName) string {
 	case model.AgentNameUnknown,
 		model.AgentNameCodex,
 		model.AgentNameClaude,
+		model.AgentNameOpenCode,
+		model.AgentNameKimi,
 		model.AgentNameGemini,
 		model.AgentNameHermes,
 		model.AgentNamePaxl:

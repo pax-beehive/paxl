@@ -13,6 +13,8 @@ const (
 	AgentNameClaude   AgentName = "claude"
 	AgentNamePi       AgentName = "pi"
 	AgentNameKiro     AgentName = "kiro"
+	AgentNameOpenCode AgentName = "opencode"
+	AgentNameKimi     AgentName = "kimi"
 	AgentNameGemini   AgentName = "gemini"
 	AgentNameHermes   AgentName = "hermes"
 	AgentNameOpenClaw AgentName = "openclaw"
@@ -24,6 +26,8 @@ var supportedAgentNames = map[AgentName]struct{}{
 	AgentNameClaude:   {},
 	AgentNamePi:       {},
 	AgentNameKiro:     {},
+	AgentNameOpenCode: {},
+	AgentNameKimi:     {},
 	AgentNameGemini:   {},
 	AgentNameHermes:   {},
 	AgentNameOpenClaw: {},

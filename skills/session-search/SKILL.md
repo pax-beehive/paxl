@@ -1,6 +1,6 @@
 ---
 name: session-search
-description: Search, inspect, recall, remember, retrieve, or look back through local paxl session history, and optionally record useful query trails into a local qmd LLM wiki. Use when the user asks to find prior Codex, Claude, Pi, Kiro, Gemini, Hermes, or agent sessions, search local transcripts, recover earlier context, locate a session by keyword, run paxl session query, list, or get previous session context, or make a reusable memex trail from a query without transferring knowledge.
+description: Search, inspect, recall, remember, retrieve, resume, or look back through local paxl session history, and optionally record useful query trails into a local qmd LLM wiki. Use when the user asks to find or resume prior Codex, Claude, Pi, Kiro, OpenCode, Kimi Code, Hermes, or agent sessions, search local transcripts, recover earlier context, locate a session by keyword, run paxl session query, list, get, or resume previous session context, or make a reusable memex trail from a query without transferring knowledge.
 ---
 
 # Session Search
@@ -87,8 +87,10 @@ codex:native-id
 claude:native-id
 pi:native-id
 kiro:native-id
-gemini:native-id
+opencode:native-id
+kimi:native-id
 hermes:native-id
+openclaw:native-id
 ```
 
 If the user gives a bare native ID, pass `--agent AGENT` or convert it to a
@@ -112,6 +114,19 @@ The first JSONL record is `paxl.session.snapshot.v1`; following records are
 `paxl.session.element.v1`. Use `currentSyncVersion`, `seq`, `role`,
 `startedAt`, `completedAt`, and `contentText` to cite or summarize what was
 found.
+
+## Resume
+
+Only when the user explicitly asks to continue a session interactively, connect
+the current terminal to its native agent CLI:
+
+```sh
+paxl resume codex:SESSION_ID
+paxl resume opencode:SESSION_ID
+```
+
+OpenClaw sessions cannot be resumed this way because OpenClaw does not expose a
+native interactive resume CLI.
 
 ## Reporting Results
 

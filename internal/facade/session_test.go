@@ -148,6 +148,7 @@ CREATE TABLE sessions (
 	id TEXT PRIMARY KEY,
 	source TEXT NOT NULL,
 	model TEXT,
+	model_config TEXT,
 	started_at REAL NOT NULL,
 	ended_at REAL,
 	message_count INTEGER DEFAULT 0,

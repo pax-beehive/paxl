@@ -24,6 +24,8 @@ func (s *AgentSuite) TestParseAgentNameAcceptsSupportedAgents() {
 		{raw: "claude", want: model.AgentNameClaude},
 		{raw: "pi", want: model.AgentNamePi},
 		{raw: "kiro", want: model.AgentNameKiro},
+		{raw: "opencode", want: model.AgentNameOpenCode},
+		{raw: "kimi", want: model.AgentNameKimi},
 		{raw: "gemini", want: model.AgentNameGemini},
 		{raw: "hermes", want: model.AgentNameHermes},
 		{raw: "openclaw", want: model.AgentNameOpenClaw},

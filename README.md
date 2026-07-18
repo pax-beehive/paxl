@@ -2,8 +2,9 @@
 
 **Local-first context transfer for AI coding agents.**
 
-`paxl` lets Codex, Claude Code, Pi, Kiro, and OpenClaw hand work to each other
-without copy-pasting transcripts or uploading your session history.
+`paxl` lets Codex, Claude Code, Pi, Kiro, OpenCode, Kimi Code, Hermes, and
+OpenClaw hand work to each other without copy-pasting transcripts or uploading
+your session history.
 
 When one agent is out of quota, stuck, or simply the wrong tool for the next
 step, `paxl` can preserve the working context and deliver it to another local
@@ -43,6 +44,13 @@ paxl session list --agent claude --limit 5
 paxl session list --agent codex --limit 5
 ```
 
+Resume one directly in its native interactive CLI:
+
+```sh
+paxl resume codex:<session-id>
+paxl resume opencode:<session-id>
+```
+
 Move the Claude session into an existing Codex session:
 
 ```sh
@@ -80,7 +88,9 @@ when you explicitly mirror, inject, or send it.
 | Claude Code | Local logs | `claude --print` | `UserPromptSubmit` |
 | Pi | Local logs | Pi CLI | `before_agent_start` extension |
 | Kiro | Kiro CLI logs | `kiro-cli chat` | Kiro `userPromptSubmit` agent hook |
-| Hermes | Local descriptor host | Hook descriptor | Descriptor only |
+| OpenCode | Local SQLite | `opencode run` | Global OpenCode plugin |
+| Kimi Code | Local session index and wire log | `kimi --session` | `UserPromptSubmit` and `Stop` hooks |
+| Hermes | Local state, ACP, or HTTP | ACP or Hermes HTTP | Native Hermes hooks |
 | OpenClaw | ACP | ACP `session/prompt` | Descriptor only |
 
 Run `paxl agent list` to see which of these are available on your machine.
@@ -585,6 +595,23 @@ All `team` commands support `--format table|jsonl`.
 
 ## Agent Delivery Semantics
 
+Resume a known paxl session in the foreground with `paxl resume
+<agent:session-id>`. The command connects the current terminal directly to the
+agent's native interactive CLI:
+
+| Agent | Interactive resume command |
+| --- | --- |
+| Codex | `codex resume <session-id>` |
+| Claude Code | `claude --resume <session-id>` |
+| Pi | `pi --session <session-id>` |
+| Kiro | `kiro-cli chat --resume-id <session-id>` |
+| OpenCode | `opencode --session <session-id>` |
+| Kimi Code | `kimi --session <session-id>` |
+| Hermes | `hermes --resume <session-id>` |
+
+OpenClaw does not expose a native interactive resume CLI, so `paxl resume`
+returns an unsupported-operation error for OpenClaw sessions.
+
 Codex delivery:
 
 - Codex App/Desktop existing session: `codex app-server` `thread/resume`, then
@@ -611,6 +638,22 @@ Kiro delivery:
 
 - Existing session: `kiro-cli chat --resume-id <session-id> --no-interactive <message>`
 - New session: `kiro-cli chat --no-interactive <message>`
+
+OpenCode delivery:
+
+- Existing session: `opencode run --session <session-id> <message>`
+- New session: `opencode run <message>`
+- Session discovery and timelines: local OpenCode SQLite data.
+- Conditional hook injection: global `plugins/paxl.ts` OpenCode plugin.
+
+Kimi Code delivery:
+
+- Existing session: `kimi --session <session-id> --prompt <message>`
+- New session: `kimi --prompt <message>`
+- Session discovery and timelines: `$KIMI_CODE_HOME/session_index.jsonl` and
+  the main-agent `wire.jsonl` stream.
+- Conditional hook injection: managed `UserPromptSubmit` and `Stop` entries in
+  `$KIMI_CODE_HOME/config.toml`.
 
 OpenClaw delivery:
 
@@ -639,7 +682,8 @@ The CI coverage gate is 80%.
 ## Status
 
 `paxl` is an early open-source CLI. The architecture is designed for more agent
-adapters. Codex, Claude, Pi, Kiro, and OpenClaw are built in today.
+adapters. Codex, Claude, Pi, Kiro, OpenCode, Kimi Code, Hermes, and OpenClaw are
+built in today.
 
 ## Platform Support
 
@@ -648,12 +692,13 @@ built-in adapters depend on local agent log locations and native CLIs.
 
 Current support boundary:
 
-- macOS: verified with local Codex, Claude Code, Pi, and Kiro CLI log shapes.
-  OpenClaw is covered through ACP contract tests and requires a local OpenClaw
-  ACP command.
+- macOS: verified with local Codex, Claude Code, Pi, Kiro, OpenCode, Kimi Code,
+  and Hermes session shapes. OpenClaw is covered through ACP contract tests and
+  requires a local OpenClaw ACP command.
 - Linux: expected to be close to macOS if `~/.codex/sessions`,
-  `~/.claude/projects`, `~/.pi/agent/sessions`, `~/.kiro/sessions`, and the
-  matching CLIs are available, but it still needs real-world validation.
+  `~/.claude/projects`, `~/.pi/agent/sessions`, `~/.kiro/sessions`, OpenCode's
+  local data directory, `~/.kimi-code/sessions`, and the matching CLIs are
+  available, but it still needs real-world validation.
 - Windows: not fully validated. Path handling, Claude project directory
   decoding, fake-command tests, and native CLI resume behavior need dedicated
   Windows coverage.
