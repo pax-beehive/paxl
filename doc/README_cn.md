@@ -2,8 +2,9 @@
 
 **给 AI coding agents 用的本地优先上下文转移工具。**
 
-`paxl` 让 Codex、Claude Code、Pi、Kiro 和 OpenClaw 可以互相交接工作，
-不用手动复制长 transcript，也不用把本地 session history 上传到云端服务。
+`paxl` 让 Codex、Claude Code、Pi、Kiro、OpenCode、Kimi Code、Hermes 和
+OpenClaw 可以互相交接工作，不用手动复制长 transcript，也不用把本地 session
+history 上传到云端服务。
 
 当一个 agent 额度用完、卡住，或者不适合下一步时，`paxl` 可以保留当前工作上下文，
 再把它投递给另一个本地 agent session。
@@ -38,6 +39,13 @@ paxl agent list
 ```sh
 paxl session list --agent claude --limit 5
 paxl session list --agent codex --limit 5
+```
+
+直接用对应 agent 的原生交互 CLI 恢复 session：
+
+```sh
+paxl resume codex:<session-id>
+paxl resume opencode:<session-id>
 ```
 
 把 Claude session 迁到已有 Codex session：
@@ -76,7 +84,9 @@ paxl session mirror claude:<source-session-id> --to codex
 | Claude Code | 本地日志 | `claude --print` | `UserPromptSubmit` |
 | Pi | 本地日志 | Pi CLI | `before_agent_start` extension |
 | Kiro | Kiro CLI 日志 | `kiro-cli chat` | Kiro `userPromptSubmit` agent hook |
-| Hermes | 本地 descriptor host | Hook descriptor | Descriptor only |
+| OpenCode | 本地 SQLite | `opencode run` | 全局 OpenCode plugin |
+| Kimi Code | 本地 session index 与 wire log | `kimi --session` | `UserPromptSubmit` 和 `Stop` hooks |
+| Hermes | 本地状态、ACP 或 HTTP | ACP 或 Hermes HTTP | Hermes 原生 hooks |
 | OpenClaw | ACP | ACP `session/prompt` | Descriptor only |
 
 运行 `paxl agent list` 可以看到这些 agent 在本机是否可用。
@@ -510,9 +520,26 @@ paxl friend block <friend-id>
 ## Agent 投递语义
 
 `paxl setup` 默认会安装当前支持的 agent hook plumbing：Codex、Claude、Pi、
-Kiro、Hermes 和 OpenClaw。Codex 和 Claude 会写入原生
-`UserPromptSubmit` hook；Pi 会写入 `before_agent_start` extension；
-其他 agent 会写入 paxl-owned descriptor，供对应 host/gateway 调用同一个隐藏入口。
+Kiro、OpenCode、Kimi Code、Hermes 和 OpenClaw。Codex 和 Claude 会写入原生
+`UserPromptSubmit` hook；Pi 会写入 `before_agent_start` extension；Kiro 使用 agent
+hook，OpenCode 使用全局 plugin，Kimi Code 使用托管 TOML hooks，Hermes 使用原生
+hook 配置；OpenClaw 会写入 paxl-owned descriptor。
+
+使用 `paxl resume <agent:session-id>` 可以在前台恢复一个已知的 paxl session。
+当前终端会直接连接到对应 agent 的原生交互 CLI：
+
+| Agent | 交互式 resume 命令 |
+| --- | --- |
+| Codex | `codex resume <session-id>` |
+| Claude Code | `claude --resume <session-id>` |
+| Pi | `pi --session <session-id>` |
+| Kiro | `kiro-cli chat --resume-id <session-id>` |
+| OpenCode | `opencode --session <session-id>` |
+| Kimi Code | `kimi --session <session-id>` |
+| Hermes | `hermes --resume <session-id>` |
+
+OpenClaw 没有原生交互式 resume CLI，因此对 OpenClaw session 调用 `paxl resume`
+会返回不支持该操作的错误。
 
 Codex 投递：
 
@@ -541,6 +568,22 @@ Kiro 投递：
 - 已有 session：`kiro-cli chat --resume-id <session-id> --no-interactive <message>`
 - 新 session：`kiro-cli chat --no-interactive <message>`
 
+OpenCode 投递：
+
+- 已有 session：`opencode run --session <session-id> <message>`
+- 新 session：`opencode run <message>`
+- session 发现与时间线：读取 OpenCode 本地 SQLite。
+- 条件 hook 注入：全局 `plugins/paxl.ts` plugin。
+
+Kimi Code 投递：
+
+- 已有 session：`kimi --session <session-id> --prompt <message>`
+- 新 session：`kimi --prompt <message>`
+- session 发现与时间线：读取 `$KIMI_CODE_HOME/session_index.jsonl` 和主 agent 的
+  `wire.jsonl`。
+- 条件 hook 注入：写入 `$KIMI_CODE_HOME/config.toml` 中 paxl 管理的
+  `UserPromptSubmit` 与 `Stop` hooks。
+
 OpenClaw 投递：
 
 - 已有 session：通过 `openclaw acp` 发送 ACP `session/prompt`
@@ -568,7 +611,7 @@ CI 的 coverage 门槛是 80%。
 ## 当前状态
 
 `paxl` 还是早期 open-source CLI。架构上支持继续扩展更多 agent adapters，
-目前内置支持 Codex、Claude、Pi、Kiro 和 OpenClaw。
+目前内置支持 Codex、Claude、Pi、Kiro、OpenCode、Kimi Code、Hermes 和 OpenClaw。
 
 ## 平台支持边界
 
@@ -577,11 +620,13 @@ CLI 架构和 SQLite 存储本身是跨平台 Go 代码，但当前内置 adapte
 
 当前支持边界：
 
-- macOS：已经用本地 Codex、Claude Code、Pi 和 Kiro CLI 日志形态验证过。
-  OpenClaw 通过 ACP contract tests 覆盖，需要本机存在 OpenClaw ACP 命令。
+- macOS：已经用本地 Codex、Claude Code、Pi、Kiro、OpenCode、Kimi Code 和
+  Hermes session 形态验证过。OpenClaw 通过 ACP contract tests 覆盖，需要本机存在
+  OpenClaw ACP 命令。
 - Linux：如果存在 `~/.codex/sessions`、`~/.claude/projects`、
-  `~/.pi/agent/sessions`、`~/.kiro/sessions`，并且对应 CLI 在 `PATH` 中，
-  理论上和 macOS 很接近，但还需要真实环境验证。
+  `~/.pi/agent/sessions`、`~/.kiro/sessions`、OpenCode 本地数据目录和
+  `~/.kimi-code/sessions`，并且对应 CLI 在 `PATH` 中，理论上和 macOS 很接近，
+  但还需要真实环境验证。
 - Windows：还没有充分验证。路径处理、Claude project 目录名解码、fake command
   测试方式、native CLI resume 行为都需要单独覆盖。
 

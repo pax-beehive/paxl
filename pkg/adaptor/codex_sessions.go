@@ -29,6 +29,7 @@ func NewCodexAdapter() Adapter {
 		getSession:   getCodexSession,
 		prompt:       promptCodexSession,
 		startSession: startCodexSession,
+		resume:       nativeSessionResumer("codex", "resume"),
 	}
 }
 

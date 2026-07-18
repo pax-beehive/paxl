@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/pax-oss/paxl/internal/model"
@@ -29,13 +30,15 @@ func (s *RegistrySuite) TestDefaultRegistryContainsBuiltInAdapters() {
 	resp, err := registry.List(context.Background(), &adaptor.ListRequest{})
 	s.Require().NoError(err)
 
-	s.Len(resp.Agents, 6)
+	s.Len(resp.Agents, 8)
 	s.Equal(model.AgentNameCodex, resp.Agents[0].Name)
 	s.Equal(model.AgentNameClaude, resp.Agents[1].Name)
 	s.Equal(model.AgentNamePi, resp.Agents[2].Name)
 	s.Equal(model.AgentNameKiro, resp.Agents[3].Name)
-	s.Equal(model.AgentNameHermes, resp.Agents[4].Name)
-	s.Equal(model.AgentNameOpenClaw, resp.Agents[5].Name)
+	s.Equal(model.AgentNameOpenCode, resp.Agents[4].Name)
+	s.Equal(model.AgentNameKimi, resp.Agents[5].Name)
+	s.Equal(model.AgentNameHermes, resp.Agents[6].Name)
+	s.Equal(model.AgentNameOpenClaw, resp.Agents[7].Name)
 }
 
 func (s *RegistrySuite) TestListAcceptsVerboseWriterOption() {
@@ -49,7 +52,7 @@ func (s *RegistrySuite) TestListAcceptsVerboseWriterOption() {
 	)
 
 	s.Require().NoError(err)
-	s.Len(resp.Agents, 6)
+	s.Len(resp.Agents, 8)
 }
 
 func (s *RegistrySuite) TestLookupRejectsUnsupportedAgent() {
@@ -148,6 +151,89 @@ func (s *RegistrySuite) TestClaudeAdapterGetsSessionThroughPublicInterface() {
 	s.Require().NoError(err)
 	s.Require().Len(resp.Elements, 1)
 	s.Equal("Hello", resp.Elements[0].ContentText)
+}
+
+func (s *RegistrySuite) TestLocalAdaptersResumeSessionsInNativeInteractiveCLIs() {
+	if runtime.GOOS == "windows" {
+		s.T().Skip("The fake CLI script uses POSIX shell syntax.")
+	}
+	cases := []struct {
+		name     string
+		adapter  adaptor.Adapter
+		command  string
+		wantArgs string
+	}{
+		{
+			name:     "codex",
+			adapter:  adaptor.NewCodexAdapter(),
+			command:  "codex",
+			wantArgs: "resume\nsession_native\n",
+		},
+		{
+			name:     "claude",
+			adapter:  adaptor.NewClaudeAdapter(),
+			command:  "claude",
+			wantArgs: "--resume\nsession_native\n",
+		},
+		{
+			name:     "pi",
+			adapter:  adaptor.NewPiAdapter(),
+			command:  "pi",
+			wantArgs: "--session\nsession_native\n",
+		},
+		{
+			name:     "kiro",
+			adapter:  adaptor.NewKiroAdapter(),
+			command:  "kiro-cli",
+			wantArgs: "chat\n--resume-id\nsession_native\n",
+		},
+		{
+			name:     "opencode",
+			adapter:  adaptor.NewOpenCodeAdapter(),
+			command:  "opencode",
+			wantArgs: "--session\nsession_native\n",
+		},
+		{
+			name:     "kimi",
+			adapter:  adaptor.NewKimiAdapter(),
+			command:  "kimi",
+			wantArgs: "--session\nsession_native\n",
+		},
+		{
+			name:     "hermes",
+			adapter:  adaptor.NewHermesAdapter(),
+			command:  "hermes",
+			wantArgs: "--resume\nsession_native\n",
+		},
+	}
+
+	for _, tc := range cases {
+		s.Run(tc.name, func() {
+			argsPath := filepath.Join(s.T().TempDir(), "args.txt")
+			stdinPath := filepath.Join(s.T().TempDir(), "stdin.txt")
+			s.installInteractiveFakeCommand(tc.command, argsPath, stdinPath)
+			resumer, ok := tc.adapter.(adaptor.SessionResumer)
+			s.Require().True(ok)
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			_, err := resumer.Resume(
+				context.Background(),
+				&adaptor.ResumeSessionRequest{NativeID: "session_native"},
+				adaptor.WithStreams(strings.NewReader("terminal input"), &stdout, &stderr),
+			)
+
+			s.Require().NoError(err)
+			rawArgs, err := os.ReadFile(argsPath)
+			s.Require().NoError(err)
+			s.Equal(tc.wantArgs, string(rawArgs))
+			rawStdin, err := os.ReadFile(stdinPath)
+			s.Require().NoError(err)
+			s.Equal("terminal input", string(rawStdin))
+			s.Equal("interactive stdout\n", stdout.String())
+			s.Equal("interactive stderr\n", stderr.String())
+		})
+	}
 }
 
 func (s *RegistrySuite) TestPiAdapterListsSessionsThroughPublicInterface() {
@@ -973,6 +1059,27 @@ func (s *RegistrySuite) installArgCapturingFakeCommand(
 			"#!/bin/sh\n"+
 				"printf '%s\\n' \"$@\" > "+argsPath+"\n"+
 				"cat > "+capturePath+"\n",
+		),
+		0o700,
+	))
+	s.T().Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func (s *RegistrySuite) installInteractiveFakeCommand(
+	name string,
+	argsPath string,
+	stdinPath string,
+) {
+	binDir := s.T().TempDir()
+	fakePath := filepath.Join(binDir, name)
+	s.Require().NoError(os.WriteFile(
+		fakePath,
+		[]byte(
+			"#!/bin/sh\n"+
+				"printf '%s\\n' \"$@\" > "+argsPath+"\n"+
+				"cat > "+stdinPath+"\n"+
+				"printf 'interactive stdout\\n'\n"+
+				"printf 'interactive stderr\\n' >&2\n",
 		),
 		0o700,
 	))

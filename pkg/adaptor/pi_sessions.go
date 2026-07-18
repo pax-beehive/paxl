@@ -28,6 +28,7 @@ func NewPiAdapter() Adapter {
 		getSession:   getPiSession,
 		prompt:       promptPiSession,
 		startSession: startPiSession,
+		resume:       nativeSessionResumer("pi", "--session"),
 	}
 }
 

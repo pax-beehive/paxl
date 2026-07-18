@@ -28,6 +28,7 @@ func NewClaudeAdapter() Adapter {
 		getSession:   getClaudeSession,
 		prompt:       promptClaudeSession,
 		startSession: startClaudeSession,
+		resume:       nativeSessionResumer("claude", "--resume"),
 	}
 }
 

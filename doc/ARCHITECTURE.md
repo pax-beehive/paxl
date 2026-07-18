@@ -101,6 +101,7 @@ Source agent logs remain the source of truth for raw agent session timelines.
 - session get
 - prompt existing session
 - start new session
+- optional native interactive resume through `SessionResumer`
 
 The adapter interface is intentionally ACP-like: upper layers ask for session
 capabilities, not for specific file formats or process invocations.
@@ -111,6 +112,9 @@ Current adapters:
 - Claude: reads local Claude Code logs and delivers with Claude Code CLI.
 - Pi: reads local Pi logs and delivers with Pi CLI.
 - Kiro: reads local Kiro CLI logs and delivers with Kiro CLI.
+- OpenCode: reads local SQLite session data and delivers with OpenCode CLI.
+- Kimi Code: reads the local session index and wire logs and delivers with Kimi CLI.
+- Hermes: reads local state or ACP and delivers through Hermes transports.
 - OpenClaw: uses ACP `session/list` and `session/prompt` through the configured
   OpenClaw ACP command.
 
@@ -133,6 +137,15 @@ Pi new session:          pi -p
 Kiro existing session:   kiro-cli chat --resume-id <session-id> --no-interactive <message>
 Kiro new session:        kiro-cli chat --no-interactive <message>
 
+OpenCode existing session: opencode run --session <session-id> <message>
+OpenCode new session:      opencode run <message>
+
+Kimi existing session:   kimi --session <session-id> --prompt <message>
+Kimi new session:        kimi --prompt <message>
+
+Hermes existing session: Hermes ACP or HTTP delivery
+Hermes new session:      Hermes HTTP delivery
+
 OpenClaw existing session:
                         openclaw acp + ACP session/prompt
 OpenClaw session list:  openclaw acp + ACP session/list
@@ -141,7 +154,23 @@ OpenClaw command override:
 ```
 
 Adapter stdout/stderr is buffered by default. `--verbose` can surface delivery
-details without polluting normal command output.
+details without polluting normal command output. Interactive `paxl resume`
+deliberately passes stdin, stdout, and stderr through to the native CLI instead.
+
+Interactive resume is a separate optional adapter capability:
+
+```text
+codex:<id>      codex resume <id>
+claude:<id>     claude --resume <id>
+pi:<id>         pi --session <id>
+kiro:<id>       kiro-cli chat --resume-id <id>
+opencode:<id>   opencode --session <id>
+kimi:<id>       kimi --session <id>
+hermes:<id>     hermes --resume <id>
+```
+
+OpenClaw has no native interactive resume command and does not implement this
+capability.
 
 ## Hook Entry Point
 
@@ -172,6 +201,9 @@ codex:<native-id>
 claude:<native-id>
 pi:<native-id>
 kiro:<native-id>
+opencode:<native-id>
+kimi:<native-id>
+hermes:<native-id>
 openclaw:<native-id>
 ```
 

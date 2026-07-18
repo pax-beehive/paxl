@@ -46,6 +46,7 @@ func NewHermesAdapter() Adapter {
 		getSession:   getHermesSession,
 		prompt:       promptHermesSession,
 		startSession: startHermesSession,
+		resume:       nativeSessionResumer("hermes", "--resume"),
 	}
 }
 
@@ -464,10 +465,13 @@ func scanHermesStateSession(rows *sql.Rows) (*hermesSessionInfo, error) {
 	}
 	rawJSON, _ := json.Marshal(raw)
 	return &hermesSessionInfo{
-		SessionID:      id,
-		NativeID:       id,
-		AgentType:      "hermes",
-		Name:           firstNonEmpty(nullStringValue(title), titleCandidate(nullStringValue(preview))),
+		SessionID: id,
+		NativeID:  id,
+		AgentType: "hermes",
+		Name: firstNonEmpty(
+			nullStringValue(title),
+			titleCandidate(nullStringValue(preview)),
+		),
 		ProjectID:      projectID,
 		WorkspaceRoots: workspaceRoots,
 		LastActive:     updatedAt,

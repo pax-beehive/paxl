@@ -587,6 +587,25 @@ func (s *CommandSuite) TestSetupInstallsDescriptorForGenericAgentHook() {
 	s.Contains(string(raw), "__agent-hook --agent pi --event user-prompt")
 }
 
+func (s *CommandSuite) TestSetupAcceptsOpenCodeAndKimiAgents() {
+	err := run(
+		context.Background(),
+		[]string{
+			"setup",
+			"--agent", "opencode,kimi",
+			"--dry-run",
+			"--format", "jsonl",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"agent":"opencode"`)
+	s.Contains(s.stdout.String(), `"agent":"kimi"`)
+	s.NotContains(s.stdout.String(), `"agent":"codex"`)
+}
+
 func (s *CommandSuite) TestSetupWithDaemonDryRunRendersDaemonPlan() {
 	codexHome := filepath.Join(s.T().TempDir(), ".codex")
 	s.T().Setenv("CODEX_HOME", codexHome)
@@ -1578,6 +1597,67 @@ func (s *CommandSuite) TestPluralTopLevelCommandsAreNotSupported() {
 	}
 }
 
+func (s *CommandSuite) TestResumeLaunchesOpenCodeInteractiveSession() {
+	argsPath := filepath.Join(s.T().TempDir(), "args.txt")
+	s.installArgCapturingFakeCommand("opencode", argsPath)
+
+	err := runWithInput(
+		context.Background(),
+		[]string{"resume", "opencode:ses_resume"},
+		strings.NewReader("terminal input"),
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	rawArgs, err := os.ReadFile(argsPath)
+	s.Require().NoError(err)
+	s.Equal("--session\nses_resume\n", string(rawArgs))
+}
+
+func (s *CommandSuite) TestResumeRejectsInvalidOrUnsupportedSessions() {
+	cases := []struct {
+		name     string
+		args     []string
+		wantText string
+	}{
+		{name: "missing id", args: []string{"resume"}, wantText: "session id is required"},
+		{
+			name:     "missing agent",
+			args:     []string{"resume", "session_native"},
+			wantText: "agent:session-id format",
+		},
+		{
+			name:     "unknown agent",
+			args:     []string{"resume", "unknown:session_native"},
+			wantText: "unsupported agent",
+		},
+		{
+			name:     "extra id",
+			args:     []string{"resume", "codex:first", "codex:second"},
+			wantText: "only one session id",
+		},
+		{
+			name:     "unsafe native id",
+			args:     []string{"resume", "codex:-session"},
+			wantText: "must not start with '-'",
+		},
+		{
+			name:     "gateway only",
+			args:     []string{"resume", "openclaw:session_native"},
+			wantText: "does not support interactive resume",
+		},
+	}
+
+	for _, tc := range cases {
+		s.Run(tc.name, func() {
+			err := run(context.Background(), tc.args, &s.stdout, &s.stderr)
+
+			s.ErrorContains(err, tc.wantText)
+		})
+	}
+}
+
 func (s *CommandSuite) TestSingularSessionCommandExposesMigratedSubcommands() {
 	cases := []string{"list", "get", "mirror", "query"}
 	command := findCommand(newCommand(&s.stdout, &s.stderr), "session")
@@ -1949,6 +2029,7 @@ func (s *CommandSuite) TestSessionQuerySyncsCodexBeforeSearching() {
 		[]string{
 			"--db", dbPath,
 			"session", "query", "needlequery",
+			"--agent", "codex",
 			"--sync",
 			"--format", "jsonl",
 			"--timeout", "10s",
