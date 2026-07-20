@@ -48,6 +48,37 @@ func (s *LocalSessionsSuite) TestListCodexSessionsReadsIndexAndRollouts() {
 	s.Equal("/tmp/project", resp.Sessions[0].ProjectID)
 }
 
+func (s *LocalSessionsSuite) TestListCodexSessionsUsesLatestRolloutEventTime() {
+	codexHome := s.T().TempDir()
+	s.T().Setenv("CODEX_HOME", codexHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(codexHome, "session_index.jsonl"),
+		[]byte(
+			`{"id":"sess-active","thread_name":"Active","updated_at":"2026-06-20T01:00:00Z"}`+"\n"+
+				`{"id":"sess-newer","thread_name":"Newer","updated_at":"2026-06-20T02:00:00Z"}`+"\n",
+		),
+		0o600,
+	))
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-test-sess-active.jsonl"),
+		[]byte(
+			`{"type":"session_meta","payload":{"id":"sess-active","timestamp":"2026-06-20T01:00:00Z","cwd":"/tmp/project"}}`+"\n"+
+				`{"timestamp":"2026-06-20T03:00:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Still active."}]}}`+"\n",
+		),
+		0o600,
+	))
+
+	resp, err := listCodexSessions(context.Background(), &ListSessionsRequest{Limit: 1})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Sessions, 1)
+	s.Equal("codex:sess-active", resp.Sessions[0].ID)
+	s.Equal("2026-06-20T03:00:00Z", resp.Sessions[0].UpdatedAt)
+	s.Equal("2026-06-20T03:00:00Z", resp.Sessions[0].LastActive)
+}
+
 func (s *LocalSessionsSuite) TestListCodexSessionsReturnsEmptyWhenLocalRootIsMissing() {
 	s.T().Setenv("CODEX_HOME", filepath.Join(s.T().TempDir(), "missing"))
 

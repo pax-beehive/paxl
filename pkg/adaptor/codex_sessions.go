@@ -2,14 +2,17 @@ package adaptor
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/pax-oss/paxl/internal/model"
 )
@@ -337,15 +340,98 @@ func readCodexRollouts(
 				meta.Payload.ID,
 			)
 		}
-		if session.UpdatedAt == "" {
-			session.UpdatedAt = meta.Payload.Timestamp
+		activityAt, activityErr := readCodexLatestTimestamp(path)
+		if activityErr != nil {
+			return activityErr
 		}
-		session.LastActive = firstNonEmpty(session.LastActive, session.UpdatedAt)
+		session.UpdatedAt = laterCodexTimestamp(
+			session.UpdatedAt,
+			firstNonEmpty(activityAt, meta.Payload.Timestamp),
+		)
+		session.LastActive = laterCodexTimestamp(session.LastActive, session.UpdatedAt)
 		session.ProjectID = firstNonEmpty(session.ProjectID, meta.Payload.CWD)
 		session.Status = firstNonEmpty(session.Status, "available")
 		sessions[id] = session
 		return nil
 	})
+}
+
+func readCodexLatestTimestamp(path string) (string, error) {
+	// Rollouts can be very large, so inspect complete lines from the tail
+	// instead of rescanning the whole transcript for every session listing.
+	// #nosec G304
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer closeFile(file)
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+
+	const blockSize int64 = 64 * 1024
+	offset := info.Size()
+	var suffix []byte
+	for offset > 0 {
+		readSize := min(blockSize, offset)
+		offset -= readSize
+		chunk := make([]byte, readSize)
+		if _, err := file.ReadAt(chunk, offset); err != nil && !errors.Is(err, io.EOF) {
+			return "", err
+		}
+		data := make([]byte, 0, len(chunk)+len(suffix))
+		data = append(data, chunk...)
+		data = append(data, suffix...)
+		lines := bytes.Split(data, []byte{'\n'})
+		firstCompleteLine := 0
+		if offset > 0 {
+			firstCompleteLine = 1
+		}
+		for index := len(lines) - 1; index >= firstCompleteLine; index-- {
+			if timestamp := codexLineTimestamp(lines[index]); timestamp != "" {
+				return timestamp, nil
+			}
+		}
+		suffix = append(suffix[:0], lines[0]...)
+	}
+	return "", nil
+}
+
+func codexLineTimestamp(line []byte) string {
+	if len(bytes.TrimSpace(line)) == 0 {
+		return ""
+	}
+	var envelope codexEnvelope
+	if err := json.Unmarshal(line, &envelope); err == nil && envelope.Timestamp != "" {
+		return envelope.Timestamp
+	}
+	var meta codexMetaLine
+	if err := json.Unmarshal(line, &meta); err == nil && meta.Type == "session_meta" {
+		return meta.Payload.Timestamp
+	}
+	return ""
+}
+
+func laterCodexTimestamp(left string, right string) string {
+	if left == "" {
+		return right
+	}
+	if right == "" {
+		return left
+	}
+	leftTime, leftErr := time.Parse(time.RFC3339Nano, left)
+	rightTime, rightErr := time.Parse(time.RFC3339Nano, right)
+	if leftErr == nil && rightErr == nil {
+		if rightTime.After(leftTime) {
+			return right
+		}
+		return left
+	}
+	if right > left {
+		return right
+	}
+	return left
 }
 
 func codexIndexedThreadTitle(
