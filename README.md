@@ -357,6 +357,13 @@ paxl session list --agent claude --limit 10
 paxl session list --agent codex --format jsonl
 ```
 
+Only show sessions whose project is the current directory:
+
+```sh
+paxl session list --local
+paxl session list --local --agent claude
+```
+
 Use cached metadata without scanning local logs:
 
 ```sh

@@ -522,6 +522,10 @@ func newSessionCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 						Usage: "Only show sessions updated since a duration like 24h or 7d",
 					},
 					&cli.IntFlag{Name: "limit", Usage: "Maximum sessions to show"},
+					&cli.BoolFlag{
+						Name:  "local",
+						Usage: "Only show sessions whose project is the current directory",
+					},
 					&cli.StringFlag{
 						Name:  "format",
 						Value: "table",
@@ -2716,6 +2720,13 @@ func parseListSessionsRequest(cmd *cli.Command) (*facade.ListSessionsRequest, er
 	}
 	if hasUpdatedSince {
 		req.UpdatedSince = &updatedSince
+	}
+	if cmd.Bool("local") {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("resolve current directory: %w", err)
+		}
+		req.ProjectDir = cwd
 	}
 	if rawAgent := strings.TrimSpace(cmd.String("agent")); rawAgent != "" {
 		agents, err := parseAgentSelection(rawAgent)

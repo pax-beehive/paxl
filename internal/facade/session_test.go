@@ -137,6 +137,72 @@ func (s *SessionFacadeSuite) TestListFiltersCachedSessionsByUpdatedSince() {
 	s.Equal("codex:fresh", resp.Sessions[0].ID)
 }
 
+func (s *SessionFacadeSuite) TestListFiltersCachedSessionsByProjectDir() {
+	projectDir := s.T().TempDir()
+	otherDir := s.T().TempDir()
+	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+		Agent: model.AgentNameCodex,
+		Sessions: []*model.Session{
+			{NativeID: "in-project", Title: "In project", ProjectID: projectDir},
+			{NativeID: "other-project", Title: "Other project", ProjectID: otherDir},
+			{NativeID: "no-project", Title: "No project"},
+			{
+				NativeID:           "workspace-root",
+				Title:              "Workspace root",
+				ProjectID:          "opaque-project-id",
+				WorkspaceRootsJSON: `["` + projectDir + `"]`,
+			},
+		},
+	})
+	s.Require().NoError(err)
+	sessionFacade := facade.NewSessionFacade(nil, s.store)
+
+	resp, err := sessionFacade.List(s.ctx, &facade.ListSessionsRequest{
+		ProjectDir: projectDir,
+		NoSync:     true,
+	})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Sessions, 2)
+	ids := []string{resp.Sessions[0].ID, resp.Sessions[1].ID}
+	s.Contains(ids, "codex:in-project")
+	s.Contains(ids, "codex:workspace-root")
+}
+
+func (s *SessionFacadeSuite) TestListAppliesLimitAfterProjectDirFilter() {
+	projectDir := s.T().TempDir()
+	otherDir := s.T().TempDir()
+	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+		Agent: model.AgentNameCodex,
+		Sessions: []*model.Session{
+			{
+				NativeID:  "other-newer",
+				Title:     "Other newer",
+				ProjectID: otherDir,
+				UpdatedAt: "2026-07-02T00:00:00Z",
+			},
+			{
+				NativeID:  "match-older",
+				Title:     "Match older",
+				ProjectID: projectDir,
+				UpdatedAt: "2026-07-01T00:00:00Z",
+			},
+		},
+	})
+	s.Require().NoError(err)
+	sessionFacade := facade.NewSessionFacade(nil, s.store)
+
+	resp, err := sessionFacade.List(s.ctx, &facade.ListSessionsRequest{
+		ProjectDir: projectDir,
+		NoSync:     true,
+		Limit:      1,
+	})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Sessions, 1)
+	s.Equal("codex:match-older", resp.Sessions[0].ID)
+}
+
 func (s *SessionFacadeSuite) writeHermesStateDB(hermesHome string) {
 	db, err := sql.Open("sqlite", filepath.Join(hermesHome, "state.db"))
 	s.Require().NoError(err)
@@ -575,6 +641,10 @@ type searchSyncTestAdapter struct {
 	agent        model.AgentName
 	listSessions func(ctx context.Context, req *adaptor.ListSessionsRequest) (*adaptor.ListSessionsResponse, error)
 	getSession   func(ctx context.Context, req *adaptor.GetSessionRequest) (*adaptor.GetSessionResponse, error)
+}
+
+func (a *searchSyncTestAdapter) Name() model.AgentName {
+	return a.agent
 }
 
 func (a *searchSyncTestAdapter) Info(
