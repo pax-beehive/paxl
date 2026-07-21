@@ -78,6 +78,20 @@ func (s *RegistrySuite) TestLookupReturnsSupportedAdapter() {
 	s.NotNil(resp.Adapter)
 }
 
+func (s *RegistrySuite) TestLookupDoesNotRunAvailabilityProbes() {
+	probed := &probeCountingAdapter{name: model.AgentNameCodex}
+	registry := adaptor.NewRegistry(probed)
+
+	resp, err := registry.Lookup(
+		context.Background(),
+		&adaptor.LookupRequest{Name: model.AgentNameCodex},
+	)
+
+	s.Require().NoError(err)
+	s.NotNil(resp.Adapter)
+	s.Zero(probed.infoCalls, "Lookup must resolve adapters by name without probing availability")
+}
+
 func (s *RegistrySuite) TestLookupRequiresRequest() {
 	registry := adaptor.NewDefaultRegistry()
 
@@ -1033,6 +1047,71 @@ func (s *RegistrySuite) TestAdapterStartSessionRequiresText() {
 			s.Error(err)
 		})
 	}
+}
+
+type probeCountingAdapter struct {
+	name      model.AgentName
+	infoCalls int
+}
+
+func (a *probeCountingAdapter) Name() model.AgentName {
+	return a.name
+}
+
+func (a *probeCountingAdapter) Info(
+	ctx context.Context,
+	req *adaptor.InfoRequest,
+	opts ...func(*adaptor.Option),
+) (*adaptor.InfoResponse, error) {
+	_ = ctx
+	_ = req
+	_ = opts
+	a.infoCalls++
+	return &adaptor.InfoResponse{Agent: &model.AgentInfo{Name: a.name}}, nil
+}
+
+func (a *probeCountingAdapter) ListSessions(
+	ctx context.Context,
+	req *adaptor.ListSessionsRequest,
+	opts ...func(*adaptor.Option),
+) (*adaptor.ListSessionsResponse, error) {
+	_ = ctx
+	_ = req
+	_ = opts
+	return &adaptor.ListSessionsResponse{}, nil
+}
+
+func (a *probeCountingAdapter) GetSession(
+	ctx context.Context,
+	req *adaptor.GetSessionRequest,
+	opts ...func(*adaptor.Option),
+) (*adaptor.GetSessionResponse, error) {
+	_ = ctx
+	_ = req
+	_ = opts
+	return &adaptor.GetSessionResponse{}, nil
+}
+
+func (a *probeCountingAdapter) Prompt(
+	ctx context.Context,
+	req *adaptor.PromptRequest,
+	opts ...func(*adaptor.Option),
+) (*adaptor.PromptResponse, error) {
+	_ = ctx
+	_ = req
+	_ = opts
+	return &adaptor.PromptResponse{}, nil
+}
+
+func (a *probeCountingAdapter) StartSession(
+	ctx context.Context,
+	req *adaptor.StartSessionRequest,
+	opts ...func(*adaptor.Option),
+) (*adaptor.StartSessionResponse, error) {
+	_ = ctx
+	_ = req
+	_ = opts
+	return &adaptor.StartSessionResponse{}, nil
 }
 
 func (s *RegistrySuite) installFakeCommand(name string, capturePath string) {
