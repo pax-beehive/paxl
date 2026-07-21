@@ -1825,6 +1825,70 @@ func (s *CommandSuite) TestSessionListAcceptsCommaSeparatedAgents() {
 	s.Contains(s.stdout.String(), `"id":"claude:claude-one"`)
 }
 
+func (s *CommandSuite) TestSessionListLocalShowsOnlyCurrentDirectorySessions() {
+	cwd, err := os.Getwd()
+	s.Require().NoError(err)
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	s.seedStoredSessions(dbPath, []*model.Session{
+		{NativeID: "here", Title: "Here", ProjectID: cwd},
+		{NativeID: "elsewhere", Title: "Elsewhere", ProjectID: s.T().TempDir()},
+	})
+
+	err = run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"session", "list",
+			"--no-sync",
+			"--local",
+			"--format", "jsonl",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"id":"codex:here"`)
+	s.NotContains(s.stdout.String(), `"id":"codex:elsewhere"`)
+}
+
+func (s *CommandSuite) TestSessionListLocalCombinesWithAgentFilter() {
+	cwd, err := os.Getwd()
+	s.Require().NoError(err)
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	s.seedStoredSessions(dbPath, []*model.Session{
+		{NativeID: "codex-here", Title: "Codex here", ProjectID: cwd},
+	})
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	_, err = opened.Store.UpsertSessions(context.Background(), &store.UpsertSessionsRequest{
+		Agent: model.AgentNameClaude,
+		Sessions: []*model.Session{
+			{NativeID: "claude-here", Title: "Claude here", ProjectID: cwd},
+		},
+	})
+	s.Require().NoError(err)
+	s.Require().NoError(opened.Store.Close())
+
+	err = run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"session", "list",
+			"--no-sync",
+			"--local",
+			"--agent", "claude",
+			"--format", "jsonl",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"id":"claude:claude-here"`)
+	s.NotContains(s.stdout.String(), `"id":"codex:codex-here"`)
+}
+
 func (s *CommandSuite) TestSessionQuerySearchesCachedSessionElements() {
 	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
 	s.seedStoredSessions(dbPath, []*model.Session{

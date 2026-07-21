@@ -13,6 +13,7 @@ import (
 )
 
 type Adapter interface {
+	Name() model.AgentName
 	Info(ctx context.Context, req *InfoRequest, opts ...func(*Option)) (*InfoResponse, error)
 	ListSessions(
 		ctx context.Context,
@@ -152,13 +153,13 @@ func (r *Registry) Lookup(
 	if err != nil {
 		return nil, fmt.Errorf("lookup adapter: %w", err)
 	}
-	resp, err := r.List(ctx, &ListRequest{}, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("lookup adapter: %w", err)
-	}
-	for i, agent := range resp.Agents {
-		if agent.Name == parsed {
-			return &LookupResponse{Adapter: r.adapters[i]}, nil
+	_ = ctx
+	_ = applyOptions(opts)
+	// Match by name only: availability probes can spawn agent processes or
+	// perform network health checks, which is too slow for lookup callers.
+	for _, adapter := range r.adapters {
+		if adapter.Name() == parsed {
+			return &LookupResponse{Adapter: adapter}, nil
 		}
 	}
 	return nil, fmt.Errorf("lookup adapter %q: not registered", parsed)
@@ -174,6 +175,10 @@ type staticAdapter struct {
 	prompt       func(ctx context.Context, req *PromptRequest, option *Option) (*PromptResponse, error)
 	startSession func(ctx context.Context, req *StartSessionRequest, option *Option) (*StartSessionResponse, error)
 	resume       func(ctx context.Context, req *ResumeSessionRequest, option *Option) (*ResumeSessionResponse, error)
+}
+
+func (a *staticAdapter) Name() model.AgentName {
+	return a.agent.Name
 }
 
 func (a *staticAdapter) Resume(

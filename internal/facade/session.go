@@ -3,8 +3,11 @@ package facade
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -22,6 +25,7 @@ type SessionFacade struct {
 type ListSessionsRequest struct {
 	Agents       []model.AgentName
 	UpdatedSince *time.Time
+	ProjectDir   string
 	NoSync       bool
 	Limit        int
 }
@@ -96,6 +100,7 @@ func (f *SessionFacade) List(
 		return nil, fmt.Errorf("list sessions: store is required")
 	}
 	option := applyOptions(opts)
+	projectDirs := projectDirCandidates(req.ProjectDir)
 	if !req.NoSync {
 		sessions, err := f.syncSessions(ctx, req, option)
 		if err != nil {
@@ -103,11 +108,11 @@ func (f *SessionFacade) List(
 		}
 		sortSessionsNewestFirst(sessions)
 		return &ListSessionsResponse{
-			Sessions: filterListedSessions(sessions, req.UpdatedSince, req.Limit),
+			Sessions: filterListedSessions(sessions, req.UpdatedSince, projectDirs, req.Limit),
 		}, nil
 	}
 	storeLimit := req.Limit
-	if req.UpdatedSince != nil {
+	if req.UpdatedSince != nil || len(projectDirs) > 0 {
 		storeLimit = 0
 	}
 	resp, err := f.store.ListSessions(ctx, &store.ListSessionsRequest{
@@ -118,7 +123,7 @@ func (f *SessionFacade) List(
 		return nil, fmt.Errorf("list stored sessions: %w", err)
 	}
 	return &ListSessionsResponse{
-		Sessions: filterListedSessions(resp.Sessions, req.UpdatedSince, req.Limit),
+		Sessions: filterListedSessions(resp.Sessions, req.UpdatedSince, projectDirs, req.Limit),
 	}, nil
 }
 
@@ -293,11 +298,15 @@ func (f *SessionFacade) syncSessions(
 func filterListedSessions(
 	sessions []*model.Session,
 	updatedSince *time.Time,
+	projectDirs []string,
 	limit int,
 ) []*model.Session {
 	out := make([]*model.Session, 0, len(sessions))
 	for _, session := range sessions {
 		if session == nil || !sessionUpdatedAfter(session, updatedSince) {
+			continue
+		}
+		if !sessionInProjectDir(session, projectDirs) {
 			continue
 		}
 		out = append(out, session)
@@ -306,6 +315,44 @@ func filterListedSessions(
 		}
 	}
 	return out
+}
+
+// projectDirCandidates normalizes a requested project directory into the
+// comparable forms a session may have recorded: the cleaned path plus its
+// symlink-resolved form (macOS records /tmp paths under /private/tmp).
+func projectDirCandidates(dir string) []string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return nil
+	}
+	cleaned := filepath.Clean(dir)
+	candidates := []string{cleaned}
+	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil && resolved != cleaned {
+		candidates = append(candidates, resolved)
+	}
+	return candidates
+}
+
+func sessionInProjectDir(session *model.Session, projectDirs []string) bool {
+	if len(projectDirs) == 0 {
+		return true
+	}
+	paths := []string{session.ProjectID}
+	if session.WorkspaceRootsJSON != "" {
+		var roots []string
+		if err := json.Unmarshal([]byte(session.WorkspaceRootsJSON), &roots); err == nil {
+			paths = append(paths, roots...)
+		}
+	}
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		if slices.Contains(projectDirs, filepath.Clean(path)) {
+			return true
+		}
+	}
+	return false
 }
 
 func sessionUpdatedAfter(session *model.Session, updatedSince *time.Time) bool {
@@ -543,7 +590,7 @@ func (f *SessionFacade) syncSearchSessions(
 		return err
 	}
 	sortSessionsNewestFirst(sessions)
-	for _, session := range filterListedSessions(sessions, nil, transcriptLimit) {
+	for _, session := range filterListedSessions(sessions, nil, nil, transcriptLimit) {
 		if session == nil {
 			continue
 		}
