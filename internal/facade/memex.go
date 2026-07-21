@@ -17,6 +17,7 @@ import (
 const (
 	maxMemexArtifactBytes = 32 * 1024
 	maxMemexPages         = 100
+	maxMemexRecallTraces  = 20
 )
 
 type MemexRenderFormat string
@@ -64,8 +65,18 @@ type memexPage struct {
 	Topics   []string
 	Recalls  int
 	HasIssue bool
+	Trail    *memexTrail
 	Outgoing []*memexPageEdge
 	Incoming []*memexPageEdge
+}
+
+type memexTrail struct {
+	Query            string
+	Question         string
+	SearchTrail      string
+	RationaleSummary string
+	Findings         string
+	ReusableResult   string
 }
 
 type memexArtifact struct {
@@ -116,9 +127,21 @@ type memexRecallEdge struct {
 }
 
 type memexRecallTrace struct {
-	Path      string `json:"path"`
-	Question  string `json:"question"`
-	CreatedAt string `json:"createdAt"`
+	Path                  string                  `json:"path"`
+	Question              string                  `json:"question"`
+	CreatedAt             string                  `json:"createdAt"`
+	AnswerSummary         string                  `json:"answerSummary"`
+	UsedNodes             []string                `json:"usedNodes"`
+	UsedEdges             []*memexRecallTraceEdge `json:"usedEdges"`
+	UsedTrails            []string                `json:"usedTrails"`
+	AnswerSources         []string                `json:"answerSources"`
+	FallbackSessionSearch bool                    `json:"fallbackSessionSearch"`
+}
+
+type memexRecallTraceEdge struct {
+	Source string `json:"source"`
+	Type   string `json:"type"`
+	Target string `json:"target"`
 }
 
 type memexPageEdge struct {
@@ -156,6 +179,7 @@ func (f *MemexFacade) Render(
 	}
 	graph := loadMemexGraph(roots)
 	recallIndex := loadMemexRecallIndex(roots)
+	recallTraces := collectMemexRecallTraces(roots, recallIndex)
 	lintSignals := loadMemexLintSignals(roots)
 	pages, err := collectMemexPages(ctx, roots, graph, recallIndex, lintSignals)
 	if err != nil {
@@ -165,7 +189,15 @@ func (f *MemexFacade) Render(
 	artifacts := collectMemexArtifacts(roots)
 	assets := collectMemexAssets(roots)
 	return &RenderMemexResponse{
-		HTML:     renderMemexHTML(roots, pages, artifacts, assets, graph, recallIndex),
+		HTML: renderMemexHTML(
+			roots,
+			pages,
+			artifacts,
+			assets,
+			graph,
+			recallIndex,
+			recallTraces,
+		),
 		Assets:   assets,
 		PageHTML: renderMemexPageHTML(roots, pages),
 	}, nil
@@ -245,6 +277,121 @@ func loadMemexRecallIndex(roots *memexRoots) *memexRecallIndex {
 		return &memexRecallIndex{}
 	}
 	return &index
+}
+
+func collectMemexRecallTraces(
+	roots *memexRoots,
+	index *memexRecallIndex,
+) []*memexRecallTrace {
+	paths := memexRecallTracePaths(roots, index)
+	traces := make([]*memexRecallTrace, 0, len(paths))
+	byPath := memexRecallTracesByPath(index)
+	for _, path := range paths {
+		// #nosec G304 -- Trace paths are resolved under the local project root.
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			if trace := byPath[displayPath(roots, path)]; trace != nil {
+				traces = append(traces, trace)
+			}
+			continue
+		}
+		var trace memexRecallTrace
+		if err := json.Unmarshal(raw, &trace); err != nil {
+			continue
+		}
+		relPath := displayPath(roots, path)
+		indexTrace := byPath[relPath]
+		if trace.Path == "" {
+			trace.Path = relPath
+		}
+		if trace.Question == "" && indexTrace != nil {
+			trace.Question = indexTrace.Question
+		}
+		if trace.CreatedAt == "" && indexTrace != nil {
+			trace.CreatedAt = indexTrace.CreatedAt
+		}
+		traces = append(traces, &trace)
+	}
+	sort.SliceStable(traces, func(i int, j int) bool {
+		return traces[i].CreatedAt > traces[j].CreatedAt
+	})
+	if len(traces) > maxMemexRecallTraces {
+		return traces[:maxMemexRecallTraces]
+	}
+	return traces
+}
+
+func memexRecallTracePaths(roots *memexRoots, index *memexRecallIndex) []string {
+	seen := map[string]bool{}
+	var paths []string
+	if index != nil {
+		for _, trace := range index.Traces {
+			if trace == nil || strings.TrimSpace(trace.Path) == "" {
+				continue
+			}
+			path, ok := resolveMemexProjectPath(roots, trace.Path)
+			if ok && !seen[path] {
+				seen[path] = true
+				paths = append(paths, path)
+			}
+		}
+	}
+	if len(paths) > 0 {
+		return paths
+	}
+	recallsRoot := filepath.Join(roots.StateRoot, "recalls")
+	if !directoryExists(recallsRoot) {
+		return nil
+	}
+	_ = filepath.WalkDir(recallsRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			return nil
+		}
+		if !seen[path] {
+			seen[path] = true
+			paths = append(paths, path)
+		}
+		return nil
+	})
+	sort.Strings(paths)
+	return paths
+}
+
+func memexRecallTracesByPath(index *memexRecallIndex) map[string]*memexRecallTrace {
+	traces := map[string]*memexRecallTrace{}
+	if index == nil {
+		return traces
+	}
+	for _, trace := range index.Traces {
+		if trace == nil || strings.TrimSpace(trace.Path) == "" {
+			continue
+		}
+		traces[filepath.ToSlash(strings.TrimSpace(trace.Path))] = trace
+	}
+	return traces
+}
+
+func resolveMemexProjectPath(roots *memexRoots, rawPath string) (string, bool) {
+	cleanPath := filepath.Clean(filepath.FromSlash(strings.TrimSpace(rawPath)))
+	if cleanPath == "." {
+		return "", false
+	}
+	if !filepath.IsAbs(cleanPath) {
+		cleanPath = filepath.Join(roots.ProjectRoot, cleanPath)
+	}
+	absPath, err := filepath.Abs(cleanPath)
+	if err != nil {
+		return "", false
+	}
+	relPath, err := filepath.Rel(roots.ProjectRoot, absPath)
+	if err != nil || relPath == ".." ||
+		strings.HasPrefix(relPath, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return absPath, true
 }
 
 func loadMemexLintSignals(roots *memexRoots) map[string]bool {
@@ -333,6 +480,8 @@ func collectMemexPages(
 		relPath := displayPath(roots, path)
 		node := nodeByPath[relPath]
 		title := extractQMDTitle(relPath, string(raw))
+		qmdType := extractQMDFrontMatterScalar(string(raw), "type")
+		trail := extractMemexTrail(relPath, string(raw))
 		summary := ""
 		status := ""
 		nodeType := ""
@@ -350,6 +499,12 @@ func collectMemexPages(
 				topics = node.Topics
 			}
 		}
+		if nodeType == "" {
+			nodeType = qmdType
+		}
+		if trail != nil && nodeType == "" {
+			nodeType = "query-trail"
+		}
 		pages = append(pages, &memexPage{
 			RelPath:  relPath,
 			URLPath:  memexPageURL(relPath),
@@ -363,6 +518,7 @@ func collectMemexPages(
 			Topics:   topics,
 			Recalls:  recallsByNodeID[nodeID],
 			HasIssue: lintSignals[relPath] || lintSignals[nodeID],
+			Trail:    trail,
 		})
 	}
 	sort.SliceStable(pages, func(i int, j int) bool {
@@ -552,31 +708,97 @@ func extractQMDTitle(relPath string, content string) string {
 }
 
 func extractQMDTopics(content string) []string {
+	for _, key := range []string{"topics", "tags"} {
+		topics := parseQMDStringList(extractQMDFrontMatterScalar(content, key))
+		if len(topics) > 0 {
+			return topics
+		}
+	}
+	return nil
+}
+
+func extractQMDFrontMatterScalar(content string, key string) string {
 	lines := strings.Split(content, "\n")
 	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
-		return nil
+		return ""
 	}
 	for _, line := range lines[1:] {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "---" {
-			return nil
+			return ""
 		}
-		if !strings.HasPrefix(trimmed, "topics:") {
+		prefix := key + ":"
+		if !strings.HasPrefix(trimmed, prefix) {
 			continue
 		}
-		raw := strings.TrimSpace(strings.TrimPrefix(trimmed, "topics:"))
-		raw = strings.Trim(raw, "[]")
-		parts := strings.Split(raw, ",")
-		topics := make([]string, 0, len(parts))
-		for _, part := range parts {
-			topic := cleanYAMLScalar(strings.TrimSpace(part))
-			if topic != "" {
-				topics = append(topics, topic)
-			}
-		}
-		return topics
+		return cleanYAMLScalar(strings.TrimSpace(strings.TrimPrefix(trimmed, prefix)))
 	}
-	return nil
+	return ""
+}
+
+func parseQMDStringList(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	raw = strings.Trim(raw, "[]")
+	parts := strings.Split(raw, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		value := cleanYAMLScalar(strings.TrimSpace(part))
+		if value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+func extractMemexTrail(relPath string, content string) *memexTrail {
+	qmdType := extractQMDFrontMatterScalar(content, "type")
+	if qmdType != "query-trail" && !strings.HasPrefix(relPath, "wiki/trails/") {
+		return nil
+	}
+	sections := extractQMDSections(content)
+	return &memexTrail{
+		Query: firstNonEmptyString(
+			extractQMDFrontMatterScalar(content, "query"),
+			sections["question"],
+		),
+		Question:         sections["question"],
+		SearchTrail:      sections["search trail"],
+		RationaleSummary: sections["rationale summary"],
+		Findings:         sections["findings"],
+		ReusableResult:   sections["reusable result"],
+	}
+}
+
+func extractQMDSections(content string) map[string]string {
+	sections := map[string][]string{}
+	current := ""
+	lines := strings.Split(stripQMDFrontMatter(content), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if level := qmdHeadingLevel(trimmed); level > 0 && level <= 2 {
+			current = normalizeQMDSectionTitle(strings.TrimSpace(trimmed[level:]))
+			if _, ok := sections[current]; !ok {
+				sections[current] = nil
+			}
+			continue
+		}
+		if current == "" {
+			continue
+		}
+		sections[current] = append(sections[current], line)
+	}
+	output := make(map[string]string, len(sections))
+	for key, lines := range sections {
+		output[key] = strings.TrimSpace(strings.Join(lines, "\n"))
+	}
+	return output
+}
+
+func normalizeQMDSectionTitle(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(value), " "))
 }
 
 func extractQMDPreview(content string) string {
@@ -665,7 +887,9 @@ func renderMemexHTML(
 	assets []*MemexRenderAsset,
 	graph *memexGraph,
 	recallIndex *memexRecallIndex,
+	recallTraces []*memexRecallTrace,
 ) string {
+	trails := memexTrailPages(pages)
 	var builder strings.Builder
 	writeMemexHTMLHead(&builder, "Paxl Memex")
 	builder.WriteString(`<body><header class="hero"><div class="hero-main"><div>`)
@@ -676,10 +900,11 @@ func renderMemexHTML(
 	builder.WriteString(escapeHTML(displayPath(roots, roots.ProjectRoot)))
 	builder.WriteString(`</code>.</p></div>`)
 	builder.WriteString(
-		`<nav class="hero-nav"><a href="#pages">Pages</a><a href="#graph">Graph</a><a href="#artifacts">Artifacts</a></nav>`,
+		`<nav class="hero-nav"><a href="#trails">Trails</a><a href="#reasoning">Reasoning</a><a href="#pages">Pages</a><a href="#graph">Graph</a><a href="#artifacts">Artifacts</a></nav>`,
 	)
 	builder.WriteString(`</div><div class="metric-grid">`)
 	writeMemexMetric(&builder, "Pages", len(pages), "qmd documents")
+	writeMemexMetric(&builder, "Query Trails", len(trails), "reusable paths")
 	writeMemexMetric(&builder, "Graph Nodes", len(graph.Nodes), "reader-facing nodes")
 	writeMemexMetric(&builder, "Edges", len(graph.Edges), "typed relationships")
 	writeMemexMetric(&builder, "Recall Traces", recallIndex.TraceCount, "query demand")
@@ -700,6 +925,8 @@ func renderMemexHTML(
 	)
 	writeMemexHotPages(&builder, pages)
 	builder.WriteString(`</div></section>`)
+	writeMemexTrailSection(&builder, trails)
+	writeMemexReasoningPaths(&builder, pages, recallTraces)
 	builder.WriteString(
 		`<section id="pages"><div class="section-head"><h2>Pages</h2><p>Open a page to inspect full qmd content, backlinks, and graph edges.</p></div><div class="pages">`,
 	)
@@ -768,6 +995,7 @@ func renderMemexPage(
 		builder.WriteString(escapeHTML(page.Summary))
 		builder.WriteString(`</p>`)
 	}
+	writeMemexTrailPath(&builder, page, links)
 	builder.WriteString(renderQMDContent(page.Content, links))
 	builder.WriteString(`</article><aside class="side">`)
 	builder.WriteString(
@@ -844,6 +1072,287 @@ func writeMemexPageCard(builder *strings.Builder, page *memexPage) {
 	builder.WriteString(`</div>`)
 	writeMemexTags(builder, page.Topics)
 	builder.WriteString(`</article>`)
+}
+
+func memexTrailPages(pages []*memexPage) []*memexPage {
+	trails := make([]*memexPage, 0)
+	for _, page := range pages {
+		if page == nil || page.Trail == nil {
+			continue
+		}
+		trails = append(trails, page)
+	}
+	sort.SliceStable(trails, func(i int, j int) bool {
+		if trails[i].Recalls != trails[j].Recalls {
+			return trails[i].Recalls > trails[j].Recalls
+		}
+		return trails[i].Title < trails[j].Title
+	})
+	return trails
+}
+
+func writeMemexTrailSection(builder *strings.Builder, trails []*memexPage) {
+	builder.WriteString(
+		`<section id="trails"><div class="section-head"><h2>Query Trails</h2><p>Named retrieval paths with reusable answers and explicit side links.</p></div>`,
+	)
+	if len(trails) == 0 {
+		builder.WriteString(`<p class="muted">No query trails found.</p></section>`)
+		return
+	}
+	builder.WriteString(`<div class="trail-list">`)
+	for _, page := range trails {
+		writeMemexTrailCard(builder, page)
+	}
+	builder.WriteString(`</div></section>`)
+}
+
+func writeMemexTrailCard(builder *strings.Builder, page *memexPage) {
+	builder.WriteString(`<article class="trail-card">`)
+	builder.WriteString(
+		`<div class="path-flow"><span>Question</span><span>Search Trail</span><span>Reusable Result</span></div>`,
+	)
+	builder.WriteString(`<h3><a href="`)
+	builder.WriteString(escapeHTML(page.URLPath))
+	builder.WriteString(`">`)
+	builder.WriteString(escapeHTML(page.Title))
+	builder.WriteString(`</a></h3>`)
+	if page.Trail.Query != "" {
+		builder.WriteString(`<p class="trail-query">`)
+		builder.WriteString(escapeHTML(page.Trail.Query))
+		builder.WriteString(`</p>`)
+	}
+	summary := firstNonEmptyString(page.Trail.ReusableResult, page.Summary, page.Preview)
+	if summary != "" {
+		builder.WriteString(`<p>`)
+		builder.WriteString(escapeHTML(truncateRunes(collapseWhitespace(summary), 260)))
+		builder.WriteString(`</p>`)
+	}
+	builder.WriteString(`<div class="mini-metrics">`)
+	writeMemexMiniMetric(builder, "Recalls", page.Recalls)
+	writeMemexMiniMetric(builder, "Graph Links", len(page.Outgoing)+len(page.Incoming))
+	builder.WriteString(`</div>`)
+	writeMemexTags(builder, page.Topics)
+	builder.WriteString(`</article>`)
+}
+
+func writeMemexReasoningPaths(
+	builder *strings.Builder,
+	pages []*memexPage,
+	traces []*memexRecallTrace,
+) {
+	builder.WriteString(
+		`<section id="reasoning"><div class="section-head"><h2>Reasoning Paths</h2><p>Recall traces show the explicit retrieval path used to answer a query.</p></div>`,
+	)
+	if len(traces) == 0 {
+		builder.WriteString(`<p class="muted">No recall traces found.</p></section>`)
+		return
+	}
+	pageByNodeID := memexPagesByNodeID(pages)
+	pageByPath := memexPagesByRelPath(pages)
+	builder.WriteString(`<div class="reasoning-list">`)
+	for _, trace := range traces {
+		writeMemexReasoningPath(builder, trace, pageByNodeID, pageByPath)
+	}
+	builder.WriteString(`</div></section>`)
+}
+
+func writeMemexReasoningPath(
+	builder *strings.Builder,
+	trace *memexRecallTrace,
+	pageByNodeID map[string]*memexPage,
+	pageByPath map[string]*memexPage,
+) {
+	builder.WriteString(`<article class="recall-path">`)
+	builder.WriteString(`<div class="card-top">`)
+	writeMemexBadge(builder, "recall trace", "type")
+	if trace.FallbackSessionSearch {
+		writeMemexBadge(builder, "fallback session search", "warn")
+	}
+	if trace.CreatedAt != "" {
+		writeMemexBadge(builder, trace.CreatedAt, "status")
+	}
+	builder.WriteString(`</div>`)
+	writeMemexPathStepText(builder, "Entry Question", trace.Question)
+	writeMemexPathStepLinks(builder, "Reused Trail", trace.UsedTrails, pageByNodeID, pageByPath)
+	writeMemexPathStepLinks(builder, "Used Nodes", trace.UsedNodes, pageByNodeID, pageByPath)
+	writeMemexPathStepEdges(builder, "Traversed Edges", trace.UsedEdges, pageByNodeID)
+	writeMemexPathStepLinks(
+		builder,
+		"Answer Sources",
+		trace.AnswerSources,
+		pageByNodeID,
+		pageByPath,
+	)
+	writeMemexPathStepText(builder, "Answer Summary", trace.AnswerSummary)
+	builder.WriteString(`</article>`)
+}
+
+func writeMemexPathStepText(builder *strings.Builder, label string, value string) {
+	value = strings.TrimSpace(value)
+	builder.WriteString(`<div class="path-step"><strong>`)
+	builder.WriteString(escapeHTML(label))
+	builder.WriteString(`</strong>`)
+	if value == "" {
+		builder.WriteString(`<p class="muted">None recorded.</p></div>`)
+		return
+	}
+	builder.WriteString(`<p>`)
+	builder.WriteString(escapeHTML(value))
+	builder.WriteString(`</p></div>`)
+}
+
+func writeMemexPathStepLinks(
+	builder *strings.Builder,
+	label string,
+	values []string,
+	pageByNodeID map[string]*memexPage,
+	pageByPath map[string]*memexPage,
+) {
+	builder.WriteString(`<div class="path-step"><strong>`)
+	builder.WriteString(escapeHTML(label))
+	builder.WriteString(`</strong>`)
+	if len(values) == 0 {
+		builder.WriteString(`<p class="muted">None recorded.</p></div>`)
+		return
+	}
+	builder.WriteString(`<ul>`)
+	for _, value := range values {
+		builder.WriteString(`<li>`)
+		writeMemexResolvedLink(builder, value, pageByNodeID, pageByPath)
+		builder.WriteString(`</li>`)
+	}
+	builder.WriteString(`</ul></div>`)
+}
+
+func writeMemexPathStepEdges(
+	builder *strings.Builder,
+	label string,
+	edges []*memexRecallTraceEdge,
+	pageByNodeID map[string]*memexPage,
+) {
+	builder.WriteString(`<div class="path-step"><strong>`)
+	builder.WriteString(escapeHTML(label))
+	builder.WriteString(`</strong>`)
+	if len(edges) == 0 {
+		builder.WriteString(`<p class="muted">None recorded.</p></div>`)
+		return
+	}
+	builder.WriteString(`<ul>`)
+	for _, edge := range edges {
+		source := memexNodeLabel(edge.Source, pageByNodeID)
+		target := memexNodeLabel(edge.Target, pageByNodeID)
+		builder.WriteString(`<li>`)
+		builder.WriteString(source)
+		builder.WriteString(` <span>`)
+		builder.WriteString(escapeHTML(edge.Type))
+		builder.WriteString(`</span> `)
+		builder.WriteString(target)
+		builder.WriteString(`</li>`)
+	}
+	builder.WriteString(`</ul></div>`)
+}
+
+func writeMemexResolvedLink(
+	builder *strings.Builder,
+	value string,
+	pageByNodeID map[string]*memexPage,
+	pageByPath map[string]*memexPage,
+) {
+	value = strings.TrimSpace(value)
+	sourcePath, sourceAnchor, _ := strings.Cut(value, "#")
+	page := pageByNodeID[value]
+	if page == nil {
+		page = pageByPath[filepath.ToSlash(sourcePath)]
+	}
+	if page == nil {
+		builder.WriteString(`<code>`)
+		builder.WriteString(escapeHTML(value))
+		builder.WriteString(`</code>`)
+		return
+	}
+	builder.WriteString(`<a href="`)
+	builder.WriteString(escapeHTML(page.URLPath))
+	builder.WriteString(`">`)
+	builder.WriteString(escapeHTML(page.Title))
+	builder.WriteString(`</a>`)
+	if sourceAnchor != "" {
+		builder.WriteString(` <code>#`)
+		builder.WriteString(escapeHTML(sourceAnchor))
+		builder.WriteString(`</code>`)
+	}
+}
+
+func memexNodeLabel(nodeID string, pageByNodeID map[string]*memexPage) string {
+	page := pageByNodeID[nodeID]
+	if page == nil {
+		return `<code>` + escapeHTML(nodeID) + `</code>`
+	}
+	var builder strings.Builder
+	builder.WriteString(`<a href="`)
+	builder.WriteString(escapeHTML(page.URLPath))
+	builder.WriteString(`">`)
+	builder.WriteString(escapeHTML(page.Title))
+	builder.WriteString(`</a>`)
+	return builder.String()
+}
+
+func writeMemexTrailPath(builder *strings.Builder, page *memexPage, links map[string]string) {
+	if page.Trail == nil {
+		return
+	}
+	builder.WriteString(
+		`<section class="trail-path"><div class="section-head"><h2>Reasoning Path</h2>`,
+	)
+	builder.WriteString(
+		`<p>This trail stores the visible retrieval path, not an opaque similarity result.</p></div>`,
+	)
+	builder.WriteString(`<ol class="path-steps">`)
+	writeMemexTrailStep(
+		builder,
+		"Question",
+		firstNonEmptyString(page.Trail.Question, page.Trail.Query),
+		links,
+	)
+	writeMemexTrailStep(builder, "Search Trail", page.Trail.SearchTrail, links)
+	writeMemexTrailStep(builder, "Rationale Summary", page.Trail.RationaleSummary, links)
+	writeMemexTrailStep(builder, "Findings", page.Trail.Findings, links)
+	writeMemexTrailStep(builder, "Reusable Result", page.Trail.ReusableResult, links)
+	builder.WriteString(`</ol></section>`)
+}
+
+func writeMemexTrailStep(
+	builder *strings.Builder,
+	label string,
+	content string,
+	links map[string]string,
+) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return
+	}
+	builder.WriteString(`<li><strong>`)
+	builder.WriteString(escapeHTML(label))
+	builder.WriteString(`</strong>`)
+	builder.WriteString(renderQMDContent(content, links))
+	builder.WriteString(`</li>`)
+}
+
+func memexPagesByNodeID(pages []*memexPage) map[string]*memexPage {
+	output := map[string]*memexPage{}
+	for _, page := range pages {
+		if page.NodeID != "" {
+			output[page.NodeID] = page
+		}
+	}
+	return output
+}
+
+func memexPagesByRelPath(pages []*memexPage) map[string]*memexPage {
+	output := map[string]*memexPage{}
+	for _, page := range pages {
+		output[page.RelPath] = page
+	}
+	return output
 }
 
 func writeMemexHotPages(builder *strings.Builder, pages []*memexPage) {
@@ -1159,6 +1668,10 @@ func firstNonEmptyString(values ...string) string {
 	return ""
 }
 
+func collapseWhitespace(value string) string {
+	return strings.Join(strings.Fields(value), " ")
+}
+
 func memexRenderCSS() string {
 	return `
 :root{color-scheme:light;--bg:#f4f5f2;--panel:#ffffff;--ink:#18201c;--muted:#647067;--line:#d9dfd8;--accent:#0a6f74;--blue:#1f5f99;--amber:#9b6a00;--red:#a13d31}
@@ -1179,7 +1692,7 @@ h1{font-size:34px;line-height:1.1;margin:0 0 8px}
 .hero-nav a{border:1px solid var(--line);border-radius:6px;background:#fff;padding:7px 10px;color:var(--ink)}
 .shell{max-width:1240px;margin:0 auto;padding:24px 30px 46px}
 .metric-grid{max-width:1240px;margin:18px auto 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
-.metric,.panel,.page-card,.artifact{background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 1px 2px rgba(21,27,24,.04)}
+.metric,.panel,.page-card,.artifact,.trail-card,.recall-path{background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 1px 2px rgba(21,27,24,.04)}
 .metric{padding:13px 14px}
 .metric span,.metric em{display:block;color:var(--muted);font-style:normal}
 .metric strong{display:block;font-size:26px;line-height:1.15}
@@ -1190,11 +1703,18 @@ h1{font-size:34px;line-height:1.1;margin:0 0 8px}
 .section-head p{margin:0;color:var(--muted)}
 .graph{width:100%;max-height:560px;object-fit:contain;background:#fff;border:1px solid var(--line);border-radius:6px}
 .pages{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:12px}
-.page-card{padding:14px;display:flex;flex-direction:column;gap:8px}
+.page-card,.trail-card,.recall-path{padding:14px;display:flex;flex-direction:column;gap:8px}
 .card-top,.meta-row,.tag-row,.mini-metrics{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
-.page-card h3{font-size:17px;line-height:1.25;margin:0}
-.page-card p{margin:0;color:#313a34}
+.page-card h3,.trail-card h3{font-size:17px;line-height:1.25;margin:0}
+.page-card p,.trail-card p,.recall-path p{margin:0;color:#313a34}
 .path{color:var(--muted)}
+.trail-list,.reasoning-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:12px;margin-bottom:24px}
+.path-flow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.path-flow span{border:1px solid var(--line);border-radius:6px;background:#f6f8f5;color:var(--muted);font-size:12px;font-weight:700;text-align:center;padding:6px}
+.trail-query{font-weight:700;color:var(--ink)}
+.recall-path .path-step{border-top:1px solid var(--line);padding-top:8px}
+.recall-path .path-step:first-of-type{border-top:0;padding-top:0}
+.path-step strong{display:block;margin-bottom:4px}.path-step ul{margin:0;padding-left:18px}.path-step span{color:var(--muted)}
 .tag{display:inline-flex;align-items:center;border-radius:999px;border:1px solid var(--line);background:#f7f8f6;color:#374039;font-size:12px;line-height:1;padding:5px 7px}
 .tag.type{border-color:#c6ddd9;background:#eef8f6;color:var(--accent);font-weight:700}
 .tag.status{border-color:#dce7c7;background:#f6faee;color:#4d6b1f}
@@ -1215,6 +1735,8 @@ pre{white-space:pre-wrap;overflow:auto;max-height:520px;background:#101713;color
 .document h1{font-size:28px}.document h2{font-size:22px;margin-top:24px}.document h3{font-size:17px;margin-top:18px}
 .document p,.document li{font-size:15px}.document ul{padding-left:21px}
 .summary{border-left:3px solid var(--accent);padding:8px 0 8px 12px;color:#33413a;background:#f7faf8}
+.trail-path{border:1px solid var(--line);border-radius:8px;background:#fbfcfb;padding:14px;margin:0 0 18px}
+.path-steps{display:flex;flex-direction:column;gap:10px;margin:0;padding-left:20px}.path-steps li{padding-left:4px}.path-steps strong{display:block;margin-bottom:4px}
 .wikilink{font-weight:700;border-bottom:1px solid #b8c9df}
 .broken-wikilink{color:var(--muted);border:1px dashed var(--line);border-radius:4px;padding:1px 4px;background:#fafafa}
 .side{display:flex;flex-direction:column;gap:12px}
