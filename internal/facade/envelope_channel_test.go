@@ -140,6 +140,7 @@ func TestOnPremOutboxGetUsesSentListBecauseDirectGetIsReceiverOnly(t *testing.T)
 		require.Equal(t, http.MethodGet, req.Method)
 		require.Equal(t, "/v1/channel/envelopes", req.URL.Path)
 		require.Equal(t, "sent", req.URL.Query().Get("direction"))
+		require.Equal(t, "100", req.URL.Query().Get("limit"))
 		return jsonResponse(
 			`{"envelopes":[{"envelope_id":"env-1","payload_type":"knowledge_capsule","payload_json":{},"status":"pending"}]}`,
 		), nil

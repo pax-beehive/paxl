@@ -10,14 +10,12 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/pax-oss/paxl/internal/facade"
-	"github.com/pax-oss/paxl/internal/model"
-	"github.com/pax-oss/paxl/internal/model/store"
 	"github.com/stretchr/testify/require"
 )
 
@@ -25,8 +23,12 @@ const onPremE2EBootstrapSecret = "e2e-bootstrap-secret"
 
 func TestPaxlOnPremChannelFlow(t *testing.T) {
 	baseURL := strings.TrimRight(os.Getenv("TEAM_MEMORY_E2E_BASE_URL"), "/")
+	paxlBinary := strings.TrimSpace(os.Getenv("PAXL_E2E_PAXL_BIN"))
 	if baseURL == "" {
 		t.Skip("TEAM_MEMORY_E2E_BASE_URL is not set")
+	}
+	if paxlBinary == "" {
+		t.Skip("PAXL_E2E_PAXL_BIN is not set")
 	}
 	client := newHumanClient(t)
 	waitForTeamMemory(t, client, baseURL)
@@ -54,95 +56,98 @@ func TestPaxlOnPremChannelFlow(t *testing.T) {
 		"paxl-channel-receiver",
 		[]string{"channel_receive"},
 	)
-	senderStore := openTestStore(t, "sender.db")
-	receiverStore := openTestStore(t, "receiver.db")
+	root := t.TempDir()
+	sender := cliAgent{
+		binary: paxlBinary,
+		db:     filepath.Join(root, "sender.db"),
+		home:   filepath.Join(root, "sender-home"),
+	}
+	receiver := cliAgent{
+		binary: paxlBinary,
+		db:     filepath.Join(root, "receiver.db"),
+		home:   filepath.Join(root, "receiver-home"),
+	}
 
-	senderProfile := connectAgent(t, client, senderStore, baseURL, senderToken)
-	receiverProfile := connectAgent(t, client, receiverStore, baseURL, receiverToken)
-	require.Equal(t, "paxl-channel-sender", senderProfile.AgentID)
-	require.Equal(t, "paxl-channel-receiver", receiverProfile.AgentID)
+	senderProfile := firstJSONLine(t, sender.run(t, "", map[string]string{
+		"PAXL_ENROLLMENT_TOKEN": senderToken,
+	}, "channel", "connect", "onprem", "--url", baseURL, "--format", "jsonl"))
+	receiverProfile := firstJSONLine(t, receiver.run(t, "", map[string]string{
+		"PAXL_ENROLLMENT_TOKEN": receiverToken,
+	}, "channel", "connect", "onprem", "--url", baseURL, "--format", "jsonl"))
+	require.Equal(t, "paxl-channel-sender", requiredString(t, senderProfile, "agent_id"))
+	receiverAgentID := requiredString(t, receiverProfile, "agent_id")
+	require.Equal(t, "paxl-channel-receiver", receiverAgentID)
+	require.NotContains(t, string(mustJSON(t, senderProfile)), "tm_key_")
 
-	directory := facade.NewChannelFacade(client, senderStore)
-	agents, err := directory.ListAgents(context.Background(), &facade.ListDirectoryAgentsRequest{
-		Channel: "onprem", Query: receiverProfile.AgentID, Limit: 10,
-	})
-	require.NoError(t, err)
-	require.Len(t, agents.Agents, 1)
-	require.Equal(t, receiverProfile.AgentID, agents.Agents[0].AgentID)
-	fetchedAgent, err := directory.GetAgent(context.Background(), &facade.GetDirectoryAgentRequest{
-		Channel: "onprem", AgentID: receiverProfile.AgentID,
-	})
-	require.NoError(t, err)
-	require.Equal(t, receiverProfile.AgentID, fetchedAgent.Agent.AgentID)
+	directory := jsonLines(t, sender.run(t, "", nil,
+		"channel", "agents", "list", "--channel", "onprem", "--query", receiverAgentID,
+		"--limit", "10", "--format", "jsonl"))
+	require.Len(t, directory, 1)
+	require.Equal(t, receiverAgentID, requiredString(t, directory[0], "agent_id"))
+	fetchedAgent := firstJSONLine(t, sender.run(t, "", nil,
+		"channel", "agents", "get", receiverAgentID, "--channel", "onprem", "--format", "jsonl"))
+	require.Equal(t, receiverAgentID, requiredString(t, fetchedAgent, "agent_id"))
 
-	capsule, err := facade.NewCapsuleFacade(nil, senderStore).Create(
-		context.Background(),
-		&facade.CreateCapsuleRequest{
-			Keyword: "onprem",
-			Title:   "Paxl on-prem E2E",
-			Summary: "Public HTTP channel flow.",
-			Content: "The capsule crossed Team Memory and was materialized locally exactly once.",
-			Manual:  true,
-		},
+	created := firstJSONLine(t, sender.run(t, "", nil,
+		"capsule", "create", "--manual", "--keyword", "onprem", "--title", "Paxl on-prem E2E",
+		"--summary", "Public HTTP channel flow.", "--content",
+		"The capsule crossed Team Memory and was materialized locally exactly once.",
+		"--format", "jsonl"))
+	capsuleID := requiredString(t, created, "capsuleId")
+	sent := firstJSONLine(t, sender.run(t, "", nil,
+		"capsule", "send", capsuleID, "--channel", "onprem", "--to-agent-id", receiverAgentID,
+		"--message", "Review the on-prem handoff.", "--match", "project", "--project", "paxl",
+		"--agent", "codex", "--format", "jsonl"))
+	envelopeID := requiredString(t, sent, "envelopeId")
+	require.Equal(t, "pending", requiredString(t, sent, "status"))
+
+	inbox := jsonLines(t, receiver.run(t, "", nil,
+		"inbox", "list", "--channel", "onprem", "--status", "pending", "--limit", "10",
+		"--format", "jsonl"))
+	require.Len(t, inbox, 1)
+	require.Equal(t, envelopeID, requiredString(t, inbox[0], "envelopeId"))
+	fetched := firstJSONLine(t, receiver.run(t, "", nil,
+		"inbox", "get", envelopeID, "--channel", "onprem", "--format", "jsonl"))
+	require.Equal(t, envelopeID, requiredString(t, fetched, "envelopeId"))
+
+	firstAccepted := jsonLines(t, receiver.run(t, "", nil,
+		"inbox", "accept", envelopeID, "--channel", "onprem", "--format", "jsonl"))
+	require.Len(t, firstAccepted, 3)
+	secondAccepted := jsonLines(t, receiver.run(t, "", nil,
+		"inbox", "accept", envelopeID, "--channel", "onprem", "--format", "jsonl"))
+	require.Len(t, secondAccepted, 3)
+	require.Equal(
+		t,
+		requiredString(t, firstAccepted[1], "capsuleId"),
+		requiredString(t, secondAccepted[1], "capsuleId"),
 	)
-	require.NoError(t, err)
-
-	senderEnvelopes := facade.NewEnvelopeFacade(client, senderStore)
-	sent, err := senderEnvelopes.Send(context.Background(), &facade.SendEnvelopeRequest{
-		Channel: "onprem", CapsuleID: capsule.Capsule.CapsuleID,
-		ToAgentID: receiverProfile.AgentID, Message: "Review the on-prem handoff.",
-		MatchType: "project", MatchValue: "paxl", TargetAgent: model.AgentNameCodex,
-		IdempotencyKey: "paxl-onprem-e2e-send-1",
-	})
-	require.NoError(t, err)
-	require.NotEmpty(t, sent.Envelope.EnvelopeID)
-	require.Equal(t, "pending", sent.Envelope.Status)
-
-	receiverEnvelopes := facade.NewEnvelopeFacade(client, receiverStore)
-	inbox, err := receiverEnvelopes.ListInbox(context.Background(), &facade.ListInboxRequest{
-		Channel: "onprem", Status: "pending", Limit: 10,
-	})
-	require.NoError(t, err)
-	require.Len(t, inbox.Envelopes, 1)
-	require.Equal(t, sent.Envelope.EnvelopeID, inbox.Envelopes[0].EnvelopeID)
-	fetched, err := receiverEnvelopes.Get(context.Background(), &facade.GetEnvelopeRequest{
-		Channel: "onprem", EnvelopeID: sent.Envelope.EnvelopeID,
-	})
-	require.NoError(t, err)
-	require.Equal(t, sent.Envelope.EnvelopeID, fetched.Envelope.EnvelopeID)
-
-	firstAccepted, err := receiverEnvelopes.Accept(
-		context.Background(),
-		&facade.AcceptEnvelopeRequest{
-			Channel: "onprem", EnvelopeID: sent.Envelope.EnvelopeID,
-		},
+	require.Equal(
+		t,
+		requiredString(t, firstAccepted[2], "injectionId"),
+		requiredString(t, secondAccepted[2], "injectionId"),
 	)
-	require.NoError(t, err)
-	require.NotNil(t, firstAccepted.Capsule)
-	require.NotNil(t, firstAccepted.Injection)
-	require.Equal(t, "pending", firstAccepted.Injection.Status)
-	secondAccepted, err := receiverEnvelopes.Accept(
-		context.Background(),
-		&facade.AcceptEnvelopeRequest{
-			Channel: "onprem", EnvelopeID: sent.Envelope.EnvelopeID,
-		},
-	)
-	require.NoError(t, err)
-	require.Equal(t, firstAccepted.Capsule.CapsuleID, secondAccepted.Capsule.CapsuleID)
-	require.Equal(t, firstAccepted.Injection.InjectionID, secondAccepted.Injection.InjectionID)
-	assertSingleMaterialization(t, receiverStore)
+	sourceKey := "remote_envelope:onprem:" + requiredString(
+		t,
+		receiverProfile,
+		"profile_id",
+	) + ":" + envelopeID
+	localCapsules := jsonLines(t, receiver.run(t, "", nil,
+		"capsule", "list", "--source-session", sourceKey, "--format", "jsonl"))
+	require.Len(t, localCapsules, 1)
+	localInjections := jsonLines(t, receiver.run(t, "", nil,
+		"capsule", "injection", "--format", "jsonl"))
+	require.Len(t, localInjections, 1)
+	require.Equal(t, sourceKey, requiredString(t, localInjections[0], "sourceSessionId"))
 
-	archived, err := receiverEnvelopes.Archive(context.Background(), &facade.ArchiveEnvelopeRequest{
-		Channel: "onprem", EnvelopeID: sent.Envelope.EnvelopeID,
-	})
-	require.NoError(t, err)
-	require.Equal(t, "archived", archived.Envelope.Status)
-	outbox, err := senderEnvelopes.ListOutbox(context.Background(), &facade.ListOutboxRequest{
-		Channel: "onprem", Status: "archived", Limit: 10,
-	})
-	require.NoError(t, err)
-	require.Len(t, outbox.Envelopes, 1)
-	require.Equal(t, sent.Envelope.EnvelopeID, outbox.Envelopes[0].EnvelopeID)
+	receiver.run(t, "", nil, "inbox", "archive", envelopeID, "--channel", "onprem")
+	outbox := jsonLines(t, sender.run(t, "", nil,
+		"outbox", "list", "--channel", "onprem", "--status", "archived", "--limit", "10",
+		"--format", "jsonl"))
+	require.Len(t, outbox, 1)
+	require.Equal(t, envelopeID, requiredString(t, outbox[0], "envelopeId"))
+	outboxEnvelope := firstJSONLine(t, sender.run(t, "", nil,
+		"outbox", "get", envelopeID, "--channel", "onprem", "--format", "jsonl"))
+	require.Equal(t, "archived", requiredString(t, outboxEnvelope, "status"))
 }
 
 func newHumanClient(t *testing.T) *http.Client {
@@ -187,48 +192,63 @@ func createEnrollment(
 	return requiredString(t, enrollment, "token")
 }
 
-func connectAgent(
+type cliAgent struct {
+	binary string
+	db     string
+	home   string
+}
+
+func (a cliAgent) run(
 	t *testing.T,
-	client *http.Client,
-	sessionStore *store.Store,
-	baseURL string,
-	token string,
-) *model.ChannelProfile {
+	stdin string,
+	extraEnv map[string]string,
+	args ...string,
+) string {
 	t.Helper()
-	connected, err := facade.NewChannelFacade(client, sessionStore).Connect(
-		context.Background(),
-		&facade.ConnectChannelRequest{
-			Kind: "onprem", Name: "onprem", URL: baseURL,
-			EnrollmentToken: token, AutoReceive: true,
-		},
-	)
-	require.NoError(t, err)
-	return connected.Profile
+	require.NoError(t, os.MkdirAll(a.home, 0o700))
+	commandArgs := append([]string{"--db", a.db}, args...)
+	command := exec.CommandContext(context.Background(), a.binary, commandArgs...)
+	command.Stdin = strings.NewReader(stdin)
+	command.Env = append(os.Environ(), "HOME="+a.home, "XDG_DATA_HOME="+a.home)
+	for key, value := range extraEnv {
+		command.Env = append(command.Env, key+"="+value)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	err := command.Run()
+	require.NoError(t, err, "paxl %s\nstderr: %s", strings.Join(args, " "), stderr.String())
+	return stdout.String()
 }
 
-func openTestStore(t *testing.T, name string) *store.Store {
+func jsonLines(t *testing.T, output string) []map[string]any {
 	t.Helper()
-	opened, err := store.Open(
-		context.Background(),
-		&store.OpenRequest{Path: filepath.Join(t.TempDir(), name)},
-	)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, opened.Store.Close()) })
-	return opened.Store
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return nil
+	}
+	results := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		value := make(map[string]any)
+		require.NoError(t, json.Unmarshal([]byte(line), &value), line)
+		results = append(results, value)
+	}
+	return results
 }
 
-func assertSingleMaterialization(t *testing.T, sessionStore *store.Store) {
+func firstJSONLine(t *testing.T, output string) map[string]any {
 	t.Helper()
-	capsules, err := sessionStore.ListKnowledgeCapsules(
-		context.Background(), &store.ListKnowledgeCapsulesRequest{},
-	)
+	lines := jsonLines(t, output)
+	require.NotEmpty(t, lines)
+	return lines[0]
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
 	require.NoError(t, err)
-	require.Len(t, capsules.Capsules, 1)
-	injections, err := sessionStore.ListKnowledgeInjections(
-		context.Background(), &store.ListKnowledgeInjectionsRequest{},
-	)
-	require.NoError(t, err)
-	require.Len(t, injections.Injections, 1)
+	return encoded
 }
 
 func humanRequest(

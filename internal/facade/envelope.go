@@ -469,7 +469,7 @@ func (f *EnvelopeFacade) Get(
 	}
 	var envelope *model.Envelope
 	if strings.TrimSpace(req.Direction) == "sent" && channel.SourceNamespace() != "manager" {
-		listed, listErr := channel.List(ctx, &channelListRequest{Direction: "sent"})
+		listed, listErr := channel.List(ctx, &channelListRequest{Direction: "sent", Limit: 100})
 		if listErr != nil {
 			return nil, listErr
 		}
@@ -480,7 +480,11 @@ func (f *EnvelopeFacade) Get(
 			}
 		}
 		if envelope == nil {
-			return nil, fmt.Errorf("get sent envelope %q: not found", req.EnvelopeID)
+			return nil, fmt.Errorf(
+				"get sent envelope %q: not present in the first 100 sent envelopes; "+
+					"the current on-prem API does not expose sent-envelope lookup or pagination",
+				req.EnvelopeID,
+			)
 		}
 	} else {
 		envelope, err = channel.Get(ctx, req.EnvelopeID)
@@ -802,71 +806,47 @@ type materializedAcceptedEnvelope struct {
 	Injection *model.KnowledgeInjection
 }
 
-type localCapsuleLookup struct {
-	Capsule *model.KnowledgeCapsule
-	Found   bool
-}
-
-type acceptedEnvelopeRouteResult struct {
-	Injection *model.KnowledgeInjection
-}
-
-type localRouteLookup struct {
-	Injection *model.KnowledgeInjection
-	Found     bool
-}
-
 func (f *EnvelopeFacade) materializeAcceptedEnvelope(
 	ctx context.Context,
 	capsule *model.KnowledgeCapsule,
 	route *envelopePayloadRoute,
 ) (*materializedAcceptedEnvelope, error) {
-	lookup, err := f.findLocalCapsuleForRemoteEnvelope(ctx, capsule.SourceSessionID)
-	if err != nil {
-		return nil, err
-	}
-	localCapsule := lookup.Capsule
-	if !lookup.Found {
-		created, err := f.store.CreateKnowledgeCapsule(
-			ctx,
-			&store.CreateKnowledgeCapsuleRequest{Capsule: capsule},
-		)
+	var injection *model.KnowledgeInjection
+	if route != nil {
+		injectionID, err := newLocalID("kci")
 		if err != nil {
-			return nil, fmt.Errorf("store accepted capsule: %w", err)
+			return nil, fmt.Errorf("create accepted route injection id: %w", err)
 		}
-		localCapsule = created.Capsule
+		injection = &model.KnowledgeInjection{
+			InjectionID:         injectionID,
+			CapsuleID:           capsule.CapsuleID,
+			SourceNodeID:        capsule.SourceNodeID,
+			SourceAgent:         capsule.SourceAgent,
+			SourceSessionID:     capsule.SourceSessionID,
+			TargetNodeID:        localNodeID(),
+			TargetAgent:         route.TargetAgent,
+			DeliveryMethod:      "hook",
+			DeliveryMessageType: "system_handoff",
+			Status:              "pending",
+			RouteMatchType:      route.MatchType,
+			RouteMatchValue:     route.MatchValue,
+		}
 	}
-	routeResult, err := f.ensureAcceptedEnvelopeRoute(ctx, localCapsule, route)
-	if err != nil {
-		return nil, err
-	}
-	return &materializedAcceptedEnvelope{
-		Capsule:   localCapsule,
-		Injection: routeResult.Injection,
-	}, nil
-}
-
-func (f *EnvelopeFacade) findLocalCapsuleForRemoteEnvelope(
-	ctx context.Context,
-	sourceSessionID string,
-) (localCapsuleLookup, error) {
-	listed, err := f.store.ListKnowledgeCapsules(
+	materialized, err := f.store.MaterializeRemoteEnvelope(
 		ctx,
-		&store.ListKnowledgeCapsulesRequest{
-			SourceSessionID: sourceSessionID,
-			Limit:           1,
+		&store.MaterializeRemoteEnvelopeRequest{
+			SourceKey: capsule.SourceSessionID,
+			Capsule:   capsule,
+			Injection: injection,
 		},
 	)
 	if err != nil {
-		return localCapsuleLookup{}, fmt.Errorf(
-			"find accepted capsule by source session: %w",
-			err,
-		)
+		return nil, fmt.Errorf("materialize accepted envelope: %w", err)
 	}
-	if len(listed.Capsules) == 0 {
-		return localCapsuleLookup{}, nil
-	}
-	return localCapsuleLookup{Capsule: listed.Capsules[0], Found: true}, nil
+	return &materializedAcceptedEnvelope{
+		Capsule:   materialized.Capsule,
+		Injection: materialized.Injection,
+	}, nil
 }
 
 func validateEnvelopeRoute(route *envelopePayloadRoute) error {
@@ -900,98 +880,4 @@ func validateEnvelopeRoute(route *envelopePayloadRoute) error {
 	route.MatchType = matchType
 	route.MatchValue = matchValue
 	return nil
-}
-
-func (f *EnvelopeFacade) storeAcceptedEnvelopeRoute(
-	ctx context.Context,
-	capsule *model.KnowledgeCapsule,
-	route *envelopePayloadRoute,
-) (*model.KnowledgeInjection, error) {
-	injectionID, err := newLocalID("kci")
-	if err != nil {
-		return nil, fmt.Errorf("create accepted route injection id: %w", err)
-	}
-	injection := &model.KnowledgeInjection{
-		InjectionID:         injectionID,
-		CapsuleID:           capsule.CapsuleID,
-		SourceNodeID:        capsule.SourceNodeID,
-		SourceAgent:         capsule.SourceAgent,
-		SourceSessionID:     capsule.SourceSessionID,
-		TargetNodeID:        localNodeID(),
-		TargetAgent:         route.TargetAgent,
-		DeliveryMethod:      "hook",
-		DeliveryMessageType: "system_handoff",
-		Status:              "pending",
-		RouteMatchType:      route.MatchType,
-		RouteMatchValue:     route.MatchValue,
-	}
-	created, err := f.store.CreateKnowledgeInjection(
-		ctx,
-		&store.CreateKnowledgeInjectionRequest{Injection: injection},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store accepted route injection: %w", err)
-	}
-	return created.Injection, nil
-}
-
-func (f *EnvelopeFacade) ensureAcceptedEnvelopeRoute(
-	ctx context.Context,
-	capsule *model.KnowledgeCapsule,
-	route *envelopePayloadRoute,
-) (acceptedEnvelopeRouteResult, error) {
-	if route == nil {
-		return acceptedEnvelopeRouteResult{}, nil
-	}
-	existing, err := f.findLocalRouteForAcceptedEnvelope(ctx, capsule, route)
-	if err != nil {
-		return acceptedEnvelopeRouteResult{}, err
-	}
-	if existing.Found {
-		return acceptedEnvelopeRouteResult{Injection: existing.Injection}, nil
-	}
-	created, err := f.storeAcceptedEnvelopeRoute(ctx, capsule, route)
-	if err != nil {
-		return acceptedEnvelopeRouteResult{}, err
-	}
-	return acceptedEnvelopeRouteResult{Injection: created}, nil
-}
-
-func (f *EnvelopeFacade) findLocalRouteForAcceptedEnvelope(
-	ctx context.Context,
-	capsule *model.KnowledgeCapsule,
-	route *envelopePayloadRoute,
-) (localRouteLookup, error) {
-	listed, err := f.store.ListKnowledgeInjections(
-		ctx,
-		&store.ListKnowledgeInjectionsRequest{},
-	)
-	if err != nil {
-		return localRouteLookup{}, fmt.Errorf("find accepted route injection: %w", err)
-	}
-	for _, injection := range listed.Injections {
-		if injection == nil {
-			continue
-		}
-		if injection.CapsuleID != capsule.CapsuleID {
-			continue
-		}
-		if injection.DeliveryMethod != "hook" {
-			continue
-		}
-		if injection.DeliveryMessageType != "system_handoff" {
-			continue
-		}
-		if injection.TargetAgent != route.TargetAgent {
-			continue
-		}
-		if injection.RouteMatchType != route.MatchType {
-			continue
-		}
-		if injection.RouteMatchValue != route.MatchValue {
-			continue
-		}
-		return localRouteLookup{Injection: injection, Found: true}, nil
-	}
-	return localRouteLookup{}, nil
 }

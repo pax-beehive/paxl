@@ -347,6 +347,36 @@ func (s *CommandSuite) TestRunWritesExecutionLogUnderPaxHome() {
 	s.Contains(string(raw), `"args":["version"]`)
 }
 
+func (s *CommandSuite) TestRunRedactsEnrollmentTokenFromExecutionLog() {
+	home := s.T().TempDir()
+	s.T().Setenv("HOME", home)
+	oldClient := authHTTPClient
+	authHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/v1/agent-enrollments/exchange" {
+			return commandJSONResponse(`{"credential_id":"cred-1","api_key":"tm_key"}`), nil
+		}
+		return commandJSONResponse(
+			`{"user_id":"user-1","agent_id":"agent-1","credential_id":"cred-1","permissions":["channel_receive"]}`,
+		), nil
+	})
+	s.T().Cleanup(func() { authHTTPClient = oldClient })
+
+	err := run(context.Background(), []string{
+		"--db", filepath.Join(home, "paxl.sqlite"), "channel", "connect", "onprem",
+		"--url", "https://memory.internal", "--enrollment-token=tm_enroll_live_secret",
+	}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	raw := s.readExecutionLogs(home)
+	s.NotContains(raw, "tm_enroll_live_secret")
+	s.Contains(raw, "--enrollment-token=[REDACTED]")
+
+	separate := redactExecutionArgs(
+		[]string{"channel", "connect", "--enrollment-token", "tm_enroll_other"},
+	)
+	s.Equal([]string{"channel", "connect", "--enrollment-token", "[REDACTED]"}, separate)
+}
+
 func (s *CommandSuite) TestRunWritesCallerAgentFlagToExecutionLog() {
 	home := s.T().TempDir()
 	s.T().Setenv("HOME", home)

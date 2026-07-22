@@ -117,6 +117,7 @@ func TestChannelConnectRejectsNonOriginURLAndMissingCA(t *testing.T) {
 	}{
 		{name: "path", url: "https://memory.internal/api", want: "origin"},
 		{name: "query", url: "https://memory.internal?token=secret", want: "origin"},
+		{name: "cleartext remote", url: "http://memory.internal", want: "must use https"},
 		{name: "missing ca", url: "https://memory.internal", ca: "/missing/ca.pem", want: "load CA file"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -130,6 +131,35 @@ func TestChannelConnectRejectsNonOriginURLAndMissingCA(t *testing.T) {
 			require.ErrorContains(t, err, test.want)
 			require.False(t, strings.Contains(err.Error(), "tm_enroll_once"))
 		})
+	}
+}
+
+func TestChannelConnectRejectsReservedOrInvalidProfileNamesBeforeExchange(t *testing.T) {
+	for _, name := range []string{"manager", "bad/name", "-leading"} {
+		t.Run(name, func(t *testing.T) {
+			requests := 0
+			client := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+				requests++
+				return nil, fmt.Errorf("must not exchange")
+			})
+			_, err := NewChannelFacade(client, nil).Connect(
+				context.Background(),
+				&ConnectChannelRequest{
+					Kind: "onprem", Name: name, URL: "https://memory.internal",
+					EnrollmentToken: "tm_enroll_once",
+				},
+			)
+			require.Error(t, err)
+			require.Zero(t, requests)
+		})
+	}
+}
+
+func TestChannelOriginAllowsLoopbackHTTPForLocalAcceptance(t *testing.T) {
+	for _, raw := range []string{"http://localhost:58080", "http://127.0.0.1:58080", "http://[::1]:58080"} {
+		origin, err := normalizeChannelOrigin(raw)
+		require.NoError(t, err)
+		require.Equal(t, raw, origin)
 	}
 }
 

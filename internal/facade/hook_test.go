@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pax-oss/paxl/internal/model"
 	"github.com/pax-oss/paxl/internal/model/store"
@@ -225,6 +226,9 @@ func TestAgentHookSyncsAcceptedInboxRoutesBeforeClaimingInjection(t *testing.T) 
 }
 
 func TestAgentHookContinuesWhenOneAutoReceiveChannelFails(t *testing.T) {
+	previousTimeout := hookChannelPollTimeout
+	hookChannelPollTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { hookChannelPollTimeout = previousTimeout })
 	ctx := context.Background()
 	opened, err := store.Open(
 		ctx,
@@ -245,7 +249,8 @@ func TestAgentHookContinuesWhenOneAutoReceiveChannelFails(t *testing.T) {
 	payload := `{"schema_version":"paxl.envelope_payload.knowledge_capsule.v2","capsule":{"capsule_id":"remote","source_session_id":"codex:source","source_agent":"codex","keyword":"handoff","title":"Remote","summary":"summary","content":"content","status":"active","truncated":false,"original_estimated_chars":7},"route":{"match_type":"keyword","match_value":"handoff","target_agent":"codex"}}`
 	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Host == "broken.internal" {
-			return nil, fmt.Errorf("broken channel offline")
+			<-req.Context().Done()
+			return nil, req.Context().Err()
 		}
 		if req.URL.Host != "good.internal" {
 			return nil, fmt.Errorf("unexpected host %s", req.URL.Host)

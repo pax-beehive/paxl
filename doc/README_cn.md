@@ -527,7 +527,8 @@ paxl channel agents get receiver-agent --channel onprem
 ```
 
 workstation 内部 CA 可以使用 `--ca-file /path/to/team-memory-ca.pem` 加入该 profile
-的系统信任池；paxl 不会持久化 insecure TLS 配置。
+的系统信任池；paxl 不会持久化 insecure TLS 配置。远端 channel 必须使用 HTTPS，
+明文 HTTP 只允许 loopback origin，用于本机验收测试。
 
 on-prem 投递是 Agent-to-Agent，因此必须使用 Agent id，而不是 friend alias 或邮箱：
 

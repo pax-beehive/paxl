@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/pax-oss/paxl/internal/model"
@@ -324,6 +326,80 @@ func (s *StoreSuite) TestFindSessionRejectsAmbiguousBareNativeID() {
 	_, err := s.store.FindSession(s.ctx, &store.FindSessionRequest{ID: "same-native-id"})
 
 	s.Error(err)
+}
+
+func (s *StoreSuite) TestMaterializeRemoteEnvelopeIsAtomicAcrossStoreHandles() {
+	second, err := store.Open(s.ctx, &store.OpenRequest{Path: s.path})
+	s.Require().NoError(err)
+	defer func() { s.Require().NoError(second.Store.Close()) }()
+
+	type result struct {
+		response *store.MaterializeRemoteEnvelopeResponse
+		err      error
+	}
+	results := make(chan result, 2)
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	for index, sessionStore := range []*store.Store{s.store, second.Store} {
+		workers.Add(1)
+		go func(index int, sessionStore *store.Store) {
+			defer workers.Done()
+			<-start
+			capsuleID := fmt.Sprintf("kcap_%d", index)
+			response, materializeErr := sessionStore.MaterializeRemoteEnvelope(
+				s.ctx,
+				&store.MaterializeRemoteEnvelopeRequest{
+					SourceKey: "remote_envelope:onprem:profile:env-1",
+					Capsule: &model.KnowledgeCapsule{
+						CapsuleID:       capsuleID,
+						SourceSessionID: "remote_envelope:onprem:profile:env-1",
+						SourceAgent:     model.AgentNameCodex,
+						Keyword:         "handoff",
+						Title:           "Concurrent handoff",
+						Summary:         "summary",
+						Content:         "content",
+					},
+					Injection: &model.KnowledgeInjection{
+						InjectionID:         fmt.Sprintf("kci_%d", index),
+						CapsuleID:           capsuleID,
+						SourceSessionID:     "remote_envelope:onprem:profile:env-1",
+						SourceAgent:         model.AgentNameCodex,
+						TargetAgent:         model.AgentNameCodex,
+						DeliveryMethod:      "hook",
+						DeliveryMessageType: "system_handoff",
+						Status:              "pending",
+					},
+				},
+			)
+			results <- result{response: response, err: materializeErr}
+		}(index, sessionStore)
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+
+	var responses []*store.MaterializeRemoteEnvelopeResponse
+	for got := range results {
+		s.Require().NoError(got.err)
+		responses = append(responses, got.response)
+	}
+	s.Require().Len(responses, 2)
+	s.Equal(responses[0].Capsule.CapsuleID, responses[1].Capsule.CapsuleID)
+	s.Equal(responses[0].Injection.InjectionID, responses[1].Injection.InjectionID)
+	listedCapsules, err := s.store.ListKnowledgeCapsules(
+		s.ctx,
+		&store.ListKnowledgeCapsulesRequest{
+			SourceSessionID: "remote_envelope:onprem:profile:env-1",
+		},
+	)
+	s.Require().NoError(err)
+	s.Len(listedCapsules.Capsules, 1)
+	listedInjections, err := s.store.ListKnowledgeInjections(
+		s.ctx,
+		&store.ListKnowledgeInjectionsRequest{},
+	)
+	s.Require().NoError(err)
+	s.Len(listedInjections.Injections, 1)
 }
 
 func (s *StoreSuite) TestArchiveKnowledgeCapsuleReturnsNoRowsForMissingCapsule() {

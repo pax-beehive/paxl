@@ -577,7 +577,8 @@ paxl channel agents get receiver-agent --channel onprem
 
 For a workstation CA, add its PEM certificate to the profile with
 `--ca-file /path/to/team-memory-ca.pem`. System roots remain trusted. There is
-no persisted insecure TLS mode.
+no persisted insecure TLS mode. Remote channels require HTTPS; plain HTTP is
+limited to loopback origins for local acceptance tests.
 
 On-prem delivery is Agent-to-Agent and therefore uses an Agent id, not a friend
 alias or email:

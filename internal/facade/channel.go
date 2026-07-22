@@ -9,10 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/pax-oss/paxl/internal/model"
 	"github.com/pax-oss/paxl/internal/model/store"
@@ -244,8 +246,15 @@ func (f *ChannelFacade) Connect(
 	if name == "" {
 		name = "onprem"
 	}
+	if err := validateChannelProfileName(name); err != nil {
+		return nil, fmt.Errorf("connect channel: %w", err)
+	}
 	if strings.TrimSpace(req.EnrollmentToken) == "" {
 		return nil, fmt.Errorf("connect channel: enrollment token is required")
+	}
+	profileID, err := f.channelProfileID(ctx, name, origin)
+	if err != nil {
+		return nil, err
 	}
 	var exchanged exchangeEnrollmentResponse
 	if err := doOnPremJSON(ctx, client, http.MethodPost, origin,
@@ -259,10 +268,6 @@ func (f *ChannelFacade) Connect(
 		return nil, fmt.Errorf(
 			"connect channel: enrollment exchange returned incomplete credential",
 		)
-	}
-	profileID, err := f.channelProfileID(ctx, name, origin)
-	if err != nil {
-		return nil, err
 	}
 	profile := &model.ChannelProfile{
 		ProfileID: profileID, Name: name, Kind: model.ChannelKindOnPrem, URL: origin,
@@ -326,7 +331,35 @@ func normalizeChannelOrigin(raw string) (string, error) {
 	if parsed.Scheme != "https" && parsed.Scheme != "http" {
 		return "", fmt.Errorf("on-prem URL must use http or https")
 	}
+	if parsed.Scheme == "http" && !isLoopbackHost(parsed.Hostname()) {
+		return "", fmt.Errorf("on-prem URL must use https unless the host is loopback")
+	}
 	return parsed.Scheme + "://" + parsed.Host, nil
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(strings.TrimSpace(host), "localhost") {
+		return true
+	}
+	ip := net.ParseIP(strings.TrimSpace(host))
+	return ip != nil && ip.IsLoopback()
+}
+
+func validateChannelProfileName(name string) error {
+	if name == "manager" {
+		return fmt.Errorf("profile name %q is reserved", name)
+	}
+	if len(name) == 0 || len(name) > 64 {
+		return fmt.Errorf("profile name must contain 1 to 64 characters")
+	}
+	for index, char := range name {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || (index > 0 && (char == '-' || char == '_' || char == '.')) {
+			continue
+		}
+		return fmt.Errorf("profile name may contain letters, digits, dot, dash, and underscore")
+	}
+	return nil
 }
 
 func channelHTTPClient(base AuthHTTPClient, caFile string) (AuthHTTPClient, error) {
@@ -400,6 +433,8 @@ func doOnPremJSON(
 	operation string,
 	requiredPermission string,
 ) error {
+	requestContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -409,7 +444,7 @@ func doOnPremJSON(
 		reader = bytes.NewReader(encoded)
 	}
 	request, err := http.NewRequestWithContext(
-		ctx,
+		requestContext,
 		method,
 		strings.TrimRight(origin, "/")+path,
 		reader,

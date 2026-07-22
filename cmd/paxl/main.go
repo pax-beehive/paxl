@@ -5412,7 +5412,7 @@ func openExecutionLogger(args []string) *executionLogger {
 		startedAt: now,
 	}
 	fields := map[string]any{
-		"args":    args,
+		"args":    redactExecutionArgs(args),
 		"cwd":     currentWorkingDirectory(),
 		"version": version,
 		"commit":  buildCommit,
@@ -5422,6 +5422,23 @@ func openExecutionLogger(args []string) *executionLogger {
 	}
 	logger.write("command_start", fields)
 	return logger
+}
+
+func redactExecutionArgs(args []string) []string {
+	redacted := append([]string(nil), args...)
+	for index := 0; index < len(redacted); index++ {
+		if redacted[index] == "--enrollment-token" {
+			if index+1 < len(redacted) {
+				redacted[index+1] = "[REDACTED]"
+				index++
+			}
+			continue
+		}
+		if strings.HasPrefix(redacted[index], "--enrollment-token=") {
+			redacted[index] = "--enrollment-token=[REDACTED]"
+		}
+	}
+	return redacted
 }
 
 func callerAgentNameFromInvocation(args []string) model.AgentName {

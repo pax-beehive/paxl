@@ -10,6 +10,7 @@ volume_name="${project_name}_postgres-data"
 network_name="${project_name}_default"
 temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/paxl-onprem-e2e.XXXXXX")
 e2e_binary="$temp_dir/paxl-onprem-channel-e2e"
+paxl_binary="$temp_dir/paxl"
 runner_image="${project_name}-e2e:latest"
 
 if [ ! -f "$base_compose" ]; then
@@ -18,7 +19,8 @@ if [ ! -f "$base_compose" ]; then
 fi
 
 run_compose() {
-  PAXL_E2E_BINARY="$e2e_binary" PAXL_E2E_RUNNER_IMAGE="$runner_image" \
+  PAXL_E2E_BINARY="$e2e_binary" PAXL_E2E_PAXL_BINARY="$paxl_binary" \
+    PAXL_E2E_RUNNER_IMAGE="$runner_image" \
     docker compose -p "$project_name" \
     -f "$base_compose" -f "$override_compose" "$@"
 }
@@ -47,7 +49,7 @@ cleanup() {
     echo "temporary PostgreSQL volume remains: $volume_name" >&2
     exit_status=1
   fi
-  rm -f "$e2e_binary"
+  rm -f "$e2e_binary" "$paxl_binary"
   rmdir "$temp_dir" >/dev/null 2>&1 || true
   exit "$exit_status"
 }
@@ -55,6 +57,8 @@ cleanup() {
 go_arch=$(go env GOARCH)
 GOCACHE=${GOCACHE:-/tmp/paxl-go-cache} CGO_ENABLED=0 GOOS=linux GOARCH="$go_arch" go test -c \
   -o "$e2e_binary" "$paxl_repo_dir/tests/onprem-e2e"
+GOCACHE=${GOCACHE:-/tmp/paxl-go-cache} CGO_ENABLED=0 GOOS=linux GOARCH="$go_arch" go build \
+  -o "$paxl_binary" "$paxl_repo_dir/cmd/paxl"
 run_compose config --quiet
 if project_exists; then
   echo "refusing to reuse existing Docker Compose project: $project_name" >&2

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/pax-oss/paxl/internal/model"
 	"github.com/pax-oss/paxl/internal/model/store"
@@ -20,6 +21,8 @@ type AgentHookFacade struct {
 }
 
 const hookAcceptedInboxReconcileLimit = 20
+
+var hookChannelPollTimeout = 2 * time.Second
 
 type AgentHookRequest struct {
 	Agent       model.AgentName
@@ -158,7 +161,9 @@ func (f *AgentHookFacade) acceptPendingInboxRoutes(ctx context.Context, verbose 
 		}
 	}
 	for _, channel := range channels {
-		f.acceptPendingChannelRoutes(ctx, channel, verbose)
+		channelContext, cancel := context.WithTimeout(ctx, hookChannelPollTimeout)
+		f.acceptPendingChannelRoutes(channelContext, channel, verbose)
+		cancel()
 	}
 }
 
