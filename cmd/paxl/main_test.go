@@ -826,6 +826,123 @@ func (s *CommandSuite) TestUpdateCommandExposesCheck() {
 	s.True(hasCommand(command, "check"))
 }
 
+func (s *CommandSuite) TestChannelConnectStoresCredentialWithoutPrintingSecrets() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	oldClient := authHTTPClient
+	authHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/v1/agent-enrollments/exchange":
+			return commandJSONResponse(`{"credential_id":"cred-1","api_key":"tm_key_secret"}`), nil
+		case "/v1/agent-identity":
+			return commandJSONResponse(
+				`{"user_id":"user-1","agent_id":"agent-1","credential_id":"cred-1","permissions":["channel_send","channel_receive"]}`,
+			), nil
+		default:
+			return nil, fmt.Errorf("unexpected request %s", req.URL.Path)
+		}
+	})
+	s.T().Cleanup(func() { authHTTPClient = oldClient })
+
+	err := run(context.Background(), []string{
+		"--db", dbPath, "channel", "connect", "onprem", "--url", "https://memory.internal",
+		"--enrollment-token", "tm_enroll_secret", "--format", "jsonl",
+	}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"agent_id":"agent-1"`)
+	s.NotContains(s.stdout.String(), "tm_key_secret")
+	s.NotContains(s.stdout.String(), "tm_enroll_secret")
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	defer closeStore(opened.Store)
+	stored, err := opened.Store.GetChannelProfile(
+		context.Background(),
+		&store.GetChannelProfileRequest{Name: "onprem"},
+	)
+	s.Require().NoError(err)
+	s.Equal("tm_key_secret", stored.Profile.APIKey)
+}
+
+func (s *CommandSuite) TestChannelStatusAndDirectoryCommandsUseOnPremProfile() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	oldClient := authHTTPClient
+	authHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/v1/agent-enrollments/exchange":
+			return commandJSONResponse(`{"credential_id":"cred-1","api_key":"tm_key_secret"}`), nil
+		case "/v1/agent-identity":
+			s.Equal("Bearer tm_key_secret", req.Header.Get("Authorization"))
+			return commandJSONResponse(
+				`{"user_id":"user-1","agent_id":"agent-1","credential_id":"cred-1","permissions":["channel_send","channel_receive"]}`,
+			), nil
+		case "/v1/channel/agents":
+			s.Equal("review", req.URL.Query().Get("q"))
+			s.Equal("opaque-token", req.URL.Query().Get("cursor"))
+			return commandJSONResponse(
+				`{"agents":[{"agent_id":"reviewer","display_name":"Reviewer","description":"Reviews handoffs","agent_type":"codex"}],"next_cursor":"next-token"}`,
+			), nil
+		case "/v1/channel/agents/reviewer":
+			return commandJSONResponse(
+				`{"agent":{"agent_id":"reviewer","display_name":"Reviewer","description":"Reviews handoffs","agent_type":"codex"}}`,
+			), nil
+		default:
+			return nil, fmt.Errorf("unexpected request %s", req.URL.Path)
+		}
+	})
+	s.T().Cleanup(func() { authHTTPClient = oldClient })
+
+	err := run(context.Background(), []string{
+		"--db", dbPath, "channel", "connect", "onprem", "--url", "https://memory.internal",
+		"--enrollment-token", "tm_enroll_secret",
+	}, &s.stdout, &s.stderr)
+	s.Require().NoError(err)
+	s.stdout.Reset()
+
+	err = run(context.Background(), []string{
+		"--db", dbPath, "channel", "list", "--format", "jsonl",
+	}, &s.stdout, &s.stderr)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"name":"onprem"`)
+	s.NotContains(s.stdout.String(), "tm_key_secret")
+	s.stdout.Reset()
+
+	err = run(context.Background(), []string{
+		"--db", dbPath, "channel", "status", "onprem", "--format", "jsonl",
+	}, &s.stdout, &s.stderr)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"status":"connected"`)
+	s.stdout.Reset()
+
+	err = run(context.Background(), []string{
+		"--db", dbPath, "channel", "agents", "list", "--query", "review",
+		"--cursor", "opaque-token", "--format", "jsonl",
+	}, &s.stdout, &s.stderr)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"agent_id":"reviewer"`)
+	s.Contains(s.stdout.String(), `"next_cursor":"next-token"`)
+	s.stdout.Reset()
+
+	err = run(context.Background(), []string{
+		"--db", dbPath, "channel", "agents", "get", "reviewer",
+	}, &s.stdout, &s.stderr)
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "Reviews handoffs")
+}
+
+func (s *CommandSuite) TestCapsuleSendOnPremRequiresAgentRecipientAndRejectsFriendIdentity() {
+	capsuleCommand := findCommand(newCommand(&s.stdout, &s.stderr), "capsule")
+	s.Require().NotNil(capsuleCommand)
+	command := findCommand(capsuleCommand, "send")
+	s.Require().NotNil(command)
+	for _, args := range [][]string{
+		{"paxl", "capsule-id", "--channel", "onprem", "--to", "@friend"},
+		{"paxl", "capsule-id", "--channel", "onprem"},
+	} {
+		err := command.Run(context.Background(), args)
+		s.Error(err)
+	}
+}
+
 func (s *CommandSuite) TestNodeListUsesManagerNodes() {
 	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
 	s.seedManagerCredential(dbPath, "https://manager.example")

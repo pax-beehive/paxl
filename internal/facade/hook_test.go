@@ -224,6 +224,63 @@ func TestAgentHookSyncsAcceptedInboxRoutesBeforeClaimingInjection(t *testing.T) 
 	require.Equal(t, "Monitor audit frontend integration", listed.Capsules[0].Title)
 }
 
+func TestAgentHookContinuesWhenOneAutoReceiveChannelFails(t *testing.T) {
+	ctx := context.Background()
+	opened, err := store.Open(
+		ctx,
+		&store.OpenRequest{Path: filepath.Join(t.TempDir(), "paxl.sqlite")},
+	)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, opened.Store.Close()) }()
+	for _, profile := range []*model.ChannelProfile{
+		{ProfileID: "chp_broken", Name: "broken", Kind: model.ChannelKindOnPrem, URL: "https://broken.internal", APIKey: "tm_broken", Enabled: true, AutoReceive: true},
+		{ProfileID: "chp_good", Name: "good", Kind: model.ChannelKindOnPrem, URL: "https://good.internal", APIKey: "tm_good", Enabled: true, AutoReceive: true},
+	} {
+		_, err := opened.Store.SaveChannelProfile(
+			ctx,
+			&store.SaveChannelProfileRequest{Profile: profile},
+		)
+		require.NoError(t, err)
+	}
+	payload := `{"schema_version":"paxl.envelope_payload.knowledge_capsule.v2","capsule":{"capsule_id":"remote","source_session_id":"codex:source","source_agent":"codex","keyword":"handoff","title":"Remote","summary":"summary","content":"content","status":"active","truncated":false,"original_estimated_chars":7},"route":{"match_type":"keyword","match_value":"handoff","target_agent":"codex"}}`
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host == "broken.internal" {
+			return nil, fmt.Errorf("broken channel offline")
+		}
+		if req.URL.Host != "good.internal" {
+			return nil, fmt.Errorf("unexpected host %s", req.URL.Host)
+		}
+		if req.URL.Path == "/v1/channel/envelopes" {
+			if req.URL.Query().Get("status") == "accepted" {
+				return jsonResponse(`{"envelopes":[]}`), nil
+			}
+			return jsonResponse(
+				`{"envelopes":[{"envelope_id":"env-good","payload_type":"knowledge_capsule","status":"pending"}]}`,
+			), nil
+		}
+		status := "pending"
+		if req.Method == http.MethodPost {
+			status = "accepted"
+		}
+		return jsonResponse(
+			fmt.Sprintf(
+				`{"envelope":{"envelope_id":"env-good","from_user_id":"sender","from_agent_id":"sender-agent","to_user_id":"user","to_agent_id":"receiver","payload_type":"knowledge_capsule","payload_json":%s,"status":%q,"created_at":"2026-07-22T00:00:00Z"}}`,
+				payload,
+				status,
+			),
+		), nil
+	})
+	hookFacade := &AgentHookFacade{client: client, store: opened.Store}
+
+	result, err := hookFacade.Run(ctx, &AgentHookRequest{
+		Agent: model.AgentNameCodex, Event: "user-prompt", SessionID: "session", Prompt: "handoff",
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, result.Injection)
+	require.Equal(t, "remote_envelope:onprem:chp_good:env-good", result.Injection.SourceSessionID)
+}
+
 func TestAgentHookSupportsHermesPreLLMCallContextOutput(t *testing.T) {
 	ctx := context.Background()
 	opened, err := store.Open(

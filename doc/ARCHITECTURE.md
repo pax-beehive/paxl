@@ -302,6 +302,21 @@ Node IDs are local identity hints, not pax-manager node records. `paxl` uses
 then `local`. This keeps local transfers self-describing without requiring
 cloud registration.
 
+## Envelope Channels
+
+`EnvelopeFacade` routes transport operations through the small
+`EnvelopeChannel` interface (`Send`, `List`, `Get`, `Accept`, and `Archive`).
+The manager implementation wraps the existing AuthFacade HTTP contract and is
+still selected when callers omit a channel. The on-prem implementation loads a
+named `ChannelProfile`, adds its independent Bearer credential and CA trust,
+and calls Team Memory's `/v1/channel/*` endpoints.
+
+On-prem credentials are not `AuthCredential` records. A profile has a stable
+local installation namespace, so received envelope source keys include both
+the profile and remote envelope id. Accept first materializes the capsule and
+route injection in local SQLite, then acknowledges the remote envelope. This
+ordering makes an ambiguous accept response safe to retry.
+
 ## Team Graph
 
 `TeamFacade` (`internal/facade/team.go`) performs read-only GETs against

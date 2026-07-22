@@ -1,0 +1,12 @@
+services:
+  paxl-e2e:
+    image: ${PAXL_E2E_RUNNER_IMAGE}
+    pull_policy: never
+    volumes:
+      - ${PAXL_E2E_BINARY}:/usr/local/bin/paxl-onprem-channel-e2e:ro
+    entrypoint: ["/usr/local/bin/paxl-onprem-channel-e2e", "-test.v", "-test.count=1"]
+    environment:
+      TEAM_MEMORY_E2E_BASE_URL: http://team-memory:8080
+    depends_on:
+      team-memory:
+        condition: service_started

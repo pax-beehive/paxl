@@ -508,6 +508,43 @@ paxl outbox list --status accepted
 paxl outbox get <envelope-id>
 ```
 
+### Team Memory On-Prem Channel
+
+默认 envelope channel 仍然是 PAX Manager。single-Team Team Memory 可以作为独立的
+credential-bound channel 连接；它的凭据和 Agent identity 不会复用或覆盖 manager
+登录状态。建议通过环境变量输入一次性 enrollment token，避免写入 shell history：
+
+```sh
+read -rs PAXL_ENROLLMENT_TOKEN
+export PAXL_ENROLLMENT_TOKEN
+paxl channel connect onprem --url https://memory.internal
+unset PAXL_ENROLLMENT_TOKEN
+
+paxl channel list
+paxl channel status onprem
+paxl channel agents list --channel onprem --query receiver
+paxl channel agents get receiver-agent --channel onprem
+```
+
+workstation 内部 CA 可以使用 `--ca-file /path/to/team-memory-ca.pem` 加入该 profile
+的系统信任池；paxl 不会持久化 insecure TLS 配置。
+
+on-prem 投递是 Agent-to-Agent，因此必须使用 Agent id，而不是 friend alias 或邮箱：
+
+```sh
+paxl capsule send <capsule-id> --channel onprem \
+  --to-agent-id receiver-agent --match project --project paxl --agent codex
+paxl inbox list --channel onprem
+paxl inbox get <envelope-id> --channel onprem
+paxl inbox accept <envelope-id> --channel onprem
+paxl inbox archive <envelope-id> --channel onprem
+paxl outbox list --channel onprem --status archived
+```
+
+user-prompt hook 会分别轮询每个启用 auto-receive 的 profile。某个 channel 故障只会
+产生诊断，不会阻塞其他 channel 或已排队的本地 injection。信任、恢复、升级和 E2E
+说明见 [Team Memory on-prem channel](ONPREM_CHANNEL.md)。
+
 管理 friends：
 
 ```sh
@@ -644,9 +681,10 @@ paxl inbox sync --limit 20
 ```
 
 `inbox sync` 会列出 accepted inbox envelopes，把缺失的 capsule 写入本地，并在
-payload 里带 route 时重新创建 pending hook injection。这个操作是幂等的：本地用
-`remote_envelope:<envelope-id>` 作为 source session id 来识别同一个远端
-envelope，所以重复 sync 会复用已有 capsule 和 route injection。
+payload 里带 route 时重新创建 pending hook injection。这个操作是幂等的：manager
+使用 `remote_envelope:<envelope-id>`；on-prem 使用
+`remote_envelope:onprem:<profile-id>:<envelope-id>`。因此重复 sync 会复用已有
+capsule 和 route injection，多个安装里相同的 envelope id 也不会冲突。
 
 `paxl inbox accept <envelope-id>` 也是幂等的。如果远端 envelope 已经是
 `accepted`，它会跳过远端 accept 请求，只执行同样的本地 materialization。

@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -148,6 +149,47 @@ func (s *StoreSuite) TestSaveAuthCredentialPreservesExistingCreatedAtWhenUpdatin
 	s.Require().NoError(err)
 	s.Equal(createdAt, got.Credential.CreatedAt)
 	s.Equal("paxu_second", got.Credential.APIKey)
+}
+
+func (s *StoreSuite) TestChannelProfilesCoexistWithManagerCredentialAndRedactSecrets() {
+	_, err := s.store.SaveAuthCredential(s.ctx, &store.SaveAuthCredentialRequest{
+		Credential: &model.AuthCredential{
+			ManagerURL: "https://manager.example", APIKey: "paxu_manager",
+			UserID: "usr_1", Email: "cli@example.com",
+		},
+	})
+	s.Require().NoError(err)
+
+	for _, profile := range []*model.ChannelProfile{
+		{
+			ProfileID: "chp_one", Name: "onprem", Kind: model.ChannelKindOnPrem,
+			URL: "https://memory-one.internal", APIKey: "tm_key_one", AgentID: "sender-one",
+			UserID: "user-one", Permissions: []string{"channel_send"}, Enabled: true,
+			AutoReceive: true,
+		},
+		{
+			ProfileID: "chp_two", Name: "review", Kind: model.ChannelKindOnPrem,
+			URL: "https://memory-two.internal", APIKey: "tm_key_two", AgentID: "sender-two",
+			UserID: "user-two", Permissions: []string{"channel_receive"}, Enabled: true,
+		},
+	} {
+		_, err := s.store.SaveChannelProfile(
+			s.ctx,
+			&store.SaveChannelProfileRequest{Profile: profile},
+		)
+		s.Require().NoError(err)
+	}
+
+	manager, err := s.store.GetAuthCredential(s.ctx)
+	s.Require().NoError(err)
+	s.Equal("paxu_manager", manager.Credential.APIKey)
+	listed, err := s.store.ListChannelProfiles(s.ctx, &store.ListChannelProfilesRequest{})
+	s.Require().NoError(err)
+	s.Require().Len(listed.Profiles, 2)
+	s.Equal("tm_key_one", listed.Profiles[0].APIKey)
+	encoded, err := json.Marshal(listed.Profiles[0])
+	s.Require().NoError(err)
+	s.NotContains(string(encoded), "tm_key_one")
 }
 
 func (s *StoreSuite) TestUpsertAndListSessions() {

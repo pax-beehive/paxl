@@ -205,6 +205,22 @@ paxl session get codex:<target-session-id> --format jsonl | tail -n 8
 
 ## Accepted Inbox Sync
 
+When the sender and receiver use a single-Team Team Memory installation, first
+select the on-prem channel and target a directory Agent. Do not use a friend
+alias for this transport:
+
+```sh
+paxl channel agents list --channel onprem --query receiver
+paxl capsule send <capsule-id> --channel onprem \
+  --to-agent-id <receiver-agent-id> --match project --project paxl --agent codex
+paxl inbox list --channel onprem
+paxl inbox accept <envelope-id> --channel onprem
+```
+
+Omitting `--channel` deliberately keeps the existing manager flow. Never ask
+the user to paste an Agent key or enrollment token into a capsule, prompt,
+diagnostic, or command example.
+
 If the user accepted an envelope outside the local CLI, such as through the
 manager API or a hosted UI, the local SQLite store may not yet contain the
 capsule or routed hook injection. Sync accepted inbox envelopes before
@@ -227,8 +243,9 @@ Use this when:
 `paxl inbox accept <envelope-id>` is safe to run for an already accepted
 envelope. It should skip the remote accept call and materialize missing local
 state. Repeated sync or accept operations should reuse the local capsule keyed
-by `remote_envelope:<envelope-id>` and should not create duplicate route
-injections.
+by `remote_envelope:<envelope-id>` for manager or
+`remote_envelope:onprem:<profile-id>:<envelope-id>` for on-prem and should not
+create duplicate route injections.
 
 After syncing, verify durable local state:
 

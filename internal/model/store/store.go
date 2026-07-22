@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -152,6 +153,31 @@ type GetAuthCredentialResponse struct {
 }
 
 type DeleteAuthCredentialResponse struct{}
+
+type SaveChannelProfileRequest struct {
+	Profile *model.ChannelProfile
+}
+
+type SaveChannelProfileResponse struct {
+	Profile *model.ChannelProfile
+}
+
+type GetChannelProfileRequest struct {
+	Name string
+}
+
+type GetChannelProfileResponse struct {
+	Profile *model.ChannelProfile
+}
+
+type ListChannelProfilesRequest struct {
+	EnabledOnly     bool
+	AutoReceiveOnly bool
+}
+
+type ListChannelProfilesResponse struct {
+	Profiles []*model.ChannelProfile
+}
 
 type SearchElementsRequest struct {
 	Query string
@@ -315,6 +341,144 @@ func (s *Store) DeleteAuthCredential(ctx context.Context) (*DeleteAuthCredential
 		return nil, fmt.Errorf("delete auth credential: %w", err)
 	}
 	return &DeleteAuthCredentialResponse{}, nil
+}
+
+func (s *Store) SaveChannelProfile(
+	ctx context.Context,
+	req *SaveChannelProfileRequest,
+) (*SaveChannelProfileResponse, error) {
+	if req == nil || req.Profile == nil {
+		return nil, fmt.Errorf("save channel profile: profile is required")
+	}
+	profile := req.Profile
+	profile.Name = strings.TrimSpace(profile.Name)
+	profile.URL = strings.TrimRight(strings.TrimSpace(profile.URL), "/")
+	if profile.Name == "" || profile.ProfileID == "" || profile.Kind == model.ChannelKindUnknown ||
+		profile.URL == "" || profile.APIKey == "" {
+		return nil, fmt.Errorf(
+			"save channel profile: id, name, kind, url, and api key are required",
+		)
+	}
+	permissions, err := json.Marshal(profile.Permissions)
+	if err != nil {
+		return nil, fmt.Errorf("encode channel profile permissions: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if profile.CreatedAt == "" {
+		_ = s.db.QueryRowContext(ctx,
+			`SELECT created_at FROM channel_profiles WHERE name = ?`, profile.Name,
+		).Scan(&profile.CreatedAt)
+		if profile.CreatedAt == "" {
+			profile.CreatedAt = now
+		}
+	}
+	profile.UpdatedAt = now
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO channel_profiles (
+			name, profile_id, kind, url, api_key, ca_file, agent_id, user_id,
+			credential_id, permissions_json, enabled, auto_receive, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(name) DO UPDATE SET
+			profile_id = excluded.profile_id, kind = excluded.kind, url = excluded.url,
+			api_key = excluded.api_key, ca_file = excluded.ca_file, agent_id = excluded.agent_id,
+			user_id = excluded.user_id, credential_id = excluded.credential_id,
+			permissions_json = excluded.permissions_json, enabled = excluded.enabled,
+			auto_receive = excluded.auto_receive, updated_at = excluded.updated_at
+	`, profile.Name, profile.ProfileID, profile.Kind, profile.URL, profile.APIKey, profile.CAFile,
+		profile.AgentID, profile.UserID, profile.CredentialID, string(permissions), profile.Enabled,
+		profile.AutoReceive, profile.CreatedAt, profile.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("save channel profile %q: %w", profile.Name, err)
+	}
+	return &SaveChannelProfileResponse{Profile: profile}, nil
+}
+
+func (s *Store) GetChannelProfile(
+	ctx context.Context,
+	req *GetChannelProfileRequest,
+) (*GetChannelProfileResponse, error) {
+	if req == nil || strings.TrimSpace(req.Name) == "" {
+		return nil, fmt.Errorf("get channel profile: name is required")
+	}
+	profiles, err := s.queryChannelProfiles(ctx, ` WHERE name = ?`, strings.TrimSpace(req.Name))
+	if err != nil {
+		return nil, err
+	}
+	if len(profiles) == 0 {
+		return &GetChannelProfileResponse{}, nil
+	}
+	return &GetChannelProfileResponse{Profile: profiles[0]}, nil
+}
+
+func (s *Store) ListChannelProfiles(
+	ctx context.Context,
+	req *ListChannelProfilesRequest,
+) (*ListChannelProfilesResponse, error) {
+	if req == nil {
+		req = &ListChannelProfilesRequest{}
+	}
+	var predicates []string
+	if req.EnabledOnly {
+		predicates = append(predicates, "enabled = 1")
+	}
+	if req.AutoReceiveOnly {
+		predicates = append(predicates, "auto_receive = 1")
+	}
+	where := ""
+	if len(predicates) > 0 {
+		where = " WHERE " + strings.Join(predicates, " AND ")
+	}
+	profiles, err := s.queryChannelProfiles(ctx, where)
+	if err != nil {
+		return nil, err
+	}
+	return &ListChannelProfilesResponse{Profiles: profiles}, nil
+}
+
+func (s *Store) queryChannelProfiles(
+	ctx context.Context,
+	where string,
+	args ...any,
+) ([]*model.ChannelProfile, error) {
+	// #nosec G202 -- where contains only fixed predicates assembled by ListChannelProfiles.
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT profile_id, name, kind, url, api_key, ca_file, agent_id, user_id,
+			credential_id, permissions_json, enabled, auto_receive, created_at, updated_at
+		FROM channel_profiles`+where+` ORDER BY name`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list channel profiles: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var profiles []*model.ChannelProfile
+	for rows.Next() {
+		profile := &model.ChannelProfile{}
+		var kind string
+		var permissions string
+		if err := rows.Scan(
+			&profile.ProfileID,
+			&profile.Name,
+			&kind,
+			&profile.URL,
+			&profile.APIKey,
+			&profile.CAFile,
+			&profile.AgentID,
+			&profile.UserID,
+			&profile.CredentialID,
+			&permissions,
+			&profile.Enabled,
+			&profile.AutoReceive,
+			&profile.CreatedAt,
+			&profile.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan channel profile: %w", err)
+		}
+		profile.Kind = model.ChannelKind(kind)
+		if err := json.Unmarshal([]byte(permissions), &profile.Permissions); err != nil {
+			return nil, fmt.Errorf("decode channel profile permissions: %w", err)
+		}
+		profiles = append(profiles, profile)
+	}
+	return profiles, rows.Err()
 }
 
 func (s *Store) UpsertSessions(
@@ -922,6 +1086,23 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		email TEXT NOT NULL,
 		display_name TEXT,
 		role TEXT,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS channel_profiles (
+		name TEXT PRIMARY KEY,
+		profile_id TEXT NOT NULL UNIQUE,
+		kind TEXT NOT NULL,
+		url TEXT NOT NULL,
+		api_key TEXT NOT NULL,
+		ca_file TEXT NOT NULL DEFAULT '',
+		agent_id TEXT NOT NULL DEFAULT '',
+		user_id TEXT NOT NULL DEFAULT '',
+		credential_id TEXT NOT NULL DEFAULT '',
+		permissions_json TEXT NOT NULL DEFAULT '[]',
+		enabled INTEGER NOT NULL DEFAULT 1,
+		auto_receive INTEGER NOT NULL DEFAULT 1,
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL
 	);

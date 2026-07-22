@@ -20,11 +20,13 @@ const (
 )
 
 type EnvelopeFacade struct {
-	auth  *AuthFacade
-	store *store.Store
+	auth   *AuthFacade
+	client AuthHTTPClient
+	store  *store.Store
 }
 
 type SendEnvelopeRequest struct {
+	Channel        string
 	CapsuleID      string
 	RecipientEmail string
 	Message        string
@@ -34,6 +36,7 @@ type SendEnvelopeRequest struct {
 	CallerAgent    model.AgentName
 	FromAgentID    string
 	ToAgentID      string
+	IdempotencyKey string
 }
 
 type SendEnvelopeResponse struct {
@@ -41,24 +44,32 @@ type SendEnvelopeResponse struct {
 }
 
 type ListInboxRequest struct {
-	Status string
-	Limit  int
+	Channel string
+	Status  string
+	Limit   int
+	Cursor  string
 }
 
 type ListInboxResponse struct {
-	Envelopes []*model.Envelope
+	Envelopes  []*model.Envelope
+	NextCursor string
 }
 
 type ListOutboxRequest struct {
-	Status string
-	Limit  int
+	Channel string
+	Status  string
+	Limit   int
+	Cursor  string
 }
 
 type ListOutboxResponse struct {
-	Envelopes []*model.Envelope
+	Envelopes  []*model.Envelope
+	NextCursor string
 }
 
 type GetEnvelopeRequest struct {
+	Channel    string
+	Direction  string
 	EnvelopeID string
 }
 
@@ -67,6 +78,7 @@ type GetEnvelopeResponse struct {
 }
 
 type AcceptEnvelopeRequest struct {
+	Channel    string
 	EnvelopeID string
 }
 
@@ -77,6 +89,7 @@ type AcceptEnvelopeResponse struct {
 }
 
 type AcceptAllEnvelopesRequest struct {
+	Channel         string
 	Status          string
 	Limit           int
 	ContinueOnError bool
@@ -93,6 +106,7 @@ type AcceptAllEnvelopesResponse struct {
 }
 
 type ArchiveEnvelopeRequest struct {
+	Channel    string
 	EnvelopeID string
 }
 
@@ -139,13 +153,75 @@ type envelopePayloadCapsule struct {
 }
 
 func NewEnvelopeFacade(client AuthHTTPClient, sessionStore *store.Store) *EnvelopeFacade {
+	if client == nil {
+		client = http.DefaultClient
+	}
 	return &EnvelopeFacade{
-		auth:  NewAuthFacade(client, sessionStore),
-		store: sessionStore,
+		auth:   NewAuthFacade(client, sessionStore),
+		client: client,
+		store:  sessionStore,
 	}
 }
 
 func (f *EnvelopeFacade) Send(
+	ctx context.Context,
+	req *SendEnvelopeRequest,
+	opts ...func(*Option),
+) (*SendEnvelopeResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("send envelope: request is required")
+	}
+	_ = applyOptions(opts)
+	if strings.TrimSpace(req.Channel) == "" || strings.TrimSpace(req.Channel) == "manager" {
+		channel, err := f.channel(ctx, req.Channel)
+		if err != nil {
+			return nil, err
+		}
+		sent, err := channel.Send(ctx, &channelSendRequest{Request: req})
+		if err != nil {
+			return nil, err
+		}
+		return &SendEnvelopeResponse{Envelope: sent}, nil
+	}
+	capsule, err := f.loadLocalCapsule(ctx, req.CapsuleID)
+	if err != nil {
+		return nil, err
+	}
+	routeResult, err := envelopeRouteFromSendRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	payload, err := json.Marshal(envelopePayload{
+		SchemaVersion: knowledgeCapsuleEnvelopePayloadVersionV2,
+		Capsule:       envelopePayloadCapsuleFromModel(capsule), Route: routeResult.Route,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode on-prem envelope payload: %w", err)
+	}
+	if err := validateOnPremSend(req, payload); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(req.IdempotencyKey) == "" {
+		req.IdempotencyKey, err = newLocalID("send")
+		if err != nil {
+			return nil, fmt.Errorf("create envelope idempotency key: %w", err)
+		}
+	}
+	channel, err := f.channel(ctx, req.Channel)
+	if err != nil {
+		return nil, err
+	}
+	sent, err := channel.Send(
+		ctx,
+		&channelSendRequest{Request: req, Capsule: capsule, Payload: payload},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &SendEnvelopeResponse{Envelope: sent}, nil
+}
+
+func (f *EnvelopeFacade) sendManagerRequest(
 	ctx context.Context,
 	req *SendEnvelopeRequest,
 	opts ...func(*Option),
@@ -302,11 +378,17 @@ func (f *EnvelopeFacade) ListInbox(
 	if req == nil {
 		req = &ListInboxRequest{Status: "pending"}
 	}
-	envelopes, err := f.listRemoteEnvelopes(ctx, req.Status, "", req.Limit)
+	channel, err := f.channel(ctx, req.Channel)
 	if err != nil {
 		return nil, err
 	}
-	return &ListInboxResponse{Envelopes: envelopes}, nil
+	listed, err := channel.List(ctx, &channelListRequest{
+		Status: req.Status, Limit: req.Limit, Cursor: req.Cursor,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &ListInboxResponse{Envelopes: listed.Envelopes, NextCursor: listed.NextCursor}, nil
 }
 
 func (f *EnvelopeFacade) ListOutbox(
@@ -318,11 +400,17 @@ func (f *EnvelopeFacade) ListOutbox(
 	if req == nil {
 		req = &ListOutboxRequest{}
 	}
-	envelopes, err := f.listRemoteEnvelopes(ctx, req.Status, "sent", req.Limit)
+	channel, err := f.channel(ctx, req.Channel)
 	if err != nil {
 		return nil, err
 	}
-	return &ListOutboxResponse{Envelopes: envelopes}, nil
+	listed, err := channel.List(ctx, &channelListRequest{
+		Status: req.Status, Direction: "sent", Limit: req.Limit, Cursor: req.Cursor,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &ListOutboxResponse{Envelopes: listed.Envelopes, NextCursor: listed.NextCursor}, nil
 }
 
 func (f *EnvelopeFacade) listRemoteEnvelopes(
@@ -372,7 +460,31 @@ func (f *EnvelopeFacade) Get(
 	opts ...func(*Option),
 ) (*GetEnvelopeResponse, error) {
 	_ = applyOptions(opts)
-	envelope, err := f.getRemoteEnvelope(ctx, req.EnvelopeID)
+	if req == nil || strings.TrimSpace(req.EnvelopeID) == "" {
+		return nil, fmt.Errorf("get envelope: envelope id is required")
+	}
+	channel, err := f.channel(ctx, req.Channel)
+	if err != nil {
+		return nil, err
+	}
+	var envelope *model.Envelope
+	if strings.TrimSpace(req.Direction) == "sent" && channel.SourceNamespace() != "manager" {
+		listed, listErr := channel.List(ctx, &channelListRequest{Direction: "sent"})
+		if listErr != nil {
+			return nil, listErr
+		}
+		for _, candidate := range listed.Envelopes {
+			if candidate != nil && candidate.EnvelopeID == req.EnvelopeID {
+				envelope = candidate
+				break
+			}
+		}
+		if envelope == nil {
+			return nil, fmt.Errorf("get sent envelope %q: not found", req.EnvelopeID)
+		}
+	} else {
+		envelope, err = channel.Get(ctx, req.EnvelopeID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -391,11 +503,18 @@ func (f *EnvelopeFacade) Accept(
 	if f.store == nil {
 		return nil, fmt.Errorf("accept envelope: store is required")
 	}
-	envelope, err := f.getRemoteEnvelope(ctx, req.EnvelopeID)
+	channel, err := f.channel(ctx, req.Channel)
 	if err != nil {
 		return nil, err
 	}
-	capsule, route, err := capsuleFromEnvelope(envelope)
+	envelope, err := channel.Get(ctx, req.EnvelopeID)
+	if err != nil {
+		return nil, err
+	}
+	capsule, route, err := capsuleFromEnvelope(
+		envelope,
+		remoteEnvelopeSourceSessionID(channel.SourceNamespace(), envelope.EnvelopeID),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -405,7 +524,7 @@ func (f *EnvelopeFacade) Accept(
 	}
 	accepted := envelope
 	if strings.TrimSpace(envelope.Status) != "accepted" {
-		accepted, err = f.updateRemoteEnvelope(ctx, req.EnvelopeID, "accept")
+		accepted, err = channel.Accept(ctx, req.EnvelopeID)
 		if err != nil {
 			return nil, err
 		}
@@ -431,8 +550,9 @@ func (f *EnvelopeFacade) AcceptAll(
 		status = "pending"
 	}
 	listed, err := f.ListInbox(ctx, &ListInboxRequest{
-		Status: status,
-		Limit:  req.Limit,
+		Channel: req.Channel,
+		Status:  status,
+		Limit:   req.Limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list envelopes to accept: %w", err)
@@ -443,6 +563,7 @@ func (f *EnvelopeFacade) AcceptAll(
 			continue
 		}
 		accepted, err := f.Accept(ctx, &AcceptEnvelopeRequest{
+			Channel:    req.Channel,
 			EnvelopeID: envelope.EnvelopeID,
 		})
 		if err != nil {
@@ -470,7 +591,11 @@ func (f *EnvelopeFacade) Archive(
 	if req == nil || strings.TrimSpace(req.EnvelopeID) == "" {
 		return nil, fmt.Errorf("archive envelope: envelope id is required")
 	}
-	archived, err := f.updateRemoteEnvelope(ctx, req.EnvelopeID, "archive")
+	channel, err := f.channel(ctx, req.Channel)
+	if err != nil {
+		return nil, err
+	}
+	archived, err := channel.Archive(ctx, req.EnvelopeID)
 	if err != nil {
 		return nil, err
 	}
@@ -616,6 +741,7 @@ func envelopePayloadCapsuleFromModel(capsule *model.KnowledgeCapsule) envelopePa
 
 func capsuleFromEnvelope(
 	envelope *model.Envelope,
+	sourceSessionID string,
 ) (*model.KnowledgeCapsule, *envelopePayloadRoute, error) {
 	if envelope.PayloadType != "knowledge_capsule" {
 		return nil, nil, fmt.Errorf(
@@ -651,7 +777,7 @@ func capsuleFromEnvelope(
 	return &model.KnowledgeCapsule{
 		CapsuleID:              capsuleID,
 		SourceNodeID:           capsule.SourceNodeID,
-		SourceSessionID:        "remote_envelope:" + envelope.EnvelopeID,
+		SourceSessionID:        sourceSessionID,
 		SourceAgent:            capsule.SourceAgent,
 		Keyword:                capsule.Keyword,
 		Title:                  capsule.Title,
@@ -662,6 +788,13 @@ func capsuleFromEnvelope(
 		OriginalEstimatedChars: capsule.OriginalEstimatedChars,
 		CreatedAt:              createdAt,
 	}, payload.Route, nil
+}
+
+func remoteEnvelopeSourceSessionID(namespace string, envelopeID string) string {
+	if namespace == "" || namespace == "manager" {
+		return "remote_envelope:" + envelopeID
+	}
+	return "remote_envelope:" + namespace + ":" + envelopeID
 }
 
 type materializedAcceptedEnvelope struct {
@@ -738,7 +871,7 @@ func (f *EnvelopeFacade) findLocalCapsuleForRemoteEnvelope(
 
 func validateEnvelopeRoute(route *envelopePayloadRoute) error {
 	if route == nil {
-		return fmt.Errorf("route is required")
+		return nil
 	}
 	matchType := strings.TrimSpace(route.MatchType)
 	matchValue := strings.TrimSpace(route.MatchValue)
@@ -757,8 +890,12 @@ func validateEnvelopeRoute(route *envelopePayloadRoute) error {
 	if len(matchValue) > envelopeRouteValueLimit {
 		return fmt.Errorf("route match value is too long")
 	}
-	if route.TargetAgent == model.AgentNameUnknown {
-		return fmt.Errorf("unsupported route target agent")
+	if route.TargetAgent != "" {
+		parsedAgent, err := model.ParseAgentName(string(route.TargetAgent))
+		if err != nil {
+			return fmt.Errorf("unsupported route target agent: %w", err)
+		}
+		route.TargetAgent = parsedAgent
 	}
 	route.MatchType = matchType
 	route.MatchValue = matchValue
