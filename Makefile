@@ -24,7 +24,7 @@ RELEASE_TAGS ?= stable
 GO_PACKAGES := ./...
 GO_FILES := $(shell find . -type f -name '*.go' -not -path './vendor/*')
 
-.PHONY: lint format format-check test test-cover branch-cover branch-cover-install mutation-test cognitive-complexity release-paxl release-paxl-dry-run mock gen
+.PHONY: lint format format-check test test-cover onprem-channel-e2e branch-cover branch-cover-install mutation-test cognitive-complexity release-paxl release-paxl-dry-run mock gen
 
 lint:
 	GOLANGCI_LINT_CACHE=$(GOLANGCI_LINT_CACHE) GOCACHE=$(GOCACHE) $(GOLANGCI_LINT) run $(GO_PACKAGES)
@@ -75,6 +75,9 @@ test-cover:
 		} \
 		printf "Coverage %.1f%% meets %.1f%%.\n", $$3, min; \
 	}'
+
+onprem-channel-e2e:
+	./scripts/onprem-channel-e2e.sh
 
 branch-cover:
 	@if [ ! -x "$(GOBCO)" ]; then \

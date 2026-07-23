@@ -113,6 +113,7 @@ func newCommandWithDiagnostics(
 			newLoginCommand(stdout),
 			newWhoamiCommand(stdout),
 			newLogoutCommand(stdout),
+			newChannelCommand(stdout),
 			newNodeCommand(stdout),
 			newDaemonCommand(stdout),
 			newSetupCommand(stdout),
@@ -127,6 +128,98 @@ func newCommandWithDiagnostics(
 			newTeamCommand(stdout),
 			newAgentHookCommand(stdout),
 			newAgentEnvCommand(stdout),
+		},
+	}
+}
+
+func newChannelCommand(stdout io.Writer) *cli.Command {
+	channelFlag := func() cli.Flag {
+		return &cli.StringFlag{Name: "channel", Value: "onprem", Usage: "Channel profile name"}
+	}
+	formatFlag := func() cli.Flag {
+		return &cli.StringFlag{
+			Name:  "format",
+			Value: "table",
+			Usage: "Output format: table or jsonl",
+		}
+	}
+	return &cli.Command{
+		Name: "channel", Usage: "Manage independent envelope channel connections",
+		Commands: []*cli.Command{
+			{
+				Name:      "connect",
+				Usage:     "Exchange a one-time enrollment token for a channel credential",
+				ArgsUsage: "onprem",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "url", Usage: "Team Memory origin", Required: true},
+					&cli.StringFlag{
+						Name:     "enrollment-token",
+						Usage:    "One-time enrollment token (prefer PAXL_ENROLLMENT_TOKEN)",
+						Required: true,
+						Sources:  cli.EnvVars("PAXL_ENROLLMENT_TOKEN"),
+					},
+					&cli.StringFlag{
+						Name:  "profile",
+						Value: "onprem",
+						Usage: "Local channel profile name",
+					},
+					&cli.StringFlag{
+						Name:  "ca-file",
+						Usage: "PEM CA bundle to add to system trust for this profile",
+					},
+					&cli.BoolFlag{
+						Name:  "auto-receive",
+						Value: true,
+						Usage: "Poll this channel during user-prompt hooks",
+					},
+					formatFlag(),
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error { return channelConnect(ctx, cmd, stdout) },
+			},
+			{
+				Name:   "list",
+				Usage:  "List configured channel profiles",
+				Flags:  []cli.Flag{formatFlag()},
+				Action: func(ctx context.Context, cmd *cli.Command) error { return channelList(ctx, cmd, stdout) },
+			},
+			{
+				Name:      "status",
+				Usage:     "Verify a channel credential and identity",
+				ArgsUsage: "[profile]",
+				Flags:     []cli.Flag{formatFlag()},
+				Action:    func(ctx context.Context, cmd *cli.Command) error { return channelStatus(ctx, cmd, stdout) },
+			},
+			{
+				Name:  "agents",
+				Usage: "Browse the remote channel Agent Directory",
+				Commands: []*cli.Command{
+					{
+						Name:  "list",
+						Usage: "List directory Agents",
+						Flags: []cli.Flag{
+							channelFlag(),
+							&cli.StringFlag{
+								Name:    "query",
+								Aliases: []string{"q"},
+								Usage:   "Directory search",
+							},
+							&cli.IntFlag{Name: "limit", Usage: "Maximum Agents to return"},
+							&cli.StringFlag{
+								Name:  "cursor",
+								Usage: "Opaque pagination cursor",
+							}, formatFlag(),
+						},
+						Action: func(ctx context.Context, cmd *cli.Command) error { return channelAgentList(ctx, cmd, stdout) },
+					},
+					{
+						Name:      "get",
+						Usage:     "Get one directory Agent",
+						ArgsUsage: "<agent-id>",
+						Flags:     []cli.Flag{channelFlag(), formatFlag()},
+						Action:    func(ctx context.Context, cmd *cli.Command) error { return channelAgentGet(ctx, cmd, stdout) },
+					},
+				},
+			},
 		},
 	}
 }
@@ -733,6 +826,10 @@ func newCapsuleCommand(
 				Usage:     "Send a local knowledge capsule to another user's inbox",
 				ArgsUsage: "<capsule-id>",
 				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "channel",
+						Usage: "Envelope channel profile (default: manager)",
+					},
 					&cli.StringFlag{Name: "to", Usage: "Accepted friend alias, for example @alice"},
 					&cli.StringFlag{
 						Name:  "to-agent-id",
@@ -744,6 +841,11 @@ func newCapsuleCommand(
 						Hidden: true,
 					},
 					&cli.StringFlag{Name: "message", Usage: "Optional note for the recipient"},
+					&cli.StringFlag{
+						Name:   "idempotency-key",
+						Usage:  "Stable logical send key",
+						Hidden: true,
+					},
 					&cli.StringFlag{
 						Name:  "match",
 						Usage: "Envelope route for recipient hook injection: any, project, or keyword",
@@ -842,11 +944,16 @@ func newInboxCommand(stdout io.Writer) *cli.Command {
 				Usage: "List received envelopes",
 				Flags: []cli.Flag{
 					&cli.StringFlag{
+						Name:  "channel",
+						Usage: "Envelope channel profile (default: manager)",
+					},
+					&cli.StringFlag{
 						Name:  "status",
 						Value: "pending",
 						Usage: "Envelope status filter",
 					},
 					&cli.IntFlag{Name: "limit", Usage: "Maximum envelopes to show"},
+					&cli.StringFlag{Name: "cursor", Usage: "Opaque pagination cursor"},
 					&cli.StringFlag{
 						Name:  "format",
 						Value: "table",
@@ -863,6 +970,10 @@ func newInboxCommand(stdout io.Writer) *cli.Command {
 				ArgsUsage: "<envelope-id>",
 				Flags: []cli.Flag{
 					&cli.StringFlag{
+						Name:  "channel",
+						Usage: "Envelope channel profile (default: manager)",
+					},
+					&cli.StringFlag{
 						Name:  "format",
 						Value: "text",
 						Usage: "Output format: text or jsonl",
@@ -877,6 +988,10 @@ func newInboxCommand(stdout io.Writer) *cli.Command {
 				Usage:     "Accept an envelope and store its capsule locally",
 				ArgsUsage: "[<envelope-id>]",
 				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "channel",
+						Usage: "Envelope channel profile (default: manager)",
+					},
 					&cli.BoolFlag{
 						Name:  "all",
 						Usage: "Accept all pending envelopes",
@@ -899,6 +1014,10 @@ func newInboxCommand(stdout io.Writer) *cli.Command {
 				Name:  "sync",
 				Usage: "Sync accepted envelopes into local capsules",
 				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "channel",
+						Usage: "Envelope channel profile (default: manager)",
+					},
 					&cli.IntFlag{
 						Name:  "limit",
 						Usage: "Maximum accepted envelopes to sync",
@@ -917,6 +1036,10 @@ func newInboxCommand(stdout io.Writer) *cli.Command {
 				Name:  "watch",
 				Usage: "Continuously accept pending inbox envelopes",
 				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "channel",
+						Usage: "Envelope channel profile (default: manager)",
+					},
 					&cli.StringFlag{
 						Name:  "interval",
 						Value: "30s",
@@ -940,6 +1063,12 @@ func newInboxCommand(stdout io.Writer) *cli.Command {
 				Name:      "archive",
 				Usage:     "Archive an envelope",
 				ArgsUsage: "<envelope-id>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "channel",
+						Usage: "Envelope channel profile (default: manager)",
+					},
+				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					return inboxArchive(ctx, cmd, stdout)
 				},
@@ -957,8 +1086,13 @@ func newOutboxCommand(stdout io.Writer) *cli.Command {
 				Name:  "list",
 				Usage: "List sent envelopes",
 				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "channel",
+						Usage: "Envelope channel profile (default: manager)",
+					},
 					&cli.StringFlag{Name: "status", Usage: "Envelope status filter"},
 					&cli.IntFlag{Name: "limit", Usage: "Maximum envelopes to show"},
+					&cli.StringFlag{Name: "cursor", Usage: "Opaque pagination cursor"},
 					&cli.StringFlag{
 						Name:  "format",
 						Value: "table",
@@ -974,6 +1108,10 @@ func newOutboxCommand(stdout io.Writer) *cli.Command {
 				Usage:     "Render a sent envelope",
 				ArgsUsage: "<envelope-id>",
 				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "channel",
+						Usage: "Envelope channel profile (default: manager)",
+					},
 					&cli.StringFlag{
 						Name:  "format",
 						Value: "text",
@@ -1607,6 +1745,189 @@ func logoutCommand(ctx context.Context, cmd *cli.Command, stdout io.Writer) erro
 	return renderLogout(stdout, resp, cmd.String("format"))
 }
 
+func channelConnect(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	kind := strings.TrimSpace(cmd.Args().First())
+	if kind != "onprem" || cmd.Args().Len() != 1 {
+		return fmt.Errorf("connect channel: expected exactly 'onprem'")
+	}
+	if err := validateFormat(cmd.String("format"), "table", "jsonl"); err != nil {
+		return err
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open channel store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	resp, err := facade.NewChannelFacade(authHTTPClient, opened.Store).
+		Connect(ctx, &facade.ConnectChannelRequest{
+			Kind: kind, Name: cmd.String("profile"), URL: cmd.String("url"),
+			EnrollmentToken: cmd.String("enrollment-token"), CAFile: cmd.String("ca-file"),
+			AutoReceive: cmd.Bool("auto-receive"),
+		})
+	if err != nil {
+		return fmt.Errorf("connect channel: %w", err)
+	}
+	return renderChannelProfiles(
+		stdout,
+		[]*model.ChannelProfile{resp.Profile},
+		cmd.String("format"),
+	)
+}
+
+func channelList(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	if err := validateFormat(cmd.String("format"), "table", "jsonl"); err != nil {
+		return err
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open channel store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	resp, err := facade.NewChannelFacade(authHTTPClient, opened.Store).
+		List(ctx, &facade.ListChannelsRequest{})
+	if err != nil {
+		return err
+	}
+	return renderChannelProfiles(stdout, resp.Profiles, cmd.String("format"))
+}
+
+func channelStatus(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	if err := validateFormat(cmd.String("format"), "table", "jsonl"); err != nil {
+		return err
+	}
+	name := strings.TrimSpace(cmd.Args().First())
+	if name == "" {
+		name = "onprem"
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open channel store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	resp, err := facade.NewChannelFacade(authHTTPClient, opened.Store).
+		Status(ctx, &facade.ChannelStatusRequest{Name: name})
+	if err != nil {
+		return err
+	}
+	if cmd.String("format") == "jsonl" {
+		return json.NewEncoder(stdout).Encode(resp)
+	}
+	return renderChannelProfiles(stdout, []*model.ChannelProfile{resp.Profile}, "table")
+}
+
+func channelAgentList(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	if err := validateFormat(cmd.String("format"), "table", "jsonl"); err != nil {
+		return err
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open channel store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	resp, err := facade.NewChannelFacade(authHTTPClient, opened.Store).
+		ListAgents(ctx, &facade.ListDirectoryAgentsRequest{
+			Channel: cmd.String("channel"),
+			Query:   cmd.String("query"), Limit: cmd.Int("limit"), Cursor: cmd.String("cursor"),
+		})
+	if err != nil {
+		return err
+	}
+	return renderChannelAgents(stdout, resp, cmd.String("format"))
+}
+
+func channelAgentGet(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
+	if err := validateFormat(cmd.String("format"), "table", "jsonl"); err != nil {
+		return err
+	}
+	agentID := strings.TrimSpace(cmd.Args().First())
+	if agentID == "" {
+		return fmt.Errorf("channel agent id is required")
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open channel store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	resp, err := facade.NewChannelFacade(authHTTPClient, opened.Store).
+		GetAgent(ctx, &facade.GetDirectoryAgentRequest{
+			Channel: cmd.String("channel"), AgentID: agentID,
+		})
+	if err != nil {
+		return err
+	}
+	return renderChannelAgents(
+		stdout,
+		&facade.ListDirectoryAgentsResponse{Agents: []*model.ChannelAgent{resp.Agent}},
+		cmd.String("format"),
+	)
+}
+
+func renderChannelProfiles(
+	stdout io.Writer,
+	profiles []*model.ChannelProfile,
+	format string,
+) error {
+	if format == "jsonl" {
+		encoder := json.NewEncoder(stdout)
+		for _, profile := range profiles {
+			if err := encoder.Encode(profile); err != nil {
+				return fmt.Errorf("encode channel profile: %w", err)
+			}
+		}
+		return nil
+	}
+	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "PROFILE\tKIND\tURL\tAGENT\tPERMISSIONS\tAUTO RECEIVE")
+	for _, profile := range profiles {
+		_, _ = fmt.Fprintf(
+			w,
+			"%s\t%s\t%s\t%s\t%s\t%t\n",
+			profile.Name,
+			profile.Kind,
+			profile.URL,
+			profile.AgentID,
+			strings.Join(profile.Permissions, ","),
+			profile.AutoReceive,
+		)
+	}
+	return w.Flush()
+}
+
+func renderChannelAgents(
+	stdout io.Writer,
+	resp *facade.ListDirectoryAgentsResponse,
+	format string,
+) error {
+	if format == "jsonl" {
+		encoder := json.NewEncoder(stdout)
+		for _, agent := range resp.Agents {
+			if err := encoder.Encode(agent); err != nil {
+				return fmt.Errorf("encode channel agent: %w", err)
+			}
+		}
+		if resp.NextCursor != "" {
+			return encoder.Encode(map[string]string{"next_cursor": resp.NextCursor})
+		}
+		return nil
+	}
+	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "AGENT ID\tNAME\tTYPE\tDESCRIPTION")
+	for _, agent := range resp.Agents {
+		_, _ = fmt.Fprintf(
+			w,
+			"%s\t%s\t%s\t%s\n",
+			agent.AgentID,
+			agent.DisplayName,
+			agent.AgentType,
+			agent.Description,
+		)
+	}
+	if resp.NextCursor != "" {
+		_, _ = fmt.Fprintf(w, "Next cursor:\t%s\n", resp.NextCursor)
+	}
+	return w.Flush()
+}
+
 func nodeList(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
 	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
 	if err != nil {
@@ -2094,7 +2415,8 @@ func capsuleSend(ctx context.Context, cmd *cli.Command, stdout io.Writer) error 
 	}
 	defer closeStore(opened.Store)
 	friendFacade := facade.NewFriendFacade(nil, opened.Store)
-	if strings.TrimSpace(req.RecipientEmail) != "" {
+	if (req.Channel == "" || req.Channel == "manager") &&
+		strings.TrimSpace(req.RecipientEmail) != "" {
 		resolved, err := friendFacade.ResolveAlias(ctx, &facade.ResolveFriendAliasRequest{
 			Alias: req.RecipientEmail,
 		})
@@ -2193,8 +2515,10 @@ func outboxList(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
 	defer closeStore(opened.Store)
 	envelopeFacade := facade.NewEnvelopeFacade(nil, opened.Store)
 	resp, err := envelopeFacade.ListOutbox(ctx, &facade.ListOutboxRequest{
-		Status: cmd.String("status"),
-		Limit:  cmd.Int("limit"),
+		Channel: cmd.String("channel"),
+		Status:  cmd.String("status"),
+		Limit:   cmd.Int("limit"),
+		Cursor:  cmd.String("cursor"),
 	})
 	if err != nil {
 		return fmt.Errorf("list outbox: %w", err)
@@ -2210,6 +2534,7 @@ func outboxGet(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("parse outbox get request: %w", err)
 	}
+	req.Direction = "sent"
 	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
 	if err != nil {
 		return fmt.Errorf("open envelope store: %w", err)
@@ -2234,8 +2559,10 @@ func inboxList(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
 	defer closeStore(opened.Store)
 	envelopeFacade := facade.NewEnvelopeFacade(nil, opened.Store)
 	resp, err := envelopeFacade.ListInbox(ctx, &facade.ListInboxRequest{
-		Status: cmd.String("status"),
-		Limit:  cmd.Int("limit"),
+		Channel: cmd.String("channel"),
+		Status:  cmd.String("status"),
+		Limit:   cmd.Int("limit"),
+		Cursor:  cmd.String("cursor"),
 	})
 	if err != nil {
 		return fmt.Errorf("list inbox: %w", err)
@@ -2304,6 +2631,7 @@ func inboxAcceptAll(ctx context.Context, cmd *cli.Command, stdout io.Writer) err
 	defer closeStore(opened.Store)
 	envelopeFacade := facade.NewEnvelopeFacade(nil, opened.Store)
 	resp, err := envelopeFacade.AcceptAll(ctx, &facade.AcceptAllEnvelopesRequest{
+		Channel:         cmd.String("channel"),
 		Status:          "pending",
 		Limit:           cmd.Int("limit"),
 		ContinueOnError: true,
@@ -2333,6 +2661,7 @@ func inboxSync(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
 	defer closeStore(opened.Store)
 	envelopeFacade := facade.NewEnvelopeFacade(nil, opened.Store)
 	resp, err := envelopeFacade.AcceptAll(ctx, &facade.AcceptAllEnvelopesRequest{
+		Channel:         cmd.String("channel"),
 		Status:          "accepted",
 		Limit:           cmd.Int("limit"),
 		ContinueOnError: true,
@@ -2367,6 +2696,7 @@ func inboxWatch(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
 	envelopeFacade := facade.NewEnvelopeFacade(nil, opened.Store)
 	return watchInbox(ctx, &watchInboxRequest{
 		Facade:   envelopeFacade,
+		Channel:  cmd.String("channel"),
 		Stdout:   stdout,
 		Format:   cmd.String("format"),
 		Interval: interval,
@@ -2376,6 +2706,7 @@ func inboxWatch(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
 
 type watchInboxRequest struct {
 	Facade   *facade.EnvelopeFacade
+	Channel  string
 	Stdout   io.Writer
 	Format   string
 	Interval time.Duration
@@ -2418,6 +2749,7 @@ func watchInbox(ctx context.Context, req *watchInboxRequest) error {
 
 func acceptInboxWatchCycle(ctx context.Context, req *watchInboxRequest) error {
 	resp, err := req.Facade.AcceptAll(ctx, &facade.AcceptAllEnvelopesRequest{
+		Channel:         req.Channel,
 		Status:          "pending",
 		Limit:           req.Limit,
 		ContinueOnError: true,
@@ -2917,14 +3249,13 @@ func parseSendEnvelopeRequest(cmd *cli.Command) (*facade.SendEnvelopeRequest, er
 	if capsuleID == "" {
 		return nil, fmt.Errorf("capsule id is required")
 	}
-	recipient := strings.TrimSpace(cmd.String("to"))
-	toAgentID := strings.TrimSpace(cmd.String("to-agent-id"))
-	fromAgentID := strings.TrimSpace(cmd.String("from-agent-id"))
-	if recipient == "" && toAgentID == "" {
-		return nil, fmt.Errorf("recipient friend alias or --to-agent-id is required")
+	channel := strings.TrimSpace(cmd.String("channel"))
+	if channel == "" {
+		channel = "manager"
 	}
-	if recipient != "" && !strings.HasPrefix(recipient, "@") {
-		return nil, fmt.Errorf("recipient must be an accepted friend alias like @alice")
+	recipient, toAgentID, fromAgentID, err := parseEnvelopeRecipient(cmd, channel)
+	if err != nil {
+		return nil, err
 	}
 	switch cmd.String("format") {
 	case "table", "jsonl":
@@ -2932,11 +3263,13 @@ func parseSendEnvelopeRequest(cmd *cli.Command) (*facade.SendEnvelopeRequest, er
 		return nil, fmt.Errorf("unsupported format %q", cmd.String("format"))
 	}
 	req := &facade.SendEnvelopeRequest{
+		Channel:        channel,
 		CapsuleID:      capsuleID,
 		RecipientEmail: recipient,
 		Message:        cmd.String("message"),
 		FromAgentID:    fromAgentID,
 		ToAgentID:      toAgentID,
+		IdempotencyKey: strings.TrimSpace(cmd.String("idempotency-key")),
 	}
 	if rawCallerAgent := strings.TrimSpace(cmd.String("caller-agent")); rawCallerAgent != "" {
 		callerAgent, err := parseActiveAgentName(rawCallerAgent)
@@ -2971,6 +3304,25 @@ func parseSendEnvelopeRequest(cmd *cli.Command) (*facade.SendEnvelopeRequest, er
 		return nil, fmt.Errorf("--keyword requires --match keyword")
 	}
 	return req, nil
+}
+
+func parseEnvelopeRecipient(cmd *cli.Command, channel string) (string, string, string, error) {
+	recipient := strings.TrimSpace(cmd.String("to"))
+	toAgentID := strings.TrimSpace(cmd.String("to-agent-id"))
+	fromAgentID := strings.TrimSpace(cmd.String("from-agent-id"))
+	if recipient == "" && toAgentID == "" {
+		return "", "", "", fmt.Errorf("recipient friend alias or --to-agent-id is required")
+	}
+	if channel != "manager" && toAgentID == "" {
+		return "", "", "", fmt.Errorf("--to-agent-id is required for onprem channel")
+	}
+	if channel != "manager" && (recipient != "" || fromAgentID != "") {
+		return "", "", "", fmt.Errorf("onprem channel does not accept --to or --from-agent-id")
+	}
+	if recipient != "" && !strings.HasPrefix(recipient, "@") {
+		return "", "", "", fmt.Errorf("recipient must be an accepted friend alias like @alice")
+	}
+	return recipient, toAgentID, fromAgentID, nil
 }
 
 func parseInjectCapsuleRequest(cmd *cli.Command) (*facade.InjectCapsuleRequest, error) {
@@ -3053,7 +3405,10 @@ func parseGetEnvelopeRequest(cmd *cli.Command) (*facade.GetEnvelopeRequest, erro
 	}
 	switch cmd.String("format") {
 	case "text", "jsonl":
-		return &facade.GetEnvelopeRequest{EnvelopeID: envelopeID}, nil
+		return &facade.GetEnvelopeRequest{
+			Channel:    cmd.String("channel"),
+			EnvelopeID: envelopeID,
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported format %q", cmd.String("format"))
 	}
@@ -3066,7 +3421,10 @@ func parseAcceptEnvelopeRequest(cmd *cli.Command) (*facade.AcceptEnvelopeRequest
 	}
 	switch cmd.String("format") {
 	case "table", "jsonl":
-		return &facade.AcceptEnvelopeRequest{EnvelopeID: envelopeID}, nil
+		return &facade.AcceptEnvelopeRequest{
+			Channel:    cmd.String("channel"),
+			EnvelopeID: envelopeID,
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported format %q", cmd.String("format"))
 	}
@@ -3077,7 +3435,10 @@ func parseArchiveEnvelopeRequest(cmd *cli.Command) (*facade.ArchiveEnvelopeReque
 	if envelopeID == "" {
 		return nil, fmt.Errorf("envelope id is required")
 	}
-	return &facade.ArchiveEnvelopeRequest{EnvelopeID: envelopeID}, nil
+	return &facade.ArchiveEnvelopeRequest{
+		Channel:    cmd.String("channel"),
+		EnvelopeID: envelopeID,
+	}, nil
 }
 
 func parseRequestFriendRequest(cmd *cli.Command) (*facade.RequestFriendRequest, error) {
@@ -5051,7 +5412,7 @@ func openExecutionLogger(args []string) *executionLogger {
 		startedAt: now,
 	}
 	fields := map[string]any{
-		"args":    args,
+		"args":    redactExecutionArgs(args),
 		"cwd":     currentWorkingDirectory(),
 		"version": version,
 		"commit":  buildCommit,
@@ -5061,6 +5422,23 @@ func openExecutionLogger(args []string) *executionLogger {
 	}
 	logger.write("command_start", fields)
 	return logger
+}
+
+func redactExecutionArgs(args []string) []string {
+	redacted := append([]string(nil), args...)
+	for index := 0; index < len(redacted); index++ {
+		if redacted[index] == "--enrollment-token" {
+			if index+1 < len(redacted) {
+				redacted[index+1] = "[REDACTED]"
+				index++
+			}
+			continue
+		}
+		if strings.HasPrefix(redacted[index], "--enrollment-token=") {
+			redacted[index] = "--enrollment-token=[REDACTED]"
+		}
+	}
+	return redacted
 }
 
 func callerAgentNameFromInvocation(args []string) model.AgentName {

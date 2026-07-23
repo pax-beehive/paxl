@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/pax-oss/paxl/internal/model"
 	"github.com/pax-oss/paxl/internal/model/store"
@@ -20,6 +21,8 @@ type AgentHookFacade struct {
 }
 
 const hookAcceptedInboxReconcileLimit = 20
+
+var hookChannelPollTimeout = 2 * time.Second
 
 type AgentHookRequest struct {
 	Agent       model.AgentName
@@ -146,37 +149,74 @@ func (f *AgentHookFacade) handleTurnEndHook(
 }
 
 func (f *AgentHookFacade) acceptPendingInboxRoutes(ctx context.Context, verbose io.Writer) {
+	channels := []string{"manager"}
+	listed, err := f.store.ListChannelProfiles(ctx, &store.ListChannelProfilesRequest{
+		EnabledOnly: true, AutoReceiveOnly: true,
+	})
+	if err != nil {
+		writeHookVerbose(verbose, "Skip auto-receive channel discovery: %v.", err)
+	} else {
+		for _, profile := range listed.Profiles {
+			channels = append(channels, profile.Name)
+		}
+	}
+	for _, channel := range channels {
+		channelContext, cancel := context.WithTimeout(ctx, hookChannelPollTimeout)
+		f.acceptPendingChannelRoutes(channelContext, channel, verbose)
+		cancel()
+	}
+}
+
+func (f *AgentHookFacade) acceptPendingChannelRoutes(
+	ctx context.Context,
+	channel string,
+	verbose io.Writer,
+) {
 	envelopeFacade := NewEnvelopeFacade(f.client, f.store)
 	resp, err := envelopeFacade.AcceptAll(ctx, &AcceptAllEnvelopesRequest{
+		Channel:         channel,
 		Status:          "pending",
 		ContinueOnError: true,
 	})
 	if err != nil {
-		writeHookVerbose(verbose, "Skip inbox accept-all before hook injection: %v.", err)
+		writeHookVerbose(
+			verbose,
+			"Skip %s inbox accept-all before hook injection: %v.",
+			channel,
+			err,
+		)
 		return
 	}
 	if len(resp.Accepted) > 0 || len(resp.Failures) > 0 {
 		writeHookVerbose(
 			verbose,
-			"Accepted %d inbox envelopes before hook injection with %d failures.",
+			"Accepted %d %s inbox envelopes before hook injection with %d failures.",
 			len(resp.Accepted),
+			channel,
 			len(resp.Failures),
 		)
 	}
 	synced, err := envelopeFacade.AcceptAll(ctx, &AcceptAllEnvelopesRequest{
+		Channel:         channel,
 		Status:          "accepted",
 		Limit:           hookAcceptedInboxReconcileLimit,
 		ContinueOnError: true,
 	})
 	if err != nil {
-		writeHookVerbose(verbose, "Skip accepted inbox sync before hook injection: %v.", err)
+		writeHookVerbose(
+			verbose,
+			"Skip accepted %s inbox sync before hook injection: %v.",
+			channel,
+			err,
+		)
 		return
 	}
 	if len(synced.Accepted) > 0 || len(synced.Failures) > 0 {
 		writeHookVerbose(
 			verbose,
-			"Synced %d accepted inbox envelopes before hook injection with %d failures.",
+			"Synced %d accepted %s inbox envelopes before hook injection with %d failures.",
 			len(synced.Accepted),
+			channel,
 			len(synced.Failures),
 		)
 	}

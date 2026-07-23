@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -110,6 +112,17 @@ type CreateKnowledgeInjectionResponse struct {
 	Injection *model.KnowledgeInjection
 }
 
+type MaterializeRemoteEnvelopeRequest struct {
+	SourceKey string
+	Capsule   *model.KnowledgeCapsule
+	Injection *model.KnowledgeInjection
+}
+
+type MaterializeRemoteEnvelopeResponse struct {
+	Capsule   *model.KnowledgeCapsule
+	Injection *model.KnowledgeInjection
+}
+
 type ListKnowledgeInjectionsRequest struct {
 	TargetSessionID string
 	Limit           int
@@ -152,6 +165,31 @@ type GetAuthCredentialResponse struct {
 }
 
 type DeleteAuthCredentialResponse struct{}
+
+type SaveChannelProfileRequest struct {
+	Profile *model.ChannelProfile
+}
+
+type SaveChannelProfileResponse struct {
+	Profile *model.ChannelProfile
+}
+
+type GetChannelProfileRequest struct {
+	Name string
+}
+
+type GetChannelProfileResponse struct {
+	Profile *model.ChannelProfile
+}
+
+type ListChannelProfilesRequest struct {
+	EnabledOnly     bool
+	AutoReceiveOnly bool
+}
+
+type ListChannelProfilesResponse struct {
+	Profiles []*model.ChannelProfile
+}
 
 type SearchElementsRequest struct {
 	Query string
@@ -315,6 +353,144 @@ func (s *Store) DeleteAuthCredential(ctx context.Context) (*DeleteAuthCredential
 		return nil, fmt.Errorf("delete auth credential: %w", err)
 	}
 	return &DeleteAuthCredentialResponse{}, nil
+}
+
+func (s *Store) SaveChannelProfile(
+	ctx context.Context,
+	req *SaveChannelProfileRequest,
+) (*SaveChannelProfileResponse, error) {
+	if req == nil || req.Profile == nil {
+		return nil, fmt.Errorf("save channel profile: profile is required")
+	}
+	profile := req.Profile
+	profile.Name = strings.TrimSpace(profile.Name)
+	profile.URL = strings.TrimRight(strings.TrimSpace(profile.URL), "/")
+	if profile.Name == "" || profile.ProfileID == "" || profile.Kind == model.ChannelKindUnknown ||
+		profile.URL == "" || profile.APIKey == "" {
+		return nil, fmt.Errorf(
+			"save channel profile: id, name, kind, url, and api key are required",
+		)
+	}
+	permissions, err := json.Marshal(profile.Permissions)
+	if err != nil {
+		return nil, fmt.Errorf("encode channel profile permissions: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if profile.CreatedAt == "" {
+		_ = s.db.QueryRowContext(ctx,
+			`SELECT created_at FROM channel_profiles WHERE name = ?`, profile.Name,
+		).Scan(&profile.CreatedAt)
+		if profile.CreatedAt == "" {
+			profile.CreatedAt = now
+		}
+	}
+	profile.UpdatedAt = now
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO channel_profiles (
+			name, profile_id, kind, url, api_key, ca_file, agent_id, user_id,
+			credential_id, permissions_json, enabled, auto_receive, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(name) DO UPDATE SET
+			profile_id = excluded.profile_id, kind = excluded.kind, url = excluded.url,
+			api_key = excluded.api_key, ca_file = excluded.ca_file, agent_id = excluded.agent_id,
+			user_id = excluded.user_id, credential_id = excluded.credential_id,
+			permissions_json = excluded.permissions_json, enabled = excluded.enabled,
+			auto_receive = excluded.auto_receive, updated_at = excluded.updated_at
+	`, profile.Name, profile.ProfileID, profile.Kind, profile.URL, profile.APIKey, profile.CAFile,
+		profile.AgentID, profile.UserID, profile.CredentialID, string(permissions), profile.Enabled,
+		profile.AutoReceive, profile.CreatedAt, profile.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("save channel profile %q: %w", profile.Name, err)
+	}
+	return &SaveChannelProfileResponse{Profile: profile}, nil
+}
+
+func (s *Store) GetChannelProfile(
+	ctx context.Context,
+	req *GetChannelProfileRequest,
+) (*GetChannelProfileResponse, error) {
+	if req == nil || strings.TrimSpace(req.Name) == "" {
+		return nil, fmt.Errorf("get channel profile: name is required")
+	}
+	profiles, err := s.queryChannelProfiles(ctx, ` WHERE name = ?`, strings.TrimSpace(req.Name))
+	if err != nil {
+		return nil, err
+	}
+	if len(profiles) == 0 {
+		return &GetChannelProfileResponse{}, nil
+	}
+	return &GetChannelProfileResponse{Profile: profiles[0]}, nil
+}
+
+func (s *Store) ListChannelProfiles(
+	ctx context.Context,
+	req *ListChannelProfilesRequest,
+) (*ListChannelProfilesResponse, error) {
+	if req == nil {
+		req = &ListChannelProfilesRequest{}
+	}
+	var predicates []string
+	if req.EnabledOnly {
+		predicates = append(predicates, "enabled = 1")
+	}
+	if req.AutoReceiveOnly {
+		predicates = append(predicates, "auto_receive = 1")
+	}
+	where := ""
+	if len(predicates) > 0 {
+		where = " WHERE " + strings.Join(predicates, " AND ")
+	}
+	profiles, err := s.queryChannelProfiles(ctx, where)
+	if err != nil {
+		return nil, err
+	}
+	return &ListChannelProfilesResponse{Profiles: profiles}, nil
+}
+
+func (s *Store) queryChannelProfiles(
+	ctx context.Context,
+	where string,
+	args ...any,
+) ([]*model.ChannelProfile, error) {
+	// #nosec G202 -- where contains only fixed predicates assembled by ListChannelProfiles.
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT profile_id, name, kind, url, api_key, ca_file, agent_id, user_id,
+			credential_id, permissions_json, enabled, auto_receive, created_at, updated_at
+		FROM channel_profiles`+where+` ORDER BY name`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list channel profiles: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var profiles []*model.ChannelProfile
+	for rows.Next() {
+		profile := &model.ChannelProfile{}
+		var kind string
+		var permissions string
+		if err := rows.Scan(
+			&profile.ProfileID,
+			&profile.Name,
+			&kind,
+			&profile.URL,
+			&profile.APIKey,
+			&profile.CAFile,
+			&profile.AgentID,
+			&profile.UserID,
+			&profile.CredentialID,
+			&permissions,
+			&profile.Enabled,
+			&profile.AutoReceive,
+			&profile.CreatedAt,
+			&profile.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan channel profile: %w", err)
+		}
+		profile.Kind = model.ChannelKind(kind)
+		if err := json.Unmarshal([]byte(permissions), &profile.Permissions); err != nil {
+			return nil, fmt.Errorf("decode channel profile permissions: %w", err)
+		}
+		profiles = append(profiles, profile)
+	}
+	return profiles, rows.Err()
 }
 
 func (s *Store) UpsertSessions(
@@ -694,6 +870,128 @@ func (s *Store) CreateKnowledgeInjection(
 	return &CreateKnowledgeInjectionResponse{Injection: &injection}, nil
 }
 
+func (s *Store) MaterializeRemoteEnvelope(
+	ctx context.Context,
+	req *MaterializeRemoteEnvelopeRequest,
+) (*MaterializeRemoteEnvelopeResponse, error) {
+	capsule, injection, err := prepareRemoteEnvelopeMaterialization(req)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin remote envelope materialization: %w", err)
+	}
+	defer rollbackTx(tx)
+	claimed, err := claimRemoteEnvelopeMaterialization(ctx, tx, req.SourceKey, capsule, injection)
+	if err != nil {
+		return nil, err
+	}
+	if !claimed {
+		return loadRemoteEnvelopeMaterialization(ctx, tx, req.SourceKey)
+	}
+	return materializeClaimedRemoteEnvelope(ctx, tx, req.SourceKey, capsule, injection)
+}
+
+func prepareRemoteEnvelopeMaterialization(
+	req *MaterializeRemoteEnvelopeRequest,
+) (*model.KnowledgeCapsule, *model.KnowledgeInjection, error) {
+	if req == nil || strings.TrimSpace(req.SourceKey) == "" || req.Capsule == nil {
+		return nil, nil, fmt.Errorf(
+			"materialize remote envelope: source key and capsule are required",
+		)
+	}
+	capsule := *req.Capsule
+	defaultCapsuleFields(&capsule)
+	if capsule.SourceSessionID != req.SourceKey {
+		return nil, nil, fmt.Errorf(
+			"materialize remote envelope: capsule source key does not match",
+		)
+	}
+	if req.Injection == nil {
+		return &capsule, nil, nil
+	}
+	injection := *req.Injection
+	defaultInjectionFields(&injection)
+	if injection.CapsuleID != capsule.CapsuleID || injection.SourceSessionID != req.SourceKey {
+		return nil, nil, fmt.Errorf(
+			"materialize remote envelope: injection source does not match capsule",
+		)
+	}
+	return &capsule, &injection, nil
+}
+
+func claimRemoteEnvelopeMaterialization(
+	ctx context.Context,
+	tx *sql.Tx,
+	sourceKey string,
+	capsule *model.KnowledgeCapsule,
+	injection *model.KnowledgeInjection,
+) (bool, error) {
+	var injectionID any
+	if injection != nil {
+		injectionID = injection.InjectionID
+	}
+	result, err := tx.ExecContext(ctx, `
+		INSERT OR IGNORE INTO remote_envelope_materializations (
+			source_key, capsule_id, injection_id, created_at
+		) VALUES (?, ?, ?, ?)
+	`, sourceKey, capsule.CapsuleID, injectionID, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return false, fmt.Errorf("claim remote envelope materialization: %w", err)
+	}
+	claimed, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read remote envelope materialization claim: %w", err)
+	}
+	return claimed > 0, nil
+}
+
+func materializeClaimedRemoteEnvelope(
+	ctx context.Context,
+	tx *sql.Tx,
+	sourceKey string,
+	capsule *model.KnowledgeCapsule,
+	injection *model.KnowledgeInjection,
+) (*MaterializeRemoteEnvelopeResponse, error) {
+	existingCapsule, lookupErr := findKnowledgeCapsuleBySourceTx(ctx, tx, sourceKey)
+	if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
+		return nil, lookupErr
+	}
+	if existingCapsule != nil {
+		capsule = existingCapsule
+	} else if err := insertKnowledgeCapsuleTx(ctx, tx, capsule); err != nil {
+		return nil, err
+	}
+	if injection != nil {
+		injection.CapsuleID = capsule.CapsuleID
+		existingInjection, lookupErr := findMatchingKnowledgeInjectionTx(ctx, tx, injection)
+		if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
+			return nil, lookupErr
+		}
+		if existingInjection != nil {
+			injection = existingInjection
+		} else if err := insertKnowledgeInjectionTx(ctx, tx, injection); err != nil {
+			return nil, err
+		}
+	}
+	var materializedInjectionID any
+	if injection != nil {
+		materializedInjectionID = injection.InjectionID
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE remote_envelope_materializations
+		SET capsule_id = ?, injection_id = ?
+		WHERE source_key = ?
+	`, capsule.CapsuleID, materializedInjectionID, sourceKey); err != nil {
+		return nil, fmt.Errorf("update remote envelope materialization receipt: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit remote envelope materialization: %w", err)
+	}
+	return &MaterializeRemoteEnvelopeResponse{Capsule: capsule, Injection: injection}, nil
+}
+
 func (s *Store) ListKnowledgeInjections(
 	ctx context.Context,
 	req *ListKnowledgeInjectionsRequest,
@@ -912,6 +1210,13 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		consumed_at TEXT
 	);
 
+	CREATE TABLE IF NOT EXISTS remote_envelope_materializations (
+		source_key TEXT PRIMARY KEY,
+		capsule_id TEXT NOT NULL,
+		injection_id TEXT,
+		created_at TEXT NOT NULL
+	);
+
 	CREATE TABLE IF NOT EXISTS auth_credentials (
 		id TEXT PRIMARY KEY,
 		manager_url TEXT NOT NULL,
@@ -922,6 +1227,23 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		email TEXT NOT NULL,
 		display_name TEXT,
 		role TEXT,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS channel_profiles (
+		name TEXT PRIMARY KEY,
+		profile_id TEXT NOT NULL UNIQUE,
+		kind TEXT NOT NULL,
+		url TEXT NOT NULL,
+		api_key TEXT NOT NULL,
+		ca_file TEXT NOT NULL DEFAULT '',
+		agent_id TEXT NOT NULL DEFAULT '',
+		user_id TEXT NOT NULL DEFAULT '',
+		credential_id TEXT NOT NULL DEFAULT '',
+		permissions_json TEXT NOT NULL DEFAULT '[]',
+		enabled INTEGER NOT NULL DEFAULT 1,
+		auto_receive INTEGER NOT NULL DEFAULT 1,
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL
 	);
@@ -1221,6 +1543,150 @@ func getKnowledgeCapsuleTx(
 		return nil, fmt.Errorf("scan knowledge capsule %q: %w", capsuleID, err)
 	}
 	return capsule, nil
+}
+
+func getKnowledgeInjectionTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	injectionID string,
+) (*model.KnowledgeInjection, error) {
+	row := tx.QueryRowContext(
+		ctx,
+		`SELECT injection_id, capsule_id, COALESCE(source_node_id, ''), COALESCE(source_agent, ''),
+		COALESCE(source_session_id, ''), COALESCE(target_node_id, ''), target_session_id,
+		COALESCE(target_agent, ''), delivery_method, delivery_message_type, status,
+		COALESCE(route_match_type, ''), COALESCE(route_match_value, ''), created_at,
+		COALESCE(action_items_json, ''), COALESCE(claimed_at, ''), COALESCE(consumed_at, '')
+		FROM session_knowledge_injections WHERE injection_id = ?`,
+		injectionID,
+	)
+	return scanHookInjectionRow(row)
+}
+
+func findKnowledgeCapsuleBySourceTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	sourceKey string,
+) (*model.KnowledgeCapsule, error) {
+	row := tx.QueryRowContext(
+		ctx,
+		`SELECT capsule_id, COALESCE(source_node_id, ''), source_session_id, source_agent, keyword,
+		title, summary, content, status, truncated, original_estimated_chars, created_at,
+		COALESCE(archived_at, '')
+		FROM knowledge_capsules
+		WHERE source_session_id = ?
+		ORDER BY created_at, capsule_id
+		LIMIT 1`,
+		sourceKey,
+	)
+	capsule, err := scanKnowledgeCapsule(row)
+	if err != nil {
+		return nil, err
+	}
+	return capsule, nil
+}
+
+func findMatchingKnowledgeInjectionTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	wanted *model.KnowledgeInjection,
+) (*model.KnowledgeInjection, error) {
+	row := tx.QueryRowContext(
+		ctx,
+		`SELECT injection_id, capsule_id, COALESCE(source_node_id, ''), COALESCE(source_agent, ''),
+		COALESCE(source_session_id, ''), COALESCE(target_node_id, ''), target_session_id,
+		COALESCE(target_agent, ''), delivery_method, delivery_message_type, status,
+		COALESCE(route_match_type, ''), COALESCE(route_match_value, ''), created_at,
+		COALESCE(action_items_json, ''), COALESCE(claimed_at, ''), COALESCE(consumed_at, '')
+		FROM session_knowledge_injections
+		WHERE capsule_id = ? AND delivery_method = ? AND delivery_message_type = ?
+			AND COALESCE(target_agent, '') = ? AND COALESCE(route_match_type, '') = ?
+			AND COALESCE(route_match_value, '') = ?
+		ORDER BY created_at, injection_id
+		LIMIT 1`,
+		wanted.CapsuleID,
+		wanted.DeliveryMethod,
+		wanted.DeliveryMessageType,
+		wanted.TargetAgent,
+		wanted.RouteMatchType,
+		wanted.RouteMatchValue,
+	)
+	return scanHookInjectionRow(row)
+}
+
+func loadRemoteEnvelopeMaterialization(
+	ctx context.Context,
+	tx *sql.Tx,
+	sourceKey string,
+) (*MaterializeRemoteEnvelopeResponse, error) {
+	var capsuleID string
+	var injectionID sql.NullString
+	if err := tx.QueryRowContext(ctx, `
+		SELECT capsule_id, injection_id
+		FROM remote_envelope_materializations
+		WHERE source_key = ?
+	`, sourceKey).Scan(&capsuleID, &injectionID); err != nil {
+		return nil, fmt.Errorf("load remote envelope materialization receipt: %w", err)
+	}
+	capsule, err := getKnowledgeCapsuleTx(ctx, tx, capsuleID)
+	if err != nil {
+		return nil, fmt.Errorf("load materialized remote capsule: %w", err)
+	}
+	var injection *model.KnowledgeInjection
+	if injectionID.Valid {
+		injection, err = getKnowledgeInjectionTx(ctx, tx, injectionID.String)
+		if err != nil {
+			return nil, fmt.Errorf("load materialized remote injection: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit existing remote envelope materialization: %w", err)
+	}
+	return &MaterializeRemoteEnvelopeResponse{Capsule: capsule, Injection: injection}, nil
+}
+
+func insertKnowledgeCapsuleTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	capsule *model.KnowledgeCapsule,
+) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO knowledge_capsules (
+			capsule_id, source_node_id, source_session_id, source_agent, keyword, title, summary, content,
+			status, truncated, original_estimated_chars, created_at, archived_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, capsule.CapsuleID, capsule.SourceNodeID, capsule.SourceSessionID, capsule.SourceAgent,
+		capsule.Keyword, capsule.Title, capsule.Summary, capsule.Content, capsule.Status,
+		boolInt(capsule.Truncated), capsule.OriginalEstimatedChars, capsule.CreatedAt,
+		nullString(capsule.ArchivedAt))
+	if err != nil {
+		return fmt.Errorf("insert remote knowledge capsule %q: %w", capsule.CapsuleID, err)
+	}
+	return nil
+}
+
+func insertKnowledgeInjectionTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	injection *model.KnowledgeInjection,
+) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO session_knowledge_injections (
+			injection_id, capsule_id, source_node_id, source_agent, source_session_id,
+			target_node_id, target_session_id, target_agent, delivery_method,
+			delivery_message_type, status, route_match_type, route_match_value,
+			action_items_json, created_at, claimed_at, consumed_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, injection.InjectionID, injection.CapsuleID, injection.SourceNodeID, injection.SourceAgent,
+		injection.SourceSessionID, injection.TargetNodeID, injection.TargetSessionID,
+		injection.TargetAgent, injection.DeliveryMethod, injection.DeliveryMessageType,
+		injection.Status, injection.RouteMatchType, injection.RouteMatchValue,
+		nullString(injection.ActionItemsJSON), injection.CreatedAt, nullString(injection.ClaimedAt),
+		nullString(injection.ConsumedAt))
+	if err != nil {
+		return fmt.Errorf("insert remote knowledge injection %q: %w", injection.InjectionID, err)
+	}
+	return nil
 }
 
 func scanHookInjectionRow(scanner capsuleScanner) (*model.KnowledgeInjection, error) {

@@ -86,6 +86,7 @@ type Envelope struct {
 	CreatedAt       string          `json:"created_at"`
 	AcceptedAt      string          `json:"accepted_at"`
 	ArchivedAt      string          `json:"archived_at"`
+	IdempotencyKey  string          `json:"idempotency_key,omitempty"`
 }
 
 type Friend struct {

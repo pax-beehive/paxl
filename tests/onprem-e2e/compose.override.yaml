@@ -1,0 +1,19 @@
+services:
+  team-memory:
+    environment:
+      TEAM_MEMORY_OIDC_REDIRECT_URL: http://127.0.0.1:8080/v1/auth/callback
+
+  paxl-e2e:
+    image: ${PAXL_E2E_RUNNER_IMAGE}
+    pull_policy: never
+    volumes:
+      - ${PAXL_E2E_BINARY}:/usr/local/bin/paxl-onprem-channel-e2e:ro
+      - ${PAXL_E2E_PAXL_BINARY}:/usr/local/bin/paxl:ro
+    entrypoint: ["/usr/local/bin/paxl-onprem-channel-e2e", "-test.v", "-test.count=1"]
+    environment:
+      TEAM_MEMORY_E2E_BASE_URL: http://127.0.0.1:8080
+      PAXL_E2E_PAXL_BIN: /usr/local/bin/paxl
+    network_mode: service:team-memory
+    depends_on:
+      team-memory:
+        condition: service_started

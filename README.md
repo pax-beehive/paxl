@@ -555,6 +555,49 @@ paxl outbox list --status accepted
 paxl outbox get <envelope-id>
 ```
 
+### Team Memory On-Prem Channel
+
+The default envelope channel remains PAX Manager. A single-Team Team Memory
+installation can be connected as an independent credential-bound channel; its
+credential and Agent identity are stored separately from manager login state.
+Prefer an environment variable so the one-time enrollment token is not written
+to shell history:
+
+```sh
+read -rs PAXL_ENROLLMENT_TOKEN
+export PAXL_ENROLLMENT_TOKEN
+paxl channel connect onprem --url https://memory.internal
+unset PAXL_ENROLLMENT_TOKEN
+
+paxl channel list
+paxl channel status onprem
+paxl channel agents list --channel onprem --query receiver
+paxl channel agents get receiver-agent --channel onprem
+```
+
+For a workstation CA, add its PEM certificate to the profile with
+`--ca-file /path/to/team-memory-ca.pem`. System roots remain trusted. There is
+no persisted insecure TLS mode. Remote channels require HTTPS; plain HTTP is
+limited to loopback origins for local acceptance tests.
+
+On-prem delivery is Agent-to-Agent and therefore uses an Agent id, not a friend
+alias or email:
+
+```sh
+paxl capsule send <capsule-id> --channel onprem \
+  --to-agent-id receiver-agent --match project --project paxl --agent codex
+paxl inbox list --channel onprem
+paxl inbox get <envelope-id> --channel onprem
+paxl inbox accept <envelope-id> --channel onprem
+paxl inbox archive <envelope-id> --channel onprem
+paxl outbox list --channel onprem --status archived
+```
+
+Each enabled auto-receive profile is polled independently by the user-prompt
+hook. A failed channel is diagnosed without blocking another channel or an
+already queued local injection. See [Team Memory on-prem channels](doc/ONPREM_CHANNEL.md)
+for trust, recovery, migration, and E2E details.
+
 Manage friends:
 
 ```sh
@@ -728,8 +771,10 @@ paxl inbox sync --limit 20
 `inbox sync` lists accepted inbox envelopes, materializes any missing local
 capsules, and recreates routed hook injections when the envelope payload
 contains a route. It is idempotent: accepted envelopes are keyed locally by the
-source session id `remote_envelope:<envelope-id>`, so repeated syncs reuse the
-existing local capsule and route injection.
+source session id `remote_envelope:<envelope-id>` for manager or
+`remote_envelope:onprem:<profile-id>:<envelope-id>` for on-prem, so repeated
+syncs reuse the existing local capsule and route injection without collisions
+between installations.
 
 `paxl inbox accept <envelope-id>` is also idempotent. If the remote envelope is
 already accepted, it skips the remote accept call and performs the same local
