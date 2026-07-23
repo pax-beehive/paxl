@@ -581,9 +581,11 @@ legacy two-part token or to explicitly confirm a profile origin change.
 
 For a workstation CA, add its PEM certificate to the profile with
 `--ca-file /path/to/team-memory-ca.pem`. System roots remain trusted. There is
-no persisted insecure TLS mode. Plain HTTP is limited to loopback origins and
-Tailscale IP literals in `100.64.0.0/10` or `fd7a:115c:a1e0::/48`; other remote
-origins require HTTPS.
+no persisted insecure TLS mode. Plain HTTP is allowed by default only for
+loopback origins. A confirmed Tailscale IP literal in `100.64.0.0/10` or
+`fd7a:115c:a1e0::/48` additionally requires `--allow-tailnet-http`; other
+remote origins require HTTPS. The flag is an operator assertion because an IP
+range alone cannot prove that the active route is Tailscale.
 
 On-prem delivery is Agent-to-Agent and therefore uses an Agent id, not a friend
 alias or email:

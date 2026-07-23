@@ -35,12 +35,13 @@ type ChannelFacade struct {
 }
 
 type ConnectChannelRequest struct {
-	Kind            string
-	Name            string
-	URL             string
-	EnrollmentToken string
-	CAFile          string
-	AutoReceive     bool
+	Kind             string
+	Name             string
+	URL              string
+	EnrollmentToken  string
+	CAFile           string
+	AutoReceive      bool
+	AllowTailnetHTTP bool
 }
 
 type ConnectChannelResponse struct {
@@ -243,7 +244,11 @@ func (f *ChannelFacade) Connect(
 	if strings.TrimSpace(req.EnrollmentToken) == "" {
 		return nil, fmt.Errorf("connect channel: enrollment token is required")
 	}
-	origin, originFromToken, err := resolveChannelOrigin(req.URL, req.EnrollmentToken)
+	origin, originFromToken, err := resolveChannelOrigin(
+		req.URL,
+		req.EnrollmentToken,
+		req.AllowTailnetHTTP,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("connect channel: %w", err)
 	}
@@ -338,9 +343,13 @@ func (f *ChannelFacade) confirmEmbeddedOrigin(
 	)
 }
 
-func resolveChannelOrigin(explicitURL string, enrollmentToken string) (string, bool, error) {
+func resolveChannelOrigin(
+	explicitURL string,
+	enrollmentToken string,
+	allowTailnetHTTP bool,
+) (string, bool, error) {
 	if strings.TrimSpace(explicitURL) != "" {
-		origin, err := normalizeChannelOrigin(explicitURL)
+		origin, err := normalizeChannelOrigin(explicitURL, allowTailnetHTTP)
 		return origin, false, err
 	}
 	embedded, found, err := enrollmentTokenOrigin(enrollmentToken)
@@ -352,7 +361,7 @@ func resolveChannelOrigin(explicitURL string, enrollmentToken string) (string, b
 			"on-prem URL is required for a legacy two-part enrollment token",
 		)
 	}
-	origin, err := normalizeChannelOrigin(embedded)
+	origin, err := normalizeChannelOrigin(embedded, allowTailnetHTTP)
 	if err != nil {
 		return "", false, fmt.Errorf("embedded enrollment origin: %w", err)
 	}
@@ -397,7 +406,7 @@ func (f *ChannelFacade) channelProfileID(
 	return profileID, nil
 }
 
-func normalizeChannelOrigin(raw string) (string, error) {
+func normalizeChannelOrigin(raw string, allowTailnetHTTP bool) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
 		return "", fmt.Errorf("parse on-prem origin: %w", err)
@@ -408,6 +417,13 @@ func normalizeChannelOrigin(raw string) (string, error) {
 	}
 	if parsed.Scheme != "https" && parsed.Scheme != "http" {
 		return "", fmt.Errorf("on-prem URL must use http or https")
+	}
+	if parsed.Scheme == "http" &&
+		isTailscaleAddress(parsed.Hostname()) &&
+		!allowTailnetHTTP {
+		return "", fmt.Errorf(
+			"plain HTTP to a Tailscale address requires explicit --allow-tailnet-http",
+		)
 	}
 	if parsed.Scheme == "http" &&
 		!isLoopbackHost(parsed.Hostname()) &&
