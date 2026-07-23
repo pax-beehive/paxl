@@ -151,7 +151,10 @@ func newChannelCommand(stdout io.Writer) *cli.Command {
 				Usage:     "Exchange a one-time enrollment token for a channel credential",
 				ArgsUsage: "onprem",
 				Flags: []cli.Flag{
-					&cli.StringFlag{Name: "url", Usage: "Team Memory origin", Required: true},
+					&cli.StringFlag{
+						Name:  "url",
+						Usage: "Team Memory origin (optional for a self-describing token)",
+					},
 					&cli.StringFlag{
 						Name:     "enrollment-token",
 						Usage:    "One-time enrollment token (prefer PAXL_ENROLLMENT_TOKEN)",

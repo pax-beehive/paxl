@@ -12,9 +12,16 @@ token once without placing it in shell history:
 ```sh
 read -rs PAXL_ENROLLMENT_TOKEN
 export PAXL_ENROLLMENT_TOKEN
-paxl channel connect onprem --url https://memory.internal --profile onprem
+paxl channel connect onprem --profile onprem
 unset PAXL_ENROLLMENT_TOKEN
 ```
+
+New self-describing enrollment tokens carry the deployment origin and do not
+need `--url`. Legacy two-part tokens remain supported and require
+`--url https://memory.internal`. An explicit `--url` always wins. If an embedded
+origin differs from the existing profile origin, paxl stops before exchange and
+requires rerunning with that origin as an explicit `--url`; this prevents a
+modified token from silently sending its one-time secret to another host.
 
 Connect exchanges the enrollment exactly once, stores the returned Agent key,
 then verifies `/v1/agent-identity`. If identity verification fails, the token is
@@ -25,8 +32,7 @@ only the profile, URL, Agent, user, and permissions, never the token or key.
 HTTPS uses system trust by default. For an internal workstation CA:
 
 ```sh
-paxl channel connect onprem --url https://memory.internal \
-  --ca-file /etc/team-memory/ca.pem
+paxl channel connect onprem --ca-file /etc/team-memory/ca.pem
 ```
 
 The CA is added to system roots for that profile. There is no

@@ -2,6 +2,7 @@ package facade
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -64,6 +65,171 @@ func TestChannelConnectExchangesEnrollmentOnceAndStoresVerifiedIdentity(t *testi
 	)
 	require.NoError(t, err)
 	require.Equal(t, "tm_key_secret", stored.Profile.APIKey)
+}
+
+func TestChannelConnectUsesOriginFromSelfDescribingEnrollmentToken(t *testing.T) {
+	ctx := context.Background()
+	opened, err := store.Open(
+		ctx,
+		&store.OpenRequest{Path: filepath.Join(t.TempDir(), "paxl.sqlite")},
+	)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, opened.Store.Close()) }()
+	origin := "https://memory.internal"
+	token := "tm_enroll_once.secret." +
+		base64.RawURLEncoding.EncodeToString([]byte(origin))
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		require.Equal(t, "memory.internal", req.URL.Host)
+		switch req.URL.Path {
+		case "/v1/agent-enrollments/exchange":
+			body := decodeJSONBody(t, req)
+			require.Equal(t, token, body["token"])
+			return jsonResponse(`{"credential_id":"cred-1","api_key":"tm_key_secret"}`), nil
+		case "/v1/agent-identity":
+			return jsonResponse(
+				`{"user_id":"user-1","agent_id":"agent-1","credential_id":"cred-1","permissions":["channel_receive"]}`,
+			), nil
+		default:
+			return nil, fmt.Errorf("unexpected request %s", req.URL.Path)
+		}
+	})
+
+	connected, err := NewChannelFacade(client, opened.Store).Connect(
+		ctx,
+		&ConnectChannelRequest{
+			Kind: "onprem", Name: "onprem", EnrollmentToken: token, AutoReceive: true,
+		},
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, origin, connected.Profile.URL)
+}
+
+func TestChannelConnectRequiresExplicitConfirmationWhenEmbeddedOriginChangesProfile(t *testing.T) {
+	ctx := context.Background()
+	opened, err := store.Open(
+		ctx,
+		&store.OpenRequest{Path: filepath.Join(t.TempDir(), "paxl.sqlite")},
+	)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, opened.Store.Close()) }()
+	seedChannelProfile(ctx, t, opened.Store, "onprem", "chp_existing", "tm_key_existing")
+	token := "tm_enroll_once.secret." +
+		base64.RawURLEncoding.EncodeToString([]byte("https://other.internal"))
+	requests := 0
+	client := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		requests++
+		return nil, fmt.Errorf("must not exchange before confirmation")
+	})
+
+	_, err = NewChannelFacade(client, opened.Store).Connect(
+		ctx,
+		&ConnectChannelRequest{
+			Kind: "onprem", Name: "onprem", EnrollmentToken: token, AutoReceive: true,
+		},
+	)
+
+	require.ErrorContains(t, err, "explicit --url")
+	require.ErrorContains(t, err, "other.internal")
+	require.Zero(t, requests)
+}
+
+func TestChannelConnectExplicitURLOverridesEmbeddedOrigin(t *testing.T) {
+	ctx := context.Background()
+	opened, err := store.Open(
+		ctx,
+		&store.OpenRequest{Path: filepath.Join(t.TempDir(), "paxl.sqlite")},
+	)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, opened.Store.Close()) }()
+	seedChannelProfile(ctx, t, opened.Store, "onprem", "chp_existing", "tm_key_existing")
+	token := "tm_enroll_once.secret." +
+		base64.RawURLEncoding.EncodeToString([]byte("https://other.internal"))
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		require.Equal(t, "memory.internal", req.URL.Host)
+		switch req.URL.Path {
+		case "/v1/agent-enrollments/exchange":
+			return jsonResponse(`{"credential_id":"cred-2","api_key":"tm_key_new"}`), nil
+		case "/v1/agent-identity":
+			return jsonResponse(
+				`{"user_id":"user-1","agent_id":"agent-1","credential_id":"cred-2","permissions":["channel_receive"]}`,
+			), nil
+		default:
+			return nil, fmt.Errorf("unexpected request %s", req.URL.Path)
+		}
+	})
+
+	connected, err := NewChannelFacade(client, opened.Store).Connect(
+		ctx,
+		&ConnectChannelRequest{
+			Kind: "onprem", Name: "onprem", URL: "https://memory.internal",
+			EnrollmentToken: token, AutoReceive: true,
+		},
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, "https://memory.internal", connected.Profile.URL)
+	require.Equal(t, "chp_existing", connected.Profile.ProfileID)
+}
+
+func TestChannelConnectRequiresURLForLegacyToken(t *testing.T) {
+	requests := 0
+	client := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		requests++
+		return nil, fmt.Errorf("must not exchange")
+	})
+
+	_, err := NewChannelFacade(client, nil).Connect(
+		context.Background(),
+		&ConnectChannelRequest{
+			Kind: "onprem", Name: "onprem", EnrollmentToken: "tm_enroll_once.secret",
+		},
+	)
+
+	require.ErrorContains(t, err, "legacy two-part enrollment token")
+	require.Zero(t, requests)
+}
+
+func TestChannelConnectRejectsInvalidEmbeddedOriginBeforeExchange(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		suffix string
+		want   string
+	}{
+		{name: "invalid base64", suffix: "%not-base64", want: "decode embedded"},
+		{
+			name: "remote cleartext",
+			suffix: base64.RawURLEncoding.EncodeToString(
+				[]byte("http://memory.internal"),
+			),
+			want: "must use https",
+		},
+		{
+			name: "extra segment",
+			suffix: base64.RawURLEncoding.EncodeToString(
+				[]byte("https://memory.internal"),
+			) + ".extra",
+			want: "format is invalid",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requests := 0
+			client := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+				requests++
+				return nil, fmt.Errorf("must not exchange")
+			})
+			_, err := NewChannelFacade(client, nil).Connect(
+				context.Background(),
+				&ConnectChannelRequest{
+					Kind:            "onprem",
+					Name:            "onprem",
+					EnrollmentToken: "tm_enroll_once.secret." + test.suffix,
+				},
+			)
+			require.ErrorContains(t, err, test.want)
+			require.Zero(t, requests)
+		})
+	}
 }
 
 func TestChannelConnectPersistsCredentialWhenIdentityVerificationFails(t *testing.T) {

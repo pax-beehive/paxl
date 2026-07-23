@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -231,7 +232,10 @@ func (f *ChannelFacade) Connect(
 	if strings.TrimSpace(req.Kind) != string(model.ChannelKindOnPrem) {
 		return nil, fmt.Errorf("connect channel: unsupported kind %q", req.Kind)
 	}
-	origin, err := normalizeChannelOrigin(req.URL)
+	if strings.TrimSpace(req.EnrollmentToken) == "" {
+		return nil, fmt.Errorf("connect channel: enrollment token is required")
+	}
+	origin, originFromToken, err := resolveChannelOrigin(req.URL, req.EnrollmentToken)
 	if err != nil {
 		return nil, fmt.Errorf("connect channel: %w", err)
 	}
@@ -249,8 +253,8 @@ func (f *ChannelFacade) Connect(
 	if err := validateChannelProfileName(name); err != nil {
 		return nil, fmt.Errorf("connect channel: %w", err)
 	}
-	if strings.TrimSpace(req.EnrollmentToken) == "" {
-		return nil, fmt.Errorf("connect channel: enrollment token is required")
+	if err := f.confirmEmbeddedOrigin(ctx, name, origin, originFromToken); err != nil {
+		return nil, err
 	}
 	profileID, err := f.channelProfileID(ctx, name, origin)
 	if err != nil {
@@ -298,6 +302,72 @@ func (f *ChannelFacade) Connect(
 		return nil, fmt.Errorf("connect channel: save verified identity: %w", err)
 	}
 	return &ConnectChannelResponse{Profile: profile}, nil
+}
+
+func (f *ChannelFacade) confirmEmbeddedOrigin(
+	ctx context.Context,
+	name string,
+	origin string,
+	originFromToken bool,
+) error {
+	if !originFromToken {
+		return nil
+	}
+	got, err := f.store.GetChannelProfile(ctx, &store.GetChannelProfileRequest{Name: name})
+	if err != nil {
+		return fmt.Errorf("connect channel: load existing profile: %w", err)
+	}
+	if got.Profile == nil || got.Profile.URL == origin {
+		return nil
+	}
+	return fmt.Errorf(
+		"connect channel: embedded origin %q differs from profile %q origin %q; "+
+			"rerun with explicit --url %q to confirm the change",
+		origin,
+		name,
+		got.Profile.URL,
+		origin,
+	)
+}
+
+func resolveChannelOrigin(explicitURL string, enrollmentToken string) (string, bool, error) {
+	if strings.TrimSpace(explicitURL) != "" {
+		origin, err := normalizeChannelOrigin(explicitURL)
+		return origin, false, err
+	}
+	embedded, found, err := enrollmentTokenOrigin(enrollmentToken)
+	if err != nil {
+		return "", false, err
+	}
+	if !found {
+		return "", false, fmt.Errorf(
+			"on-prem URL is required for a legacy two-part enrollment token",
+		)
+	}
+	origin, err := normalizeChannelOrigin(embedded)
+	if err != nil {
+		return "", false, fmt.Errorf("embedded enrollment origin: %w", err)
+	}
+	return origin, true, nil
+}
+
+func enrollmentTokenOrigin(token string) (string, bool, error) {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) == 2 {
+		return "", false, nil
+	}
+	if len(parts) != 3 || !strings.HasPrefix(parts[0], "tm_enroll_") ||
+		parts[0] == "tm_enroll_" || parts[1] == "" || parts[2] == "" {
+		return "", false, fmt.Errorf("enrollment token format is invalid")
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return "", false, fmt.Errorf("decode embedded enrollment origin: %w", err)
+	}
+	if len(decoded) == 0 {
+		return "", false, fmt.Errorf("embedded enrollment origin is empty")
+	}
+	return string(decoded), true, nil
 }
 
 func (f *ChannelFacade) channelProfileID(
