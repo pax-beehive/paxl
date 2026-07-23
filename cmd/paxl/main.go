@@ -171,6 +171,10 @@ func newChannelCommand(stdout io.Writer) *cli.Command {
 						Usage: "PEM CA bundle to add to system trust for this profile",
 					},
 					&cli.BoolFlag{
+						Name:  "allow-tailnet-http",
+						Usage: "Allow cleartext HTTP for a confirmed Tailscale IP address",
+					},
+					&cli.BoolFlag{
 						Name:  "auto-receive",
 						Value: true,
 						Usage: "Poll this channel during user-prompt hooks",
@@ -1765,7 +1769,8 @@ func channelConnect(ctx context.Context, cmd *cli.Command, stdout io.Writer) err
 		Connect(ctx, &facade.ConnectChannelRequest{
 			Kind: kind, Name: cmd.String("profile"), URL: cmd.String("url"),
 			EnrollmentToken: cmd.String("enrollment-token"), CAFile: cmd.String("ca-file"),
-			AutoReceive: cmd.Bool("auto-receive"),
+			AutoReceive:      cmd.Bool("auto-receive"),
+			AllowTailnetHTTP: cmd.Bool("allow-tailnet-http"),
 		})
 	if err != nil {
 		return fmt.Errorf("connect channel: %w", err)

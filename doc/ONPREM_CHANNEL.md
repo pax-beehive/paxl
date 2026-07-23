@@ -36,9 +36,18 @@ paxl channel connect onprem --ca-file /etc/team-memory/ca.pem
 ```
 
 The CA is added to system roots for that profile. There is no
-`insecure-skip-verify` setting. Plain HTTP is accepted only for loopback
-origins such as `http://127.0.0.1:8080`, which keeps local acceptance tests
-possible without allowing a bearer credential over a remote cleartext link.
+`insecure-skip-verify` setting. Plain HTTP is accepted by default only for
+loopback origins such as `http://127.0.0.1:8080`. If the deployment origin is
+a confirmed Tailscale IP literal in `100.64.0.0/10` or
+`fd7a:115c:a1e0::/48`, opt in explicitly:
+
+```sh
+paxl channel connect onprem --allow-tailnet-http
+```
+
+The flag asserts that the active route is protected by Tailscale. CIDR
+membership alone cannot prove the route or server identity, so verify the peer
+in Tailscale before connecting. Other remote HTTP origins remain rejected.
 The profile name `manager` is reserved for the existing PAX Manager channel.
 
 ## Directory and delivery

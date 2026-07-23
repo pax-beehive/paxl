@@ -925,6 +925,37 @@ func (s *CommandSuite) TestChannelConnectAcceptsSelfDescribingTokenWithoutURL() 
 	s.NotContains(s.stdout.String(), token)
 }
 
+func (s *CommandSuite) TestChannelConnectAcceptsTailnetHTTPWithExplicitOptIn() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	origin := "http://100.125.72.76:58080"
+	token := "tm_enroll_secret.value." +
+		base64.RawURLEncoding.EncodeToString([]byte(origin))
+	oldClient := authHTTPClient
+	authHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		s.Equal("100.125.72.76:58080", req.URL.Host)
+		switch req.URL.Path {
+		case "/v1/agent-enrollments/exchange":
+			return commandJSONResponse(`{"credential_id":"cred-1","api_key":"tm_key_secret"}`), nil
+		case "/v1/agent-identity":
+			return commandJSONResponse(
+				`{"user_id":"user-1","agent_id":"agent-1","credential_id":"cred-1","permissions":["channel_receive"]}`,
+			), nil
+		default:
+			return nil, fmt.Errorf("unexpected request %s", req.URL.Path)
+		}
+	})
+	s.T().Cleanup(func() { authHTTPClient = oldClient })
+
+	err := run(context.Background(), []string{
+		"--db", dbPath, "channel", "connect", "onprem",
+		"--enrollment-token", token, "--allow-tailnet-http", "--format", "jsonl",
+	}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"url":"http://100.125.72.76:58080"`)
+	s.NotContains(s.stdout.String(), token)
+}
+
 func (s *CommandSuite) TestChannelStatusAndDirectoryCommandsUseOnPremProfile() {
 	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
 	oldClient := authHTTPClient

@@ -531,8 +531,10 @@ paxl channel agents get receiver-agent --channel onprem
 也必须显式传入 `--url` 以确认变更，paxl 才会执行 exchange。
 
 workstation 内部 CA 可以使用 `--ca-file /path/to/team-memory-ca.pem` 加入该 profile
-的系统信任池；paxl 不会持久化 insecure TLS 配置。远端 channel 必须使用 HTTPS，
-明文 HTTP 只允许 loopback origin，用于本机验收测试。
+的系统信任池；paxl 不会持久化 insecure TLS 配置。明文 HTTP 默认只允许 loopback。
+确认 origin 是 `100.64.0.0/10` 或 `fd7a:115c:a1e0::/48` 中的 Tailscale IP
+字面量后，可显式传入 `--allow-tailnet-http`。该 flag 是操作者对实际路由的确认，
+因为仅凭 IP 地址段不能证明流量确实经过 Tailscale；其他远端 HTTP origin 仍会拒绝。
 
 on-prem 投递是 Agent-to-Agent，因此必须使用 Agent id，而不是 friend alias 或邮箱：
 
