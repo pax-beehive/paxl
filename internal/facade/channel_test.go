@@ -105,6 +105,42 @@ func TestChannelConnectUsesOriginFromSelfDescribingEnrollmentToken(t *testing.T)
 	require.Equal(t, origin, connected.Profile.URL)
 }
 
+func TestChannelConnectAllowsHTTPOriginForTailscaleAddress(t *testing.T) {
+	ctx := context.Background()
+	opened, err := store.Open(
+		ctx,
+		&store.OpenRequest{Path: filepath.Join(t.TempDir(), "paxl.sqlite")},
+	)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, opened.Store.Close()) }()
+	origin := "http://100.125.72.76:58080"
+	token := "tm_enroll_once.secret." +
+		base64.RawURLEncoding.EncodeToString([]byte(origin+"/"))
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		require.Equal(t, "100.125.72.76:58080", req.URL.Host)
+		switch req.URL.Path {
+		case "/v1/agent-enrollments/exchange":
+			return jsonResponse(`{"credential_id":"cred-1","api_key":"tm_key_secret"}`), nil
+		case "/v1/agent-identity":
+			return jsonResponse(
+				`{"user_id":"user-1","agent_id":"agent-1","credential_id":"cred-1","permissions":["channel_receive"]}`,
+			), nil
+		default:
+			return nil, fmt.Errorf("unexpected request %s", req.URL.Path)
+		}
+	})
+
+	connected, err := NewChannelFacade(client, opened.Store).Connect(
+		ctx,
+		&ConnectChannelRequest{
+			Kind: "onprem", Name: "onprem", EnrollmentToken: token, AutoReceive: true,
+		},
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, origin, connected.Profile.URL)
+}
+
 func TestChannelConnectRequiresExplicitConfirmationWhenEmbeddedOriginChangesProfile(t *testing.T) {
 	ctx := context.Background()
 	opened, err := store.Open(
@@ -201,6 +237,13 @@ func TestChannelConnectRejectsInvalidEmbeddedOriginBeforeExchange(t *testing.T) 
 			name: "remote cleartext",
 			suffix: base64.RawURLEncoding.EncodeToString(
 				[]byte("http://memory.internal"),
+			),
+			want: "must use https",
+		},
+		{
+			name: "address beyond Tailscale range",
+			suffix: base64.RawURLEncoding.EncodeToString(
+				[]byte("http://100.128.0.1"),
 			),
 			want: "must use https",
 		},
@@ -323,6 +366,18 @@ func TestChannelConnectRejectsReservedOrInvalidProfileNamesBeforeExchange(t *tes
 
 func TestChannelOriginAllowsLoopbackHTTPForLocalAcceptance(t *testing.T) {
 	for _, raw := range []string{"http://localhost:58080", "http://127.0.0.1:58080", "http://[::1]:58080"} {
+		origin, err := normalizeChannelOrigin(raw)
+		require.NoError(t, err)
+		require.Equal(t, raw, origin)
+	}
+}
+
+func TestChannelOriginAllowsHTTPForTailscaleAddressRanges(t *testing.T) {
+	for _, raw := range []string{
+		"http://100.64.0.1:58080",
+		"http://100.127.255.254:58080",
+		"http://[fd7a:115c:a1e0::1]:58080",
+	} {
 		origin, err := normalizeChannelOrigin(raw)
 		require.NoError(t, err)
 		require.Equal(t, raw, origin)
