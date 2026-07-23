@@ -566,7 +566,7 @@ to shell history:
 ```sh
 read -rs PAXL_ENROLLMENT_TOKEN
 export PAXL_ENROLLMENT_TOKEN
-paxl channel connect onprem --url https://memory.internal
+paxl channel connect onprem
 unset PAXL_ENROLLMENT_TOKEN
 
 paxl channel list
@@ -574,6 +574,10 @@ paxl channel status onprem
 paxl channel agents list --channel onprem --query receiver
 paxl channel agents get receiver-agent --channel onprem
 ```
+
+Current self-describing enrollment tokens include the deployment origin, so
+`--url` is optional. Continue to pass `--url https://memory.internal` for a
+legacy two-part token or to explicitly confirm a profile origin change.
 
 For a workstation CA, add its PEM certificate to the profile with
 `--ca-file /path/to/team-memory-ca.pem`. System roots remain trusted. There is

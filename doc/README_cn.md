@@ -517,7 +517,7 @@ credential-bound channel 连接；它的凭据和 Agent identity 不会复用或
 ```sh
 read -rs PAXL_ENROLLMENT_TOKEN
 export PAXL_ENROLLMENT_TOKEN
-paxl channel connect onprem --url https://memory.internal
+paxl channel connect onprem
 unset PAXL_ENROLLMENT_TOKEN
 
 paxl channel list
@@ -525,6 +525,10 @@ paxl channel status onprem
 paxl channel agents list --channel onprem --query receiver
 paxl channel agents get receiver-agent --channel onprem
 ```
+
+新的自描述 enrollment token 已内嵌部署 origin，因此 `--url` 可省略。旧两段式 token
+仍需传 `--url https://memory.internal`；当 token origin 与现有 profile 不一致时，
+也必须显式传入 `--url` 以确认变更，paxl 才会执行 exchange。
 
 workstation 内部 CA 可以使用 `--ca-file /path/to/team-memory-ca.pem` 加入该 profile
 的系统信任池；paxl 不会持久化 insecure TLS 配置。远端 channel 必须使用 HTTPS，
