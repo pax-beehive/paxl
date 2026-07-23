@@ -22,9 +22,9 @@ import (
 	"github.com/pax-oss/paxl/internal/model/store"
 )
 
-// Tailscale reserves these address ranges for tailnet traffic. Hostnames are
-// intentionally not resolved here so origin validation remains deterministic.
-var tailscaleAddressPrefixes = []netip.Prefix{
+// Tailscale uses these ranges, but CIDR membership alone does not prove that
+// traffic uses a tailnet. Callers must also require explicit operator consent.
+var tailnetHTTPCandidatePrefixes = []netip.Prefix{
 	netip.MustParsePrefix("100.64.0.0/10"),
 	netip.MustParsePrefix("fd7a:115c:a1e0::/48"),
 }
@@ -419,17 +419,17 @@ func normalizeChannelOrigin(raw string, allowTailnetHTTP bool) (string, error) {
 		return "", fmt.Errorf("on-prem URL must use http or https")
 	}
 	if parsed.Scheme == "http" &&
-		isTailscaleAddress(parsed.Hostname()) &&
+		isTailnetHTTPCandidate(parsed.Hostname()) &&
 		!allowTailnetHTTP {
 		return "", fmt.Errorf(
-			"plain HTTP to a Tailscale address requires explicit --allow-tailnet-http",
+			"plain HTTP to a Tailscale-range address requires explicit --allow-tailnet-http",
 		)
 	}
 	if parsed.Scheme == "http" &&
 		!isLoopbackHost(parsed.Hostname()) &&
-		!isTailscaleAddress(parsed.Hostname()) {
+		!isTailnetHTTPCandidate(parsed.Hostname()) {
 		return "", fmt.Errorf(
-			"on-prem URL must use https unless the host is loopback or a Tailscale address",
+			"on-prem URL must use https unless the host is loopback or an explicitly allowed Tailscale-range address",
 		)
 	}
 	return parsed.Scheme + "://" + parsed.Host, nil
@@ -443,12 +443,12 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func isTailscaleAddress(host string) bool {
+func isTailnetHTTPCandidate(host string) bool {
 	address, err := netip.ParseAddr(strings.TrimSpace(host))
 	if err != nil {
 		return false
 	}
-	for _, prefix := range tailscaleAddressPrefixes {
+	for _, prefix := range tailnetHTTPCandidatePrefixes {
 		if prefix.Contains(address) {
 			return true
 		}
