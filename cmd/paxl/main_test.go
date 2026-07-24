@@ -1987,6 +1987,45 @@ func (s *CommandSuite) TestSessionListSyncsKiroLocalSessionsToSQLite() {
 	s.Contains(s.stdout.String(), `"title":"Kiro session title"`)
 }
 
+func (s *CommandSuite) TestSessionListIncludesCodexSubagentsWhenRequested() {
+	codexHome := s.T().TempDir()
+	s.T().Setenv("CODEX_HOME", codexHome)
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-test-parent-thread.jsonl"),
+		[]byte(
+			`{"type":"session_meta","payload":{"id":"parent-thread","timestamp":"2026-06-20T01:00:00Z","cwd":"/tmp/project","thread_source":"user"}}`+"\n",
+		),
+		0o600,
+	))
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-test-child-thread.jsonl"),
+		[]byte(
+			`{"type":"session_meta","payload":{"id":"child-thread","session_id":"parent-thread","parent_thread_id":"parent-thread","timestamp":"2026-06-20T02:00:00Z","cwd":"/tmp/project","source":{"subagent":{"other":"guardian"}},"thread_source":"subagent"}}`+"\n",
+		),
+		0o600,
+	))
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+
+	err := run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"session", "list",
+			"--agent", "codex",
+			"--include-subagents",
+			"--format", "jsonl",
+		},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"id":"codex:parent-thread"`)
+	s.Contains(s.stdout.String(), `"id":"codex:child-thread"`)
+}
+
 func (s *CommandSuite) TestSessionListRejectsGeminiAgent() {
 	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
 

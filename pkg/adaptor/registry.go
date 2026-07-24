@@ -62,7 +62,8 @@ type LookupResponse struct {
 }
 
 type ListSessionsRequest struct {
-	Limit int
+	Limit            int
+	IncludeSubagents bool
 }
 
 type ListSessionsResponse struct {

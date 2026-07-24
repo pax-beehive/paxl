@@ -626,6 +626,10 @@ func newSessionCommand(stdout io.Writer, stderr io.Writer, diagnostics io.Writer
 						Name:  "local",
 						Usage: "Only show sessions whose project is the current directory",
 					},
+					&cli.BoolFlag{
+						Name:  "include-subagents",
+						Usage: "Include internal agent sessions such as Codex Auto-review guardians",
+					},
 					&cli.StringFlag{
 						Name:  "format",
 						Value: "table",
@@ -3055,8 +3059,9 @@ func parseListSessionsRequest(cmd *cli.Command) (*facade.ListSessionsRequest, er
 		return nil, err
 	}
 	req := &facade.ListSessionsRequest{
-		Limit:  cmd.Int("limit"),
-		NoSync: cmd.Bool("no-sync"),
+		Limit:            cmd.Int("limit"),
+		NoSync:           cmd.Bool("no-sync"),
+		IncludeSubagents: cmd.Bool("include-subagents"),
 	}
 	if hasUpdatedSince {
 		req.UpdatedSince = &updatedSince
