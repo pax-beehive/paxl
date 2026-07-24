@@ -98,7 +98,12 @@ func listCodexSessions(
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read codex session index: %w", err)
 	}
-	if err := readCodexRollouts(ctx, filepath.Join(root, "sessions"), byID); err != nil &&
+	if err := readCodexRollouts(
+		ctx,
+		filepath.Join(root, "sessions"),
+		byID,
+		req.IncludeSubagents,
+	); err != nil &&
 		!errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read codex rollouts: %w", err)
 	}
@@ -311,6 +316,7 @@ func readCodexRollouts(
 	ctx context.Context,
 	root string,
 	sessions map[string]*model.Session,
+	includeSubagents bool,
 ) error {
 	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
@@ -328,6 +334,12 @@ func readCodexRollouts(
 			return nil
 		}
 		id := "codex:" + meta.Payload.ID
+		if !includeSubagents && meta.Payload.ThreadSource == "subagent" {
+			// Index entries do not expose the thread source, so remove a matching
+			// cached entry once its rollout identifies it as an internal thread.
+			delete(sessions, id)
+			return nil
+		}
 		session := sessions[id]
 		if session == nil {
 			session = &model.Session{ID: id, Agent: model.AgentNameCodex, NativeID: meta.Payload.ID}

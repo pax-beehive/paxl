@@ -135,13 +135,14 @@ func (s *LocalSessionsSuite) TestListCodexSessionsPrefersStructuredUserMessageEv
 	s.Equal("Use a structured source for Codex titles.", resp.Sessions[0].Title)
 }
 
-func (s *LocalSessionsSuite) TestListCodexSessionsUsesParentThreadNameForSubagentRollout() {
+func (s *LocalSessionsSuite) TestListCodexSessionsHidesSubagentRolloutsByDefault() {
 	codexHome := s.T().TempDir()
 	s.T().Setenv("CODEX_HOME", codexHome)
 	s.Require().NoError(os.WriteFile(
 		filepath.Join(codexHome, "session_index.jsonl"),
 		[]byte(
-			`{"id":"parent-thread","thread_name":"Fix session titles","updated_at":"2026-06-20T01:00:00Z"}`+"\n",
+			`{"id":"parent-thread","thread_name":"Fix session titles","updated_at":"2026-06-20T01:00:00Z"}`+"\n"+
+				`{"id":"child-thread","thread_name":"Internal review","updated_at":"2026-06-20T02:00:00Z"}`+"\n",
 		),
 		0o600,
 	))
@@ -157,6 +158,38 @@ func (s *LocalSessionsSuite) TestListCodexSessionsUsesParentThreadNameForSubagen
 	))
 
 	resp, err := listCodexSessions(context.Background(), &ListSessionsRequest{})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Sessions, 1)
+	for _, session := range resp.Sessions {
+		s.NotEqual("child-thread", session.NativeID)
+	}
+	s.Equal("parent-thread", resp.Sessions[0].NativeID)
+}
+
+func (s *LocalSessionsSuite) TestListCodexSessionsIncludesSubagentRolloutsWhenRequested() {
+	codexHome := s.T().TempDir()
+	s.T().Setenv("CODEX_HOME", codexHome)
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(codexHome, "session_index.jsonl"),
+		[]byte(
+			`{"id":"parent-thread","thread_name":"Fix session titles","updated_at":"2026-06-20T01:00:00Z"}`+"\n",
+		),
+		0o600,
+	))
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "06", "20")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-test-child-thread.jsonl"),
+		[]byte(
+			`{"type":"session_meta","payload":{"id":"child-thread","session_id":"parent-thread","parent_thread_id":"parent-thread","timestamp":"2026-06-20T02:00:00Z","cwd":"/tmp/project","source":{"subagent":{"other":"guardian"}},"thread_source":"subagent"}}`+"\n",
+		),
+		0o600,
+	))
+
+	resp, err := listCodexSessions(context.Background(), &ListSessionsRequest{
+		IncludeSubagents: true,
+	})
 
 	s.Require().NoError(err)
 	s.Require().Len(resp.Sessions, 2)

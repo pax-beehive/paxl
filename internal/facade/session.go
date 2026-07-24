@@ -23,11 +23,12 @@ type SessionFacade struct {
 }
 
 type ListSessionsRequest struct {
-	Agents       []model.AgentName
-	UpdatedSince *time.Time
-	ProjectDir   string
-	NoSync       bool
-	Limit        int
+	Agents           []model.AgentName
+	UpdatedSince     *time.Time
+	ProjectDir       string
+	NoSync           bool
+	IncludeSubagents bool
+	Limit            int
 }
 
 type ListSessionsResponse struct {
@@ -286,7 +287,13 @@ func (f *SessionFacade) syncSessions(
 	}
 	var synced []*model.Session
 	for _, agent := range agents {
-		sessions, err := f.syncAgentSessions(ctx, agent, req.Limit, option)
+		sessions, err := f.syncAgentSessions(
+			ctx,
+			agent,
+			req.Limit,
+			req.IncludeSubagents,
+			option,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -471,6 +478,7 @@ func (f *SessionFacade) syncAgentSessions(
 	ctx context.Context,
 	agent model.AgentName,
 	limit int,
+	includeSubagents bool,
 	option *Option,
 ) ([]*model.Session, error) {
 	adapter, err := f.registry.Lookup(ctx, &adaptor.LookupRequest{Name: agent})
@@ -479,7 +487,10 @@ func (f *SessionFacade) syncAgentSessions(
 	}
 	sessions, err := adapter.Adapter.ListSessions(
 		ctx,
-		&adaptor.ListSessionsRequest{Limit: limit},
+		&adaptor.ListSessionsRequest{
+			Limit:            limit,
+			IncludeSubagents: includeSubagents,
+		},
 		adaptor.WithVerboseWriter(option.VerboseWriter),
 	)
 	if err != nil {
