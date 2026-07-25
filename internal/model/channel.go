@@ -1,11 +1,24 @@
 package model
 
+import (
+	"fmt"
+	"strings"
+)
+
 type ChannelKind string
 
 const (
 	ChannelKindUnknown ChannelKind = ""
 	ChannelKindOnPrem  ChannelKind = "onprem"
 )
+
+func ParseChannelKind(raw string) (ChannelKind, error) {
+	kind := ChannelKind(strings.TrimSpace(strings.ToLower(raw)))
+	if kind != ChannelKindOnPrem {
+		return ChannelKindUnknown, fmt.Errorf("parse channel kind %q: unsupported kind", raw)
+	}
+	return kind, nil
+}
 
 type ChannelProfile struct {
 	ProfileID    string      `json:"profile_id"`

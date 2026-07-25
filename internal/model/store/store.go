@@ -166,6 +166,18 @@ type GetAuthCredentialResponse struct {
 
 type DeleteAuthCredentialResponse struct{}
 
+type SaveDeviceCredentialRequest struct {
+	Credential *model.DeviceCredential
+}
+
+type SaveDeviceCredentialResponse struct {
+	Credential *model.DeviceCredential
+}
+
+type GetDeviceCredentialResponse struct {
+	Credential *model.DeviceCredential
+}
+
 type SaveChannelProfileRequest struct {
 	Profile *model.ChannelProfile
 }
@@ -237,6 +249,10 @@ func Open(ctx context.Context, req *OpenRequest) (*OpenResponse, error) {
 	if err := migrate(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate sqlite database: %w", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("secure sqlite database: %w", err)
 	}
 	return &OpenResponse{Store: &Store{db: db}}, nil
 }
@@ -353,6 +369,109 @@ func (s *Store) DeleteAuthCredential(ctx context.Context) (*DeleteAuthCredential
 		return nil, fmt.Errorf("delete auth credential: %w", err)
 	}
 	return &DeleteAuthCredentialResponse{}, nil
+}
+
+func (s *Store) SaveDeviceCredential(
+	ctx context.Context,
+	req *SaveDeviceCredentialRequest,
+) (*SaveDeviceCredentialResponse, error) {
+	if req == nil || req.Credential == nil {
+		return nil, fmt.Errorf("save device credential: credential is required")
+	}
+	credential := req.Credential
+	credential.URL = strings.TrimRight(strings.TrimSpace(credential.URL), "/")
+	credential.DeviceName = strings.TrimSpace(credential.DeviceName)
+	credential.ProvisionedAgents = uniqueNonEmptyStrings(credential.ProvisionedAgents)
+	credential.ProvisionedCount = len(credential.ProvisionedAgents)
+	if credential.URL == "" || credential.APIKey == "" || credential.DeviceName == "" ||
+		credential.CredentialID == "" || credential.UserID == "" ||
+		credential.Status == model.DeviceStatusUnknown {
+		return nil, fmt.Errorf(
+			"save device credential: url, api key, device name, credential id, user id, and status are required",
+		)
+	}
+	permissions, err := json.Marshal(credential.Permissions)
+	if err != nil {
+		return nil, fmt.Errorf("encode device credential permissions: %w", err)
+	}
+	provisionedAgents, err := json.Marshal(credential.ProvisionedAgents)
+	if err != nil {
+		return nil, fmt.Errorf("encode device provisioned agents: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if credential.CreatedAt == "" {
+		_ = s.db.QueryRowContext(
+			ctx,
+			`SELECT created_at FROM device_credentials WHERE id = 'default'`,
+		).Scan(&credential.CreatedAt)
+		if credential.CreatedAt == "" {
+			credential.CreatedAt = now
+		}
+	}
+	credential.UpdatedAt = now
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO device_credentials (
+			id, url, api_key, ca_file, device_name, credential_id, user_id,
+			permissions_json, provisioned_agents_json, status, created_at, updated_at
+		) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			url = excluded.url, api_key = excluded.api_key, ca_file = excluded.ca_file,
+			device_name = excluded.device_name, credential_id = excluded.credential_id,
+			user_id = excluded.user_id, permissions_json = excluded.permissions_json,
+			provisioned_agents_json = excluded.provisioned_agents_json,
+			status = excluded.status, updated_at = excluded.updated_at
+	`, credential.URL, credential.APIKey, credential.CAFile, credential.DeviceName,
+		credential.CredentialID, credential.UserID, string(permissions), string(provisionedAgents),
+		credential.Status, credential.CreatedAt, credential.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("save device credential: %w", err)
+	}
+	return &SaveDeviceCredentialResponse{Credential: credential}, nil
+}
+
+func (s *Store) GetDeviceCredential(ctx context.Context) (*GetDeviceCredentialResponse, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT url, api_key, ca_file, device_name, credential_id, user_id,
+			permissions_json, provisioned_agents_json, status, created_at, updated_at
+		FROM device_credentials
+		WHERE id = 'default'
+	`)
+	credential := &model.DeviceCredential{}
+	var permissions string
+	var provisionedAgents string
+	var status string
+	err := row.Scan(
+		&credential.URL,
+		&credential.APIKey,
+		&credential.CAFile,
+		&credential.DeviceName,
+		&credential.CredentialID,
+		&credential.UserID,
+		&permissions,
+		&provisionedAgents,
+		&status,
+		&credential.CreatedAt,
+		&credential.UpdatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return &GetDeviceCredentialResponse{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get device credential: %w", err)
+	}
+	if err := json.Unmarshal([]byte(permissions), &credential.Permissions); err != nil {
+		return nil, fmt.Errorf("decode device credential permissions: %w", err)
+	}
+	if err := json.Unmarshal([]byte(provisionedAgents), &credential.ProvisionedAgents); err != nil {
+		return nil, fmt.Errorf("decode device provisioned agents: %w", err)
+	}
+	credential.ProvisionedAgents = uniqueNonEmptyStrings(credential.ProvisionedAgents)
+	credential.ProvisionedCount = len(credential.ProvisionedAgents)
+	credential.Status, err = model.ParseDeviceStatus(status)
+	if err != nil {
+		return nil, fmt.Errorf("decode device credential status: %w", err)
+	}
+	return &GetDeviceCredentialResponse{Credential: credential}, nil
 }
 
 func (s *Store) SaveChannelProfile(
@@ -1247,6 +1366,21 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL
 	);
+
+	CREATE TABLE IF NOT EXISTS device_credentials (
+		id TEXT PRIMARY KEY,
+		url TEXT NOT NULL,
+		api_key TEXT NOT NULL,
+		ca_file TEXT NOT NULL DEFAULT '',
+		device_name TEXT NOT NULL,
+		credential_id TEXT NOT NULL,
+		user_id TEXT NOT NULL,
+		permissions_json TEXT NOT NULL DEFAULT '[]',
+		provisioned_agents_json TEXT NOT NULL DEFAULT '[]',
+		status TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	);
 	`)
 	if err != nil {
 		return err
@@ -1322,6 +1456,23 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+func uniqueNonEmptyStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	unique := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		unique = append(unique, value)
+	}
+	return unique
 }
 
 func upsertSession(

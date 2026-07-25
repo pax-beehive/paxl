@@ -512,7 +512,36 @@ paxl outbox get <envelope-id>
 
 默认 envelope channel 仍然是 PAX Manager。single-Team Team Memory 可以作为独立的
 credential-bound channel 连接；它的凭据和 Agent identity 不会复用或覆盖 manager
-登录状态。建议通过环境变量输入一次性 enrollment token，避免写入 shell history：
+登录状态。
+
+当 Team Memory 部署支持 device-scoped provisioning 时，一台机器只需接入一次，
+之后可直接为多个 Agent 创建独立 channel profile，无需再次返回 Portal：
+
+```sh
+paxl device connect onprem --url https://memory.internal \
+  --device-name todd-macbook-air \
+  --enrollment-token "$PAXL_DEVICE_ENROLLMENT_TOKEN"
+paxl device status
+
+paxl channel connect onprem --agent personal-codex
+paxl channel connect onprem --agent personal-claude
+```
+
+Device credential 是本机唯一的长期供应秘密。paxl 将它与 channel profile 存在同一
+SQLite 凭证区，并把数据库文件权限设为 `0600`。对同一个 `--agent` 重复执行会轮换
+Agent credential 并更新原 profile；原有 enrollment-token 流程保持兼容。
+
+paxm 等本机集成可以通过以下 seam 获取一次性 Agent credential：
+
+```sh
+paxl device provision --agent personal-codex --json
+```
+
+该命令只把 secret JSON 写到 stdout；调用方使用其中的 `url`、`api_key` 和
+`user_id`，不得记录 stdout。
+
+不支持 device provisioning 的部署继续使用既有 Agent enrollment 流程。建议通过
+环境变量输入一次性 enrollment token，避免写入 shell history：
 
 ```sh
 read -rs PAXL_ENROLLMENT_TOKEN

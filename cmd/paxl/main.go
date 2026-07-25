@@ -113,7 +113,8 @@ func newCommandWithDiagnostics(
 			newLoginCommand(stdout),
 			newWhoamiCommand(stdout),
 			newLogoutCommand(stdout),
-			newChannelCommand(stdout),
+			newDeviceCommand(stdout, stderr, diagnostics),
+			newChannelCommand(stdout, stderr, diagnostics),
 			newNodeCommand(stdout),
 			newDaemonCommand(stdout),
 			newSetupCommand(stdout),
@@ -132,7 +133,100 @@ func newCommandWithDiagnostics(
 	}
 }
 
-func newChannelCommand(stdout io.Writer) *cli.Command {
+func newDeviceCommand(
+	stdout io.Writer,
+	stderr io.Writer,
+	diagnostics io.Writer,
+) *cli.Command {
+	formatFlag := func() cli.Flag {
+		return &cli.StringFlag{
+			Name: "format", Value: "table", Usage: "Output format: table or jsonl",
+		}
+	}
+	return &cli.Command{
+		Name: "device", Usage: "Manage the local on-prem device credential",
+		Commands: []*cli.Command{
+			{
+				Name: "connect", Usage: "Exchange a device enrollment token",
+				ArgsUsage: "onprem",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name: "url", Usage: "Team Memory origin",
+					},
+					&cli.StringFlag{
+						Name: "device-name", Usage: "Human-readable device name", Required: true,
+					},
+					&cli.StringFlag{
+						Name:     "enrollment-token",
+						Usage:    "One-time device enrollment token",
+						Required: true,
+						Sources: cli.EnvVars(
+							"PAXL_DEVICE_ENROLLMENT_TOKEN",
+							"PAXL_ENROLLMENT_TOKEN",
+						),
+					},
+					&cli.StringFlag{
+						Name:  "ca-file",
+						Usage: "PEM CA bundle to add to system trust for this device",
+					},
+					&cli.BoolFlag{
+						Name:  "allow-tailnet-http",
+						Usage: "Allow cleartext HTTP for a confirmed Tailscale IP address",
+					},
+					&cli.BoolFlag{Name: "verbose", Usage: "Print device connection details"},
+					formatFlag(),
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return deviceConnect(ctx, cmd, stdout, stderr, diagnostics)
+				},
+			},
+			{
+				Name: "status", Usage: "Show the local device and provisioned Agent count",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "verbose", Usage: "Print device status details"},
+					formatFlag(),
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return deviceStatus(ctx, cmd, stdout, stderr, diagnostics)
+				},
+			},
+			{
+				Name: "provision", Usage: "Mint an Agent credential from the local device",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name: "agent", Usage: "Agent id to provision", Required: true,
+					},
+					&cli.StringFlag{
+						Name:  "agent-type",
+						Usage: "Agent type when it cannot be inferred from --agent",
+					},
+					&cli.StringFlag{
+						Name:  "display-name",
+						Usage: "Agent display name (defaults to the Agent id)",
+					},
+					&cli.StringSliceFlag{
+						Name:  "permission",
+						Usage: "Requested Agent permission; may be repeated",
+					},
+					&cli.BoolFlag{
+						Name:  "json",
+						Usage: "Print the one-time credential as JSON for local integration",
+					},
+					&cli.BoolFlag{Name: "verbose", Usage: "Print provisioning details"},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return deviceProvision(ctx, cmd, stdout, stderr, diagnostics)
+				},
+			},
+		},
+	}
+}
+
+func newChannelCommand(
+	stdout io.Writer,
+	stderr io.Writer,
+	diagnostics io.Writer,
+) *cli.Command {
 	channelFlag := func() cli.Flag {
 		return &cli.StringFlag{Name: "channel", Value: "onprem", Usage: "Channel profile name"}
 	}
@@ -156,14 +250,24 @@ func newChannelCommand(stdout io.Writer) *cli.Command {
 						Usage: "Team Memory origin (optional for a self-describing token)",
 					},
 					&cli.StringFlag{
-						Name:     "enrollment-token",
-						Usage:    "One-time enrollment token (prefer PAXL_ENROLLMENT_TOKEN)",
-						Required: true,
-						Sources:  cli.EnvVars("PAXL_ENROLLMENT_TOKEN"),
+						Name:    "enrollment-token",
+						Usage:   "One-time enrollment token (prefer PAXL_ENROLLMENT_TOKEN)",
+						Sources: cli.EnvVars("PAXL_ENROLLMENT_TOKEN"),
+					},
+					&cli.StringFlag{
+						Name:  "agent",
+						Usage: "Agent id to provision from the local device credential",
+					},
+					&cli.StringFlag{
+						Name:  "agent-type",
+						Usage: "Agent type when it cannot be inferred from --agent",
+					},
+					&cli.StringFlag{
+						Name:  "display-name",
+						Usage: "Agent display name (defaults to the Agent id)",
 					},
 					&cli.StringFlag{
 						Name:  "profile",
-						Value: "onprem",
 						Usage: "Local channel profile name",
 					},
 					&cli.StringFlag{
@@ -179,9 +283,12 @@ func newChannelCommand(stdout io.Writer) *cli.Command {
 						Value: true,
 						Usage: "Poll this channel during user-prompt hooks",
 					},
+					&cli.BoolFlag{Name: "verbose", Usage: "Print channel connection details"},
 					formatFlag(),
 				},
-				Action: func(ctx context.Context, cmd *cli.Command) error { return channelConnect(ctx, cmd, stdout) },
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return channelConnect(ctx, cmd, stdout, stderr, diagnostics)
+				},
 			},
 			{
 				Name:   "list",
@@ -1756,34 +1863,253 @@ func logoutCommand(ctx context.Context, cmd *cli.Command, stdout io.Writer) erro
 	return renderLogout(stdout, resp, cmd.String("format"))
 }
 
-func channelConnect(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {
-	kind := strings.TrimSpace(cmd.Args().First())
-	if kind != "onprem" || cmd.Args().Len() != 1 {
-		return fmt.Errorf("connect channel: expected exactly 'onprem'")
+func channelConnect(
+	ctx context.Context,
+	cmd *cli.Command,
+	stdout io.Writer,
+	stderr io.Writer,
+	diagnostics io.Writer,
+) error {
+	req, err := parseConnectChannelRequest(cmd)
+	if err != nil {
+		return fmt.Errorf("parse channel connect request: %w", err)
 	}
 	if err := validateFormat(cmd.String("format"), "table", "jsonl"); err != nil {
-		return err
+		return fmt.Errorf("validate channel connect format: %w", err)
 	}
 	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
 	if err != nil {
 		return fmt.Errorf("open channel store: %w", err)
 	}
 	defer closeStore(opened.Store)
-	resp, err := facade.NewChannelFacade(authHTTPClient, opened.Store).
-		Connect(ctx, &facade.ConnectChannelRequest{
-			Kind: kind, Name: cmd.String("profile"), URL: cmd.String("url"),
-			EnrollmentToken: cmd.String("enrollment-token"), CAFile: cmd.String("ca-file"),
-			AutoReceive:      cmd.Bool("auto-receive"),
-			AllowTailnetHTTP: cmd.Bool("allow-tailnet-http"),
-		})
+	resp, err := facade.NewChannelFacade(authHTTPClient, opened.Store).Connect(
+		ctx,
+		req,
+		facade.WithVerboseWriter(verboseWriter(cmd, stderr, diagnostics)),
+	)
 	if err != nil {
 		return fmt.Errorf("connect channel: %w", err)
 	}
-	return renderChannelProfiles(
+	if err := renderChannelProfiles(
 		stdout,
 		[]*model.ChannelProfile{resp.Profile},
 		cmd.String("format"),
+	); err != nil {
+		return fmt.Errorf("render connected channel: %w", err)
+	}
+	return nil
+}
+
+func parseConnectChannelRequest(cmd *cli.Command) (*facade.ConnectChannelRequest, error) {
+	rawKind := strings.TrimSpace(cmd.Args().First())
+	if rawKind == "" || cmd.Args().Len() != 1 {
+		return nil, fmt.Errorf("connect channel: expected exactly 'onprem'")
+	}
+	kind, err := model.ParseChannelKind(rawKind)
+	if err != nil {
+		return nil, fmt.Errorf("connect channel kind: %w", err)
+	}
+	agentID := strings.TrimSpace(cmd.String("agent"))
+	enrollmentToken := strings.TrimSpace(cmd.String("enrollment-token"))
+	if agentID != "" && enrollmentToken != "" {
+		return nil, fmt.Errorf("--agent and --enrollment-token cannot be used together")
+	}
+	if agentID != "" &&
+		(strings.TrimSpace(cmd.String("url")) != "" ||
+			strings.TrimSpace(cmd.String("ca-file")) != "" ||
+			cmd.Bool("allow-tailnet-http")) {
+		return nil, fmt.Errorf("--agent uses the local device URL and trust settings")
+	}
+	if agentID == "" && enrollmentToken == "" {
+		return nil, fmt.Errorf("enrollment token is required unless --agent is used")
+	}
+	agentType := model.AgentNameUnknown
+	if agentID != "" {
+		rawAgentType := strings.TrimSpace(cmd.String("agent-type"))
+		if rawAgentType == "" {
+			agentType, err = inferProvisionAgentType(agentID)
+		} else {
+			agentType, err = model.ParseAgentName(rawAgentType)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("parse agent type: %w", err)
+		}
+	}
+	displayName := strings.TrimSpace(cmd.String("display-name"))
+	if displayName == "" {
+		displayName = agentID
+	}
+	return &facade.ConnectChannelRequest{
+		Kind: kind, Name: cmd.String("profile"), URL: cmd.String("url"),
+		EnrollmentToken: enrollmentToken, CAFile: cmd.String("ca-file"),
+		AgentID: agentID, DisplayName: displayName, AgentType: agentType,
+		AutoReceive:      cmd.Bool("auto-receive"),
+		AllowTailnetHTTP: cmd.Bool("allow-tailnet-http"),
+	}, nil
+}
+
+func inferProvisionAgentType(agentID string) (model.AgentName, error) {
+	normalized := strings.NewReplacer(
+		"_", "-", ".", "-", "/", "-", ":", "-",
+	).Replace(strings.ToLower(strings.TrimSpace(agentID)))
+	parts := strings.Split(normalized, "-")
+	if len(parts) > 0 {
+		if agent, err := model.ParseAgentName(parts[len(parts)-1]); err == nil {
+			return agent, nil
+		}
+	}
+	return model.AgentNameUnknown, fmt.Errorf(
+		"agent type cannot be inferred from %q; pass --agent-type",
+		agentID,
 	)
+}
+
+func deviceConnect(
+	ctx context.Context,
+	cmd *cli.Command,
+	stdout io.Writer,
+	stderr io.Writer,
+	diagnostics io.Writer,
+) error {
+	rawKind := strings.TrimSpace(cmd.Args().First())
+	if rawKind == "" || cmd.Args().Len() != 1 {
+		return fmt.Errorf("connect device: expected exactly 'onprem'")
+	}
+	kind, err := model.ParseChannelKind(rawKind)
+	if err != nil {
+		return fmt.Errorf("parse device connect kind: %w", err)
+	}
+	if err := validateFormat(cmd.String("format"), "table", "jsonl"); err != nil {
+		return fmt.Errorf("validate device connect format: %w", err)
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open device store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	resp, err := facade.NewDeviceFacade(authHTTPClient, opened.Store).Connect(
+		ctx,
+		&facade.ConnectDeviceRequest{
+			Kind: kind, URL: cmd.String("url"), DeviceName: cmd.String("device-name"),
+			EnrollmentToken: cmd.String("enrollment-token"), CAFile: cmd.String("ca-file"),
+			AllowTailnetHTTP: cmd.Bool("allow-tailnet-http"),
+		},
+		facade.WithVerboseWriter(verboseWriter(cmd, stderr, diagnostics)),
+	)
+	if err != nil {
+		return fmt.Errorf("connect device: %w", err)
+	}
+	if err := renderDevice(stdout, resp.Device, cmd.String("format")); err != nil {
+		return fmt.Errorf("render connected device: %w", err)
+	}
+	return nil
+}
+
+func deviceStatus(
+	ctx context.Context,
+	cmd *cli.Command,
+	stdout io.Writer,
+	stderr io.Writer,
+	diagnostics io.Writer,
+) error {
+	if err := validateFormat(cmd.String("format"), "table", "jsonl"); err != nil {
+		return fmt.Errorf("validate device status format: %w", err)
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open device store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	resp, err := facade.NewDeviceFacade(authHTTPClient, opened.Store).Status(
+		ctx,
+		&facade.DeviceStatusRequest{},
+		facade.WithVerboseWriter(verboseWriter(cmd, stderr, diagnostics)),
+	)
+	if err != nil {
+		return fmt.Errorf("get device status: %w", err)
+	}
+	if err := renderDevice(stdout, resp.Device, cmd.String("format")); err != nil {
+		return fmt.Errorf("render device status: %w", err)
+	}
+	return nil
+}
+
+func deviceProvision(
+	ctx context.Context,
+	cmd *cli.Command,
+	stdout io.Writer,
+	stderr io.Writer,
+	diagnostics io.Writer,
+) error {
+	if !cmd.Bool("json") {
+		return fmt.Errorf("provision device agent: --json is required")
+	}
+	agentID := strings.TrimSpace(cmd.String("agent"))
+	rawAgentType := strings.TrimSpace(cmd.String("agent-type"))
+	var agentType model.AgentName
+	var err error
+	if rawAgentType == "" {
+		agentType, err = inferProvisionAgentType(agentID)
+	} else {
+		agentType, err = model.ParseAgentName(rawAgentType)
+	}
+	if err != nil {
+		return fmt.Errorf("parse provisioned agent type: %w", err)
+	}
+	displayName := strings.TrimSpace(cmd.String("display-name"))
+	if displayName == "" {
+		displayName = agentID
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open device store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	resp, err := facade.NewDeviceFacade(authHTTPClient, opened.Store).Provision(
+		ctx,
+		&facade.ProvisionDeviceAgentRequest{
+			AgentID: agentID, DisplayName: displayName, AgentType: agentType,
+			Permissions: cmd.StringSlice("permission"),
+		},
+		facade.WithVerboseWriter(verboseWriter(cmd, stderr, diagnostics)),
+	)
+	if err != nil {
+		return fmt.Errorf("provision device agent: %w", err)
+	}
+	// #nosec G117 -- this command is the explicit local integration seam whose
+	// contract requires the one-time credential on stdout; it is never logged.
+	if err := json.NewEncoder(stdout).Encode(resp); err != nil {
+		return fmt.Errorf("encode provisioned device agent credential: %w", err)
+	}
+	return nil
+}
+
+func renderDevice(
+	stdout io.Writer,
+	device *model.DeviceCredential,
+	format string,
+) error {
+	if format == "jsonl" {
+		if err := json.NewEncoder(stdout).Encode(device); err != nil {
+			return fmt.Errorf("encode device: %w", err)
+		}
+		return nil
+	}
+	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "DEVICE\tURL\tUSER\tPROVISIONED\tSTATUS")
+	_, _ = fmt.Fprintf(
+		w,
+		"%s\t%s\t%s\t%d\t%s\n",
+		device.DeviceName,
+		device.URL,
+		device.UserID,
+		device.ProvisionedCount,
+		device.Status,
+	)
+	if err := w.Flush(); err != nil {
+		return fmt.Errorf("flush device table: %w", err)
+	}
+	return nil
 }
 
 func channelList(ctx context.Context, cmd *cli.Command, stdout io.Writer) error {

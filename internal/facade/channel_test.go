@@ -67,6 +67,85 @@ func TestChannelConnectExchangesEnrollmentOnceAndStoresVerifiedIdentity(t *testi
 	require.Equal(t, "tm_key_secret", stored.Profile.APIKey)
 }
 
+func TestChannelConnectWithAgentUsesDeviceCredentialAndCreatesNamedProfile(t *testing.T) {
+	ctx := context.Background()
+	opened, err := store.Open(
+		ctx,
+		&store.OpenRequest{Path: filepath.Join(t.TempDir(), "paxl.sqlite")},
+	)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, opened.Store.Close()) }()
+	_, err = opened.Store.SaveDeviceCredential(ctx, &store.SaveDeviceCredentialRequest{
+		Credential: &model.DeviceCredential{
+			URL: "https://memory.internal", APIKey: "tm_key_device",
+			DeviceName: "todd-macbook-air", CredentialID: "cred-device",
+			UserID: "usr-1", Permissions: []string{"agent_provision"},
+			Status: model.DeviceStatusConnected,
+		},
+	})
+	require.NoError(t, err)
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/v1/device/agent-provisions":
+			require.Equal(t, "Bearer tm_key_device", req.Header.Get("Authorization"))
+			return jsonResponse(
+				`{"api_key":"tm_key_codex","credential":{"credential_id":"cred-codex","agent_id":"personal-codex","user_id":"usr-1","permissions":["channel_send","channel_receive"]}}`,
+			), nil
+		case "/v1/agent-identity":
+			require.Equal(t, "Bearer tm_key_codex", req.Header.Get("Authorization"))
+			return jsonResponse(
+				`{"credential_id":"cred-codex","agent_id":"personal-codex","user_id":"usr-1","permissions":["channel_send","channel_receive"]}`,
+			), nil
+		default:
+			return nil, fmt.Errorf("unexpected request %s", req.URL.Path)
+		}
+	})
+
+	connected, err := NewChannelFacade(client, opened.Store).Connect(
+		ctx,
+		&ConnectChannelRequest{
+			Kind: "onprem", AgentID: "personal-codex",
+			DisplayName: "personal-codex", AgentType: "codex", AutoReceive: true,
+		},
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, "personal-codex", connected.Profile.Name)
+	require.Equal(t, "personal-codex", connected.Profile.AgentID)
+	require.Equal(t, "usr-1", connected.Profile.UserID)
+	stored, err := opened.Store.GetChannelProfile(
+		ctx,
+		&store.GetChannelProfileRequest{Name: "personal-codex"},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "tm_key_codex", stored.Profile.APIKey)
+}
+
+func TestChannelConnectWithAgentRequiresConnectedDevice(t *testing.T) {
+	opened, err := store.Open(
+		context.Background(),
+		&store.OpenRequest{Path: filepath.Join(t.TempDir(), "paxl.sqlite")},
+	)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, opened.Store.Close()) }()
+	requests := 0
+	client := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		requests++
+		return nil, fmt.Errorf("must not request without a device credential")
+	})
+
+	_, err = NewChannelFacade(client, opened.Store).Connect(
+		context.Background(),
+		&ConnectChannelRequest{
+			Kind: "onprem", AgentID: "personal-codex",
+			DisplayName: "personal-codex", AgentType: "codex",
+		},
+	)
+
+	require.ErrorContains(t, err, "device is not connected")
+	require.Zero(t, requests)
+}
+
 func TestChannelConnectUsesOriginFromSelfDescribingEnrollmentToken(t *testing.T) {
 	ctx := context.Background()
 	opened, err := store.Open(

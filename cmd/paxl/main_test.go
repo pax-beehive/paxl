@@ -894,6 +894,156 @@ func (s *CommandSuite) TestChannelConnectStoresCredentialWithoutPrintingSecrets(
 	s.Equal("tm_key_secret", stored.Profile.APIKey)
 }
 
+func (s *CommandSuite) TestDeviceConnectStoresCredentialWithoutPrintingSecret() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	oldClient := authHTTPClient
+	authHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		s.Equal("/v1/agent-enrollments/exchange", req.URL.Path)
+		var body map[string]any
+		s.Require().NoError(json.NewDecoder(req.Body).Decode(&body))
+		s.Equal("todd-macbook-air", body["device_name"])
+		return commandJSONResponse(
+			`{"credential_id":"cred-device","api_key":"tm_key_device","user_id":"usr-1","permissions":["agent_provision"]}`,
+		), nil
+	})
+	s.T().Cleanup(func() { authHTTPClient = oldClient })
+
+	err := run(context.Background(), []string{
+		"--db", dbPath, "device", "connect", "onprem",
+		"--url", "https://memory.internal",
+		"--device-name", "todd-macbook-air",
+		"--enrollment-token", "tm_enroll_device",
+		"--format", "jsonl",
+	}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"device_name":"todd-macbook-air"`)
+	s.NotContains(s.stdout.String(), "tm_key_device")
+	s.NotContains(s.stdout.String(), "tm_enroll_device")
+}
+
+func (s *CommandSuite) TestDeviceStatusDisplaysLocalProvisionedAgentCount() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	_, err = opened.Store.SaveDeviceCredential(
+		context.Background(),
+		&store.SaveDeviceCredentialRequest{Credential: &model.DeviceCredential{
+			URL: "https://memory.internal", APIKey: "tm_key_device",
+			DeviceName: "todd-macbook-air", CredentialID: "cred-device",
+			UserID: "usr-1", Permissions: []string{"agent_provision"},
+			ProvisionedAgents: []string{"personal-codex", "personal-claude"},
+			Status:            model.DeviceStatusConnected,
+		}},
+	)
+	s.Require().NoError(err)
+	s.Require().NoError(opened.Store.Close())
+
+	err = run(context.Background(), []string{
+		"--db", dbPath, "device", "status",
+	}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "todd-macbook-air")
+	s.Contains(s.stdout.String(), "https://memory.internal")
+	s.Contains(s.stdout.String(), "2")
+	s.Contains(s.stdout.String(), "connected")
+	s.NotContains(s.stdout.String(), "tm_key_device")
+}
+
+func (s *CommandSuite) TestChannelConnectWithAgentProvisionsFromLocalDevice() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	_, err = opened.Store.SaveDeviceCredential(
+		context.Background(),
+		&store.SaveDeviceCredentialRequest{Credential: &model.DeviceCredential{
+			URL: "https://memory.internal", APIKey: "tm_key_device",
+			DeviceName: "todd-macbook-air", CredentialID: "cred-device",
+			UserID: "usr-1", Permissions: []string{"agent_provision"},
+			Status: model.DeviceStatusConnected,
+		}},
+	)
+	s.Require().NoError(err)
+	s.Require().NoError(opened.Store.Close())
+	oldClient := authHTTPClient
+	authHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/v1/device/agent-provisions":
+			var body map[string]any
+			s.Require().NoError(json.NewDecoder(req.Body).Decode(&body))
+			s.Equal("personal-codex", body["agent_id"])
+			s.Equal("codex", body["agent_type"])
+			return commandJSONResponse(
+				`{"api_key":"tm_key_codex","credential":{"credential_id":"cred-codex","agent_id":"personal-codex","user_id":"usr-1","permissions":["channel_send","channel_receive"]}}`,
+			), nil
+		case "/v1/agent-identity":
+			s.Equal("Bearer tm_key_codex", req.Header.Get("Authorization"))
+			return commandJSONResponse(
+				`{"credential_id":"cred-codex","agent_id":"personal-codex","user_id":"usr-1","permissions":["channel_send","channel_receive"]}`,
+			), nil
+		default:
+			return nil, fmt.Errorf("unexpected request %s", req.URL.Path)
+		}
+	})
+	s.T().Cleanup(func() { authHTTPClient = oldClient })
+
+	err = run(context.Background(), []string{
+		"--db", dbPath, "channel", "connect", "onprem",
+		"--agent", "personal-codex", "--format", "jsonl",
+	}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"name":"personal-codex"`)
+	s.NotContains(s.stdout.String(), "tm_key_codex")
+}
+
+func (s *CommandSuite) TestDeviceProvisionJSONPrintsOneTimeCredentialToStdout() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	_, err = opened.Store.SaveDeviceCredential(
+		context.Background(),
+		&store.SaveDeviceCredentialRequest{Credential: &model.DeviceCredential{
+			URL: "https://memory.internal", APIKey: "tm_key_device",
+			DeviceName: "todd-macbook-air", CredentialID: "cred-device",
+			UserID: "usr-1", Permissions: []string{"agent_provision"},
+			Status: model.DeviceStatusConnected,
+		}},
+	)
+	s.Require().NoError(err)
+	s.Require().NoError(opened.Store.Close())
+	oldClient := authHTTPClient
+	authHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/v1/device/agent-provisions":
+			return commandJSONResponse(
+				`{"api_key":"tm_key_codex","credential":{"credential_id":"cred-codex","agent_id":"personal-codex","user_id":"usr-1","permissions":["observe","recall"]}}`,
+			), nil
+		case "/v1/agent-identity":
+			s.Equal("Bearer tm_key_codex", req.Header.Get("Authorization"))
+			return commandJSONResponse(
+				`{"credential_id":"cred-codex","agent_id":"personal-codex","user_id":"usr-1","permissions":["observe","recall"]}`,
+			), nil
+		default:
+			return nil, fmt.Errorf("unexpected request %s", req.URL.Path)
+		}
+	})
+	s.T().Cleanup(func() { authHTTPClient = oldClient })
+
+	err = run(context.Background(), []string{
+		"--db", dbPath, "device", "provision",
+		"--agent", "personal-codex", "--json",
+	}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	s.JSONEq(
+		`{"url":"https://memory.internal","api_key":"tm_key_codex","agent_id":"personal-codex","user_id":"usr-1","credential_id":"cred-codex","permissions":["observe","recall"]}`,
+		s.stdout.String(),
+	)
+	s.Empty(s.stderr.String())
+}
+
 func (s *CommandSuite) TestChannelConnectAcceptsSelfDescribingTokenWithoutURL() {
 	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
 	origin := "https://memory.internal"

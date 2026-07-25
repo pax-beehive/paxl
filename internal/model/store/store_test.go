@@ -153,6 +153,44 @@ func (s *StoreSuite) TestSaveAuthCredentialPreservesExistingCreatedAtWhenUpdatin
 	s.Equal("paxu_second", got.Credential.APIKey)
 }
 
+func (s *StoreSuite) TestDeviceCredentialLifecycleRedactsSecretAndTracksUniqueAgents() {
+	initial, err := s.store.GetDeviceCredential(s.ctx)
+	s.Require().NoError(err)
+	s.Nil(initial.Credential)
+
+	saved, err := s.store.SaveDeviceCredential(s.ctx, &store.SaveDeviceCredentialRequest{
+		Credential: &model.DeviceCredential{
+			URL:               "https://memory.internal/",
+			APIKey:            "tm_key_device_secret",
+			DeviceName:        "todd-macbook-air",
+			CredentialID:      "cred-device-1",
+			UserID:            "usr-1",
+			Permissions:       []string{"agent_provision"},
+			ProvisionedAgents: []string{"personal-codex", "personal-codex"},
+			Status:            model.DeviceStatusConnected,
+		},
+	})
+	s.Require().NoError(err)
+	s.Equal("https://memory.internal", saved.Credential.URL)
+	s.Equal([]string{"personal-codex"}, saved.Credential.ProvisionedAgents)
+	s.Equal(1, saved.Credential.ProvisionedCount)
+
+	encoded, err := json.Marshal(saved.Credential)
+	s.Require().NoError(err)
+	s.NotContains(string(encoded), "tm_key_device_secret")
+
+	got, err := s.store.GetDeviceCredential(s.ctx)
+	s.Require().NoError(err)
+	s.Require().NotNil(got.Credential)
+	s.Equal("tm_key_device_secret", got.Credential.APIKey)
+	s.Equal("todd-macbook-air", got.Credential.DeviceName)
+	s.Equal([]string{"personal-codex"}, got.Credential.ProvisionedAgents)
+
+	info, err := os.Stat(s.path)
+	s.Require().NoError(err)
+	s.Equal(os.FileMode(0o600), info.Mode().Perm())
+}
+
 func (s *StoreSuite) TestChannelProfilesCoexistWithManagerCredentialAndRedactSecrets() {
 	_, err := s.store.SaveAuthCredential(s.ctx, &store.SaveAuthCredentialRequest{
 		Credential: &model.AuthCredential{
