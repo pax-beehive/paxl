@@ -560,8 +560,39 @@ paxl outbox get <envelope-id>
 The default envelope channel remains PAX Manager. A single-Team Team Memory
 installation can be connected as an independent credential-bound channel; its
 credential and Agent identity are stored separately from manager login state.
-Prefer an environment variable so the one-time enrollment token is not written
-to shell history:
+When the Team Memory deployment supports device-scoped provisioning, connect
+the machine once and mint per-Agent channel profiles without returning to the
+Portal:
+
+```sh
+paxl device connect onprem --url https://memory.internal \
+  --device-name todd-macbook-air \
+  --enrollment-token "$PAXL_DEVICE_ENROLLMENT_TOKEN"
+paxl device status
+
+paxl channel connect onprem --agent personal-codex
+paxl channel connect onprem --agent personal-claude
+```
+
+The device credential is the machine's long-lived provisioning secret. Paxl
+keeps it in the same SQLite credential store as channel profiles and secures
+the database as mode `0600`. A repeated `--agent` provisions a rotated
+credential and updates that Agent's profile. Existing enrollment-token
+connections remain supported.
+
+Local integrations such as paxm can request a one-time Agent credential:
+
+```sh
+paxl device provision --agent personal-codex --json
+```
+
+This command writes the secret JSON only to stdout. Its `url`, `api_key`, and
+`user_id` fields are the paxm integration seam; callers must capture stdout
+without logging it.
+
+For deployments without device provisioning, use the existing Agent enrollment
+flow. Prefer an environment variable so the one-time token is not written to
+shell history:
 
 ```sh
 read -rs PAXL_ENROLLMENT_TOKEN

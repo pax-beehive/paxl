@@ -35,10 +35,13 @@ type ChannelFacade struct {
 }
 
 type ConnectChannelRequest struct {
-	Kind             string
+	Kind             model.ChannelKind
 	Name             string
 	URL              string
 	EnrollmentToken  string
+	AgentID          string
+	DisplayName      string
+	AgentType        model.AgentName
 	CAFile           string
 	AutoReceive      bool
 	AllowTailnetHTTP bool
@@ -234,15 +237,48 @@ func (f *ChannelFacade) Connect(
 	req *ConnectChannelRequest,
 	opts ...func(*Option),
 ) (*ConnectChannelResponse, error) {
-	_ = applyOptions(opts)
+	option := applyOptions(opts)
 	if req == nil {
 		return nil, fmt.Errorf("connect channel: request is required")
 	}
-	if strings.TrimSpace(req.Kind) != string(model.ChannelKindOnPrem) {
+	if req.Kind != model.ChannelKindOnPrem {
 		return nil, fmt.Errorf("connect channel: unsupported kind %q", req.Kind)
 	}
+	if strings.TrimSpace(req.AgentID) != "" {
+		if strings.TrimSpace(req.EnrollmentToken) != "" {
+			return nil, fmt.Errorf(
+				"connect channel: --agent and --enrollment-token cannot be used together",
+			)
+		}
+		if strings.TrimSpace(req.URL) != "" || strings.TrimSpace(req.CAFile) != "" ||
+			req.AllowTailnetHTTP {
+			return nil, fmt.Errorf(
+				"connect channel: --agent uses the local device URL and trust settings",
+			)
+		}
+		verbosef(option, "Provisioning channel Agent %q.", strings.TrimSpace(req.AgentID))
+		resp, err := f.connectWithDevice(ctx, req, option)
+		if err != nil {
+			return nil, fmt.Errorf("connect channel with device: %w", err)
+		}
+		return resp, nil
+	}
+	verbosef(option, "Exchanging channel enrollment.")
+	resp, err := f.connectWithEnrollment(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("connect channel with enrollment: %w", err)
+	}
+	return resp, nil
+}
+
+func (f *ChannelFacade) connectWithEnrollment(
+	ctx context.Context,
+	req *ConnectChannelRequest,
+) (*ConnectChannelResponse, error) {
 	if strings.TrimSpace(req.EnrollmentToken) == "" {
-		return nil, fmt.Errorf("connect channel: enrollment token is required")
+		return nil, fmt.Errorf(
+			"connect channel: enrollment token is required unless --agent is used",
+		)
 	}
 	origin, originFromToken, err := resolveChannelOrigin(
 		req.URL,
@@ -305,6 +341,96 @@ func (f *ChannelFacade) Connect(
 		return nil, fmt.Errorf(
 			"connect channel: enrollment was consumed and credential was saved; verify identity: %w",
 			err,
+		)
+	}
+	applyChannelIdentity(profile, identity)
+	if _, err := f.store.SaveChannelProfile(
+		ctx,
+		&store.SaveChannelProfileRequest{Profile: profile},
+	); err != nil {
+		return nil, fmt.Errorf("connect channel: save verified identity: %w", err)
+	}
+	return &ConnectChannelResponse{Profile: profile}, nil
+}
+
+func (f *ChannelFacade) connectWithDevice(
+	ctx context.Context,
+	req *ConnectChannelRequest,
+	option *Option,
+) (*ConnectChannelResponse, error) {
+	if f.store == nil {
+		return nil, fmt.Errorf("connect channel: store is required")
+	}
+	agentID := strings.TrimSpace(req.AgentID)
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = agentID
+	}
+	if err := validateChannelProfileName(name); err != nil {
+		return nil, fmt.Errorf("connect channel: %w", err)
+	}
+	permissions := []string{"channel_send", "channel_receive"}
+	provisioned, err := NewDeviceFacade(f.client, f.store).Provision(
+		ctx,
+		&ProvisionDeviceAgentRequest{
+			AgentID: agentID, DisplayName: req.DisplayName, AgentType: req.AgentType,
+			Permissions: permissions,
+		},
+		WithVerboseWriter(option.VerboseWriter),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("connect channel: %w", err)
+	}
+	device, err := f.store.GetDeviceCredential(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("connect channel: load device credential: %w", err)
+	}
+	if device.Credential == nil {
+		return nil, fmt.Errorf("connect channel: device credential disappeared after provision")
+	}
+	profileID, err := f.channelProfileID(ctx, name, provisioned.URL)
+	if err != nil {
+		return nil, fmt.Errorf("connect channel: resolve profile id: %w", err)
+	}
+	profile := &model.ChannelProfile{
+		ProfileID: profileID, Name: name, Kind: model.ChannelKindOnPrem,
+		URL: provisioned.URL, APIKey: provisioned.APIKey, CAFile: device.Credential.CAFile,
+		AgentID: provisioned.AgentID, UserID: provisioned.UserID,
+		CredentialID: provisioned.CredentialID,
+		Permissions:  append([]string(nil), provisioned.Permissions...),
+		Enabled:      true, AutoReceive: req.AutoReceive,
+	}
+	if _, err := f.store.SaveChannelProfile(
+		ctx,
+		&store.SaveChannelProfileRequest{Profile: profile},
+	); err != nil {
+		return nil, fmt.Errorf(
+			"connect channel: agent credential was minted but save profile failed: %w",
+			err,
+		)
+	}
+	if provisioned.IdentityVerified {
+		return &ConnectChannelResponse{Profile: profile}, nil
+	}
+	client, err := channelHTTPClient(f.client, profile.CAFile)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"connect channel: agent credential was saved; configure client: %w",
+			err,
+		)
+	}
+	identity, err := fetchChannelIdentity(ctx, client, profile)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"connect channel: agent credential was saved; verify identity: %w",
+			err,
+		)
+	}
+	if identity.AgentID != agentID {
+		return nil, fmt.Errorf(
+			"connect channel: provisioned identity %q does not match requested Agent %q",
+			identity.AgentID,
+			agentID,
 		)
 	}
 	applyChannelIdentity(profile, identity)

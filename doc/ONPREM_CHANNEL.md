@@ -6,6 +6,42 @@ Agent-to-Agent envelope transport. Manager remains the default when
 
 ## Connect and trust
 
+For deployments with device-scoped Agent provisioning, enroll the machine once:
+
+```sh
+read -rs PAXL_DEVICE_ENROLLMENT_TOKEN
+export PAXL_DEVICE_ENROLLMENT_TOKEN
+paxl device connect onprem --url https://memory.internal \
+  --device-name todd-macbook-air
+unset PAXL_DEVICE_ENROLLMENT_TOKEN
+
+paxl device status
+paxl channel connect onprem --agent personal-codex
+paxl channel connect onprem --agent personal-claude
+```
+
+The device credential can only provision Agent credentials. It is stored in the
+same local SQLite credential area as channel profiles, and paxl enforces mode
+`0600` on that database. Each Agent gets a separate channel profile named after
+its Agent id by default. Repeating `channel connect --agent` rotates the remote
+Agent credential and updates the existing local profile. A `409` means the
+Agent id belongs to another Device or was registered manually.
+
+Paxm and other local integrations use this explicit discovery seam:
+
+```sh
+paxl device provision --agent personal-codex --json
+```
+
+The response includes `url`, `api_key`, and `user_id`. The one-time secret is
+written only to stdout; callers must capture it without forwarding stdout to
+logs. Pass `--agent-type` when the type cannot be inferred from the Agent id,
+and repeat `--permission` to request explicit permissions.
+
+If no device credential is connected, `channel connect --agent` fails before a
+network request and directs the operator to `paxl device connect onprem`.
+Existing Agent enrollment remains unchanged:
+
 Create an Agent and one-time enrollment in the Team Memory Portal. Consume the
 token once without placing it in shell history:
 
