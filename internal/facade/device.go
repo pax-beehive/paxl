@@ -39,7 +39,7 @@ type ProvisionDeviceAgentRequest struct {
 	AgentID     string
 	DisplayName string
 	AgentType   model.AgentName
-	Permissions []string
+	Permissions []model.AgentPermission
 }
 
 type ProvisionDeviceAgentResponse struct {
@@ -225,13 +225,13 @@ func (f *DeviceFacade) Provision(
 		return nil, fmt.Errorf("provision device agent: %w", err)
 	}
 	payload := struct {
-		AgentID     string          `json:"agent_id"`
-		DisplayName string          `json:"display_name"`
-		AgentType   model.AgentName `json:"agent_type"`
-		Permissions []string        `json:"permissions,omitempty"`
+		AgentID     string                  `json:"agent_id"`
+		DisplayName string                  `json:"display_name"`
+		AgentType   model.AgentName         `json:"agent_type"`
+		Permissions []model.AgentPermission `json:"permissions,omitempty"`
 	}{
 		AgentID: agentID, DisplayName: displayName, AgentType: req.AgentType,
-		Permissions: append([]string(nil), req.Permissions...),
+		Permissions: append([]model.AgentPermission(nil), req.Permissions...),
 	}
 	var provisioned provisionDeviceAgentAPIResponse
 	err = doOnPremJSON(
@@ -310,7 +310,7 @@ func normalizeProvisionedAgentResponse(
 	responseAgentID = firstNonEmpty(responseAgentID, strings.TrimSpace(req.AgentID))
 	userID = firstNonEmpty(userID, device.UserID)
 	if len(permissions) == 0 {
-		permissions = append([]string(nil), req.Permissions...)
+		permissions = model.AgentPermissionStrings(req.Permissions)
 	}
 	if strings.TrimSpace(provisioned.APIKey) == "" || strings.TrimSpace(credentialID) == "" {
 		return nil, fmt.Errorf(

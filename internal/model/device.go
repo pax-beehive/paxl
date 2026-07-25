@@ -5,6 +5,44 @@ import (
 	"strings"
 )
 
+type AgentPermission string
+
+const (
+	AgentPermissionUnknown        AgentPermission = ""
+	AgentPermissionObserve        AgentPermission = "observe"
+	AgentPermissionSearch         AgentPermission = "search"
+	AgentPermissionGet            AgentPermission = "get"
+	AgentPermissionChannelSend    AgentPermission = "channel_send"
+	AgentPermissionChannelReceive AgentPermission = "channel_receive"
+)
+
+var supportedAgentPermissions = map[AgentPermission]struct{}{
+	AgentPermissionObserve:        {},
+	AgentPermissionSearch:         {},
+	AgentPermissionGet:            {},
+	AgentPermissionChannelSend:    {},
+	AgentPermissionChannelReceive: {},
+}
+
+func ParseAgentPermission(raw string) (AgentPermission, error) {
+	permission := AgentPermission(strings.TrimSpace(strings.ToLower(raw)))
+	if _, ok := supportedAgentPermissions[permission]; !ok {
+		return AgentPermissionUnknown, fmt.Errorf(
+			"parse agent permission %q: unsupported permission",
+			raw,
+		)
+	}
+	return permission, nil
+}
+
+func AgentPermissionStrings(permissions []AgentPermission) []string {
+	values := make([]string, 0, len(permissions))
+	for _, permission := range permissions {
+		values = append(values, string(permission))
+	}
+	return values
+}
+
 type DeviceStatus string
 
 const (

@@ -42,6 +42,7 @@ type ConnectChannelRequest struct {
 	AgentID          string
 	DisplayName      string
 	AgentType        model.AgentName
+	Permissions      []model.AgentPermission
 	CAFile           string
 	AutoReceive      bool
 	AllowTailnetHTTP bool
@@ -369,7 +370,13 @@ func (f *ChannelFacade) connectWithDevice(
 	if err := validateChannelProfileName(name); err != nil {
 		return nil, fmt.Errorf("connect channel: %w", err)
 	}
-	permissions := []string{"channel_send", "channel_receive"}
+	permissions := append([]model.AgentPermission(nil), req.Permissions...)
+	if len(permissions) == 0 {
+		permissions = []model.AgentPermission{
+			model.AgentPermissionChannelSend,
+			model.AgentPermissionChannelReceive,
+		}
+	}
 	provisioned, err := NewDeviceFacade(f.client, f.store).Provision(
 		ctx,
 		&ProvisionDeviceAgentRequest{
