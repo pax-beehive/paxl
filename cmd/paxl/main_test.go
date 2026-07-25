@@ -922,6 +922,35 @@ func (s *CommandSuite) TestDeviceConnectStoresCredentialWithoutPrintingSecret() 
 	s.NotContains(s.stdout.String(), "tm_enroll_device")
 }
 
+func (s *CommandSuite) TestDeviceStatusDisplaysLocalProvisionedAgentCount() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	_, err = opened.Store.SaveDeviceCredential(
+		context.Background(),
+		&store.SaveDeviceCredentialRequest{Credential: &model.DeviceCredential{
+			URL: "https://memory.internal", APIKey: "tm_key_device",
+			DeviceName: "todd-macbook-air", CredentialID: "cred-device",
+			UserID: "usr-1", Permissions: []string{"agent_provision"},
+			ProvisionedAgents: []string{"personal-codex", "personal-claude"},
+			Status:            model.DeviceStatusConnected,
+		}},
+	)
+	s.Require().NoError(err)
+	s.Require().NoError(opened.Store.Close())
+
+	err = run(context.Background(), []string{
+		"--db", dbPath, "device", "status",
+	}, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), "todd-macbook-air")
+	s.Contains(s.stdout.String(), "https://memory.internal")
+	s.Contains(s.stdout.String(), "2")
+	s.Contains(s.stdout.String(), "connected")
+	s.NotContains(s.stdout.String(), "tm_key_device")
+}
+
 func (s *CommandSuite) TestChannelConnectWithAgentProvisionsFromLocalDevice() {
 	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
 	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
