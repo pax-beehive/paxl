@@ -1933,7 +1933,7 @@ func parseConnectChannelRequest(cmd *cli.Command) (*facade.ConnectChannelRequest
 	}
 	permissions, err := parseAgentPermissions(rawPermissions)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse channel agent permissions: %w", err)
 	}
 	agentType := model.AgentNameUnknown
 	if agentID != "" {
@@ -1979,10 +1979,10 @@ func inferProvisionAgentType(agentID string) (model.AgentName, error) {
 
 func parseAgentPermissions(rawPermissions []string) ([]model.AgentPermission, error) {
 	permissions := make([]model.AgentPermission, 0, len(rawPermissions))
-	for _, rawPermission := range rawPermissions {
+	for index, rawPermission := range rawPermissions {
 		permission, err := model.ParseAgentPermission(rawPermission)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("parse agent permission at index %d: %w", index, err)
 		}
 		permissions = append(permissions, permission)
 	}
