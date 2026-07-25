@@ -1915,11 +1915,11 @@ func parseConnectChannelRequest(cmd *cli.Command) (*facade.ConnectChannelRequest
 	}
 	agentID := strings.TrimSpace(cmd.String("agent"))
 	enrollmentToken := strings.TrimSpace(cmd.String("enrollment-token"))
-	permissions := cmd.StringSlice("permission")
+	rawPermissions := cmd.StringSlice("permission")
 	if agentID != "" && enrollmentToken != "" {
 		return nil, fmt.Errorf("--agent and --enrollment-token cannot be used together")
 	}
-	if agentID == "" && len(permissions) > 0 {
+	if agentID == "" && len(rawPermissions) > 0 {
 		return nil, fmt.Errorf("--permission requires --agent")
 	}
 	if agentID != "" &&
@@ -1930,6 +1930,10 @@ func parseConnectChannelRequest(cmd *cli.Command) (*facade.ConnectChannelRequest
 	}
 	if agentID == "" && enrollmentToken == "" {
 		return nil, fmt.Errorf("enrollment token is required unless --agent is used")
+	}
+	permissions, err := parseAgentPermissions(rawPermissions)
+	if err != nil {
+		return nil, err
 	}
 	agentType := model.AgentNameUnknown
 	if agentID != "" {
@@ -1971,6 +1975,18 @@ func inferProvisionAgentType(agentID string) (model.AgentName, error) {
 		"agent type cannot be inferred from %q; pass --agent-type",
 		agentID,
 	)
+}
+
+func parseAgentPermissions(rawPermissions []string) ([]model.AgentPermission, error) {
+	permissions := make([]model.AgentPermission, 0, len(rawPermissions))
+	for _, rawPermission := range rawPermissions {
+		permission, err := model.ParseAgentPermission(rawPermission)
+		if err != nil {
+			return nil, err
+		}
+		permissions = append(permissions, permission)
+	}
+	return permissions, nil
 }
 
 func deviceConnect(
@@ -2069,6 +2085,10 @@ func deviceProvision(
 	if displayName == "" {
 		displayName = agentID
 	}
+	permissions, err := parseAgentPermissions(cmd.StringSlice("permission"))
+	if err != nil {
+		return fmt.Errorf("parse provisioned agent permissions: %w", err)
+	}
 	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
 	if err != nil {
 		return fmt.Errorf("open device store: %w", err)
@@ -2078,7 +2098,7 @@ func deviceProvision(
 		ctx,
 		&facade.ProvisionDeviceAgentRequest{
 			AgentID: agentID, DisplayName: displayName, AgentType: agentType,
-			Permissions: cmd.StringSlice("permission"),
+			Permissions: permissions,
 		},
 		facade.WithVerboseWriter(verboseWriter(cmd, stderr, diagnostics)),
 	)

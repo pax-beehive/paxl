@@ -1101,6 +1101,17 @@ func (s *CommandSuite) TestChannelConnectRejectsPermissionsWithoutAgent() {
 	s.ErrorContains(err, "--permission requires --agent")
 }
 
+func (s *CommandSuite) TestChannelConnectRejectsUnsupportedAgentPermission() {
+	err := run(context.Background(), []string{
+		"--db", filepath.Join(s.T().TempDir(), "paxl.sqlite"),
+		"channel", "connect", "onprem",
+		"--agent", "personal-codex",
+		"--permission", "admin",
+	}, &s.stdout, &s.stderr)
+
+	s.ErrorContains(err, `parse agent permission "admin": unsupported permission`)
+}
+
 func (s *CommandSuite) TestDeviceProvisionJSONPrintsOneTimeCredentialToStdout() {
 	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
 	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})

@@ -107,7 +107,10 @@ func TestDeviceProvisionMintsAgentCredentialAndTracksAgentOnce(t *testing.T) {
 	for range 2 {
 		provisioned, provisionErr := deviceFacade.Provision(ctx, &ProvisionDeviceAgentRequest{
 			AgentID: "personal-codex", DisplayName: "Personal Codex", AgentType: "codex",
-			Permissions: []string{"channel_send", "channel_receive"},
+			Permissions: []model.AgentPermission{
+				model.AgentPermissionChannelSend,
+				model.AgentPermissionChannelReceive,
+			},
 		})
 		require.NoError(t, provisionErr)
 		require.Equal(t, "tm_key_agent", provisioned.APIKey)
