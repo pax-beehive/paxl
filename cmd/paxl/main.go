@@ -266,6 +266,10 @@ func newChannelCommand(
 						Name:  "display-name",
 						Usage: "Agent display name (defaults to the Agent id)",
 					},
+					&cli.StringSliceFlag{
+						Name:  "permission",
+						Usage: "Requested Agent permission; may be repeated",
+					},
 					&cli.StringFlag{
 						Name:  "profile",
 						Usage: "Local channel profile name",
@@ -1911,8 +1915,12 @@ func parseConnectChannelRequest(cmd *cli.Command) (*facade.ConnectChannelRequest
 	}
 	agentID := strings.TrimSpace(cmd.String("agent"))
 	enrollmentToken := strings.TrimSpace(cmd.String("enrollment-token"))
+	permissions := cmd.StringSlice("permission")
 	if agentID != "" && enrollmentToken != "" {
 		return nil, fmt.Errorf("--agent and --enrollment-token cannot be used together")
+	}
+	if agentID == "" && len(permissions) > 0 {
+		return nil, fmt.Errorf("--permission requires --agent")
 	}
 	if agentID != "" &&
 		(strings.TrimSpace(cmd.String("url")) != "" ||
@@ -1943,6 +1951,7 @@ func parseConnectChannelRequest(cmd *cli.Command) (*facade.ConnectChannelRequest
 		Kind: kind, Name: cmd.String("profile"), URL: cmd.String("url"),
 		EnrollmentToken: enrollmentToken, CAFile: cmd.String("ca-file"),
 		AgentID: agentID, DisplayName: displayName, AgentType: agentType,
+		Permissions:      permissions,
 		AutoReceive:      cmd.Bool("auto-receive"),
 		AllowTailnetHTTP: cmd.Bool("allow-tailnet-http"),
 	}, nil

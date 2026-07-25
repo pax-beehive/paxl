@@ -974,6 +974,10 @@ func (s *CommandSuite) TestChannelConnectWithAgentProvisionsFromLocalDevice() {
 			s.Require().NoError(json.NewDecoder(req.Body).Decode(&body))
 			s.Equal("personal-codex", body["agent_id"])
 			s.Equal("codex", body["agent_type"])
+			s.Equal(
+				[]any{"channel_send", "channel_receive"},
+				body["permissions"],
+			)
 			return commandJSONResponse(
 				`{"api_key":"tm_key_codex","credential":{"credential_id":"cred-codex","agent_id":"personal-codex","user_id":"usr-1","permissions":["channel_send","channel_receive"]}}`,
 			), nil
@@ -996,6 +1000,105 @@ func (s *CommandSuite) TestChannelConnectWithAgentProvisionsFromLocalDevice() {
 	s.Require().NoError(err)
 	s.Contains(s.stdout.String(), `"name":"personal-codex"`)
 	s.NotContains(s.stdout.String(), "tm_key_codex")
+}
+
+func (s *CommandSuite) TestChannelConnectWithAgentRequestsExplicitPermissions() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	_, err = opened.Store.SaveDeviceCredential(
+		context.Background(),
+		&store.SaveDeviceCredentialRequest{Credential: &model.DeviceCredential{
+			URL: "https://memory.internal", APIKey: "tm_key_device",
+			DeviceName: "todd-macbook-air", CredentialID: "cred-device",
+			UserID: "usr-1", Permissions: []string{"agent_provision"},
+			Status: model.DeviceStatusConnected,
+		}},
+	)
+	s.Require().NoError(err)
+	s.Require().NoError(opened.Store.Close())
+	permissions := []string{
+		"observe", "search", "get", "channel_send", "channel_receive",
+	}
+	oldClient := authHTTPClient
+	authHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/v1/device/agent-provisions":
+			var body map[string]any
+			s.Require().NoError(json.NewDecoder(req.Body).Decode(&body))
+			s.Equal(
+				[]any{"observe", "search", "get", "channel_send", "channel_receive"},
+				body["permissions"],
+			)
+			return commandJSONResponse(
+				`{"api_key":"tm_key_codex","credential":{"credential_id":"cred-codex","agent_id":"personal-codex","user_id":"usr-1","permissions":["observe","search","get","channel_send","channel_receive"]}}`,
+			), nil
+		case "/v1/agent-identity":
+			s.Equal("Bearer tm_key_codex", req.Header.Get("Authorization"))
+			return commandJSONResponse(
+				`{"credential_id":"cred-codex","agent_id":"personal-codex","user_id":"usr-1","permissions":["observe","search","get","channel_send","channel_receive"]}`,
+			), nil
+		default:
+			return nil, fmt.Errorf("unexpected request %s", req.URL.Path)
+		}
+	})
+	s.T().Cleanup(func() { authHTTPClient = oldClient })
+
+	args := make([]string, 0, 9+2*len(permissions))
+	args = append(args,
+		"--db", dbPath, "channel", "connect", "onprem",
+		"--agent", "personal-codex", "--format", "jsonl",
+	)
+	for _, permission := range permissions {
+		args = append(args, "--permission", permission)
+	}
+	err = run(context.Background(), args, &s.stdout, &s.stderr)
+
+	s.Require().NoError(err)
+	s.Contains(
+		s.stdout.String(),
+		`"permissions":["observe","search","get","channel_send","channel_receive"]`,
+	)
+	s.NotContains(s.stdout.String(), "tm_key_codex")
+	opened, err = store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	defer closeStore(opened.Store)
+	stored, err := opened.Store.GetChannelProfile(
+		context.Background(),
+		&store.GetChannelProfileRequest{Name: "personal-codex"},
+	)
+	s.Require().NoError(err)
+	s.Equal("tm_key_codex", stored.Profile.APIKey)
+	s.Equal(permissions, stored.Profile.Permissions)
+}
+
+func (s *CommandSuite) TestChannelConnectRejectsPermissionsWithoutAgent() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	oldClient := authHTTPClient
+	authHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/v1/agent-enrollments/exchange":
+			return commandJSONResponse(
+				`{"credential_id":"cred-1","api_key":"tm_key_secret"}`,
+			), nil
+		case "/v1/agent-identity":
+			return commandJSONResponse(
+				`{"credential_id":"cred-1","agent_id":"personal-codex","user_id":"usr-1","permissions":["channel_send","channel_receive"]}`,
+			), nil
+		default:
+			return nil, fmt.Errorf("unexpected request %s", req.URL.Path)
+		}
+	})
+	s.T().Cleanup(func() { authHTTPClient = oldClient })
+
+	err := run(context.Background(), []string{
+		"--db", dbPath, "channel", "connect", "onprem",
+		"--url", "https://memory.internal",
+		"--enrollment-token", "tm_enroll_once",
+		"--permission", "observe",
+	}, &s.stdout, &s.stderr)
+
+	s.ErrorContains(err, "--permission requires --agent")
 }
 
 func (s *CommandSuite) TestDeviceProvisionJSONPrintsOneTimeCredentialToStdout() {
