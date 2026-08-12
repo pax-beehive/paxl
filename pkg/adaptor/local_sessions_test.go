@@ -6,10 +6,29 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pax-oss/paxl/internal/model"
 	"github.com/stretchr/testify/suite"
 )
+
+func (s *LocalSessionsSuite) TestRecentCodexRolloutPathsBoundsLimitedScans() {
+	root := s.T().TempDir()
+	base := time.Date(2026, 6, 20, 0, 0, 0, 0, time.UTC)
+	for index := 0; index < 20; index++ {
+		path := filepath.Join(root, "rollout-session-"+string(rune('a'+index))+".jsonl")
+		s.Require().NoError(os.WriteFile(path, []byte("{}\n"), 0o600))
+		stamp := base.Add(time.Duration(index) * time.Minute)
+		s.Require().NoError(os.Chtimes(path, stamp, stamp))
+	}
+
+	paths, err := recentCodexRolloutPaths(context.Background(), root, 2)
+
+	s.Require().NoError(err)
+	s.Len(paths, 8)
+	s.Contains(filepath.Base(paths[0]), "t.jsonl")
+	s.Contains(filepath.Base(paths[7]), "m.jsonl")
+}
 
 type LocalSessionsSuite struct {
 	suite.Suite

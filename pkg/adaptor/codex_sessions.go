@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -98,12 +99,7 @@ func listCodexSessions(
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read codex session index: %w", err)
 	}
-	if err := readCodexRollouts(
-		ctx,
-		filepath.Join(root, "sessions"),
-		byID,
-		req.IncludeSubagents,
-	); err != nil &&
+	if err := readCodexRollouts(ctx, filepath.Join(root, "sessions"), byID, req); err != nil &&
 		!errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read codex rollouts: %w", err)
 	}
@@ -316,29 +312,32 @@ func readCodexRollouts(
 	ctx context.Context,
 	root string,
 	sessions map[string]*model.Session,
-	includeSubagents bool,
+	req *ListSessionsRequest,
 ) error {
-	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+	limit := 0
+	includeSubagents := false
+	if req != nil {
+		limit = req.Limit
+		includeSubagents = req.IncludeSubagents
+	}
+	paths, err := recentCodexRolloutPaths(ctx, root, limit)
+	if err != nil {
+		return err
+	}
+	for _, path := range paths {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "rollout-") ||
-			!strings.HasSuffix(entry.Name(), ".jsonl") {
-			return nil
-		}
 		meta, metaErr := readCodexMeta(path)
 		if shouldSkipCodexMeta(meta, metaErr) {
-			return nil
+			continue
 		}
 		id := "codex:" + meta.Payload.ID
 		if !includeSubagents && meta.Payload.ThreadSource == "subagent" {
 			// Index entries do not expose the thread source, so remove a matching
 			// cached entry once its rollout identifies it as an internal thread.
 			delete(sessions, id)
-			return nil
+			continue
 		}
 		session := sessions[id]
 		if session == nil {
@@ -364,8 +363,57 @@ func readCodexRollouts(
 		session.ProjectID = firstNonEmpty(session.ProjectID, meta.Payload.CWD)
 		session.Status = firstNonEmpty(session.Status, "available")
 		sessions[id] = session
+	}
+	return nil
+}
+
+type codexRolloutPath struct {
+	modifiedAt time.Time
+	path       string
+}
+
+func recentCodexRolloutPaths(ctx context.Context, root string, limit int) ([]string, error) {
+	candidates := make([]codexRolloutPath, 0)
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "rollout-") ||
+			!strings.HasSuffix(entry.Name(), ".jsonl") {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		candidates = append(candidates, codexRolloutPath{modifiedAt: info.ModTime(), path: path})
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].modifiedAt.Equal(candidates[j].modifiedAt) {
+			return candidates[i].path > candidates[j].path
+		}
+		return candidates[i].modifiedAt.After(candidates[j].modifiedAt)
+	})
+
+	// A small overscan preserves room for multiple rollout files belonging to
+	// the same conversation while preventing a limited metadata query from
+	// reopening the entire Codex transcript archive.
+	maxPaths := len(candidates)
+	if limit > 0 && limit*4 < maxPaths {
+		maxPaths = limit * 4
+	}
+	paths := make([]string, maxPaths)
+	for index := range paths {
+		paths[index] = candidates[index].path
+	}
+	return paths, nil
 }
 
 func readCodexLatestTimestamp(path string) (string, error) {
