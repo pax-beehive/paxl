@@ -483,6 +483,141 @@ func TestDaemonLifecycleCommandsSupportDryRun(t *testing.T) {
 	assert.Contains(t, stdout.String(), "Would run paxd service restart")
 }
 
+func TestDaemonInstallDerivesResolverFromDefaultRemote(t *testing.T) {
+	lifecycle := &cmdFakeDaemonLifecycleFacade{}
+	restoreLifecycle := stubDaemonLifecycleFacade(t, lifecycle)
+	defer restoreLifecycle()
+	restoreDaemon := stubDaemonFacade(t, &cmdFakeDaemonControlClient{
+		remotes: daemonRemoteQuery(
+			"default",
+			"https://self-hosted.test/base/",
+		),
+	})
+	defer restoreDaemon()
+	var stdout, stderr bytes.Buffer
+
+	err := run(context.Background(), []string{
+		"daemon", "install", "--dry-run",
+	}, &stdout, &stderr)
+
+	require.NoError(t, err)
+	require.NotNil(t, lifecycle.installReq)
+	assert.Equal(
+		t,
+		"https://self-hosted.test/base/api/v1/public/paxd/download",
+		lifecycle.installReq.ResolverURL,
+	)
+}
+
+func TestDaemonUpdateDerivesResolverFromSelectedRemote(t *testing.T) {
+	lifecycle := &cmdFakeDaemonLifecycleFacade{}
+	restoreLifecycle := stubDaemonLifecycleFacade(t, lifecycle)
+	defer restoreLifecycle()
+	restoreDaemon := stubDaemonFacade(t, &cmdFakeDaemonControlClient{
+		remotes: &model.DaemonQueryResult{Remotes: &model.DaemonListRemotesResult{
+			Items: []*model.DaemonRemoteView{
+				{
+					Remote: model.DaemonRemote{
+						ID:          "default",
+						CloudAPIURL: "https://hosted.test",
+					},
+				},
+				{
+					Remote: model.DaemonRemote{
+						ID:          "prod",
+						CloudAPIURL: "https://prod.test/pax/",
+					},
+				},
+			},
+		}},
+	})
+	defer restoreDaemon()
+	var stdout, stderr bytes.Buffer
+
+	err := run(context.Background(), []string{
+		"daemon", "update", "--dry-run", "--remote", "prod",
+	}, &stdout, &stderr)
+
+	require.NoError(t, err)
+	require.NotNil(t, lifecycle.updateReq)
+	assert.Equal(
+		t,
+		"https://prod.test/pax/api/v1/public/paxd/download",
+		lifecycle.updateReq.ResolverURL,
+	)
+}
+
+func TestDaemonUpdateCheckExplicitResolverWinsOverRemote(t *testing.T) {
+	lifecycle := &cmdFakeDaemonLifecycleFacade{
+		check: &facade.DaemonUpdateCheckResponse{},
+	}
+	restoreLifecycle := stubDaemonLifecycleFacade(t, lifecycle)
+	defer restoreLifecycle()
+	restoreDaemon := stubDaemonFacade(t, &cmdFakeDaemonControlClient{
+		remotesErr: assert.AnError,
+	})
+	defer restoreDaemon()
+	var stdout, stderr bytes.Buffer
+
+	err := run(context.Background(), []string{
+		"daemon", "update", "check",
+		"--remote", "prod",
+		"--resolver-url", "https://resolver.test/custom",
+	}, &stdout, &stderr)
+
+	require.NoError(t, err)
+	require.NotNil(t, lifecycle.checkReq)
+	assert.Equal(t, "https://resolver.test/custom", lifecycle.checkReq.ResolverURL)
+}
+
+func TestDaemonUpdateCheckFallsBackToHostedWithoutDefaultRemote(t *testing.T) {
+	lifecycle := &cmdFakeDaemonLifecycleFacade{
+		check: &facade.DaemonUpdateCheckResponse{},
+	}
+	restoreLifecycle := stubDaemonLifecycleFacade(t, lifecycle)
+	defer restoreLifecycle()
+	restoreDaemon := stubDaemonFacade(t, &cmdFakeDaemonControlClient{
+		remotes: daemonRemoteQuery("prod", "https://prod.test"),
+	})
+	defer restoreDaemon()
+	var stdout, stderr bytes.Buffer
+
+	err := run(context.Background(), []string{
+		"daemon", "update", "check",
+	}, &stdout, &stderr)
+
+	require.NoError(t, err)
+	require.NotNil(t, lifecycle.checkReq)
+	assert.Equal(t, facade.DefaultDaemonResolverURL, lifecycle.checkReq.ResolverURL)
+}
+
+func TestDaemonInstallRejectsUnknownExplicitRemote(t *testing.T) {
+	lifecycle := &cmdFakeDaemonLifecycleFacade{}
+	restoreLifecycle := stubDaemonLifecycleFacade(t, lifecycle)
+	defer restoreLifecycle()
+	restoreDaemon := stubDaemonFacade(t, &cmdFakeDaemonControlClient{
+		remotes: daemonRemoteQuery("default", "https://default.test"),
+	})
+	defer restoreDaemon()
+	var stdout, stderr bytes.Buffer
+
+	err := run(context.Background(), []string{
+		"daemon", "install", "--dry-run", "--remote", "missing",
+	}, &stdout, &stderr)
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, `daemon remote "missing" was not found`)
+	assert.Nil(t, lifecycle.installReq)
+}
+
+func daemonRemoteQuery(remoteID string, cloudAPIURL string) *model.DaemonQueryResult {
+	return &model.DaemonQueryResult{Remotes: &model.DaemonListRemotesResult{
+		Items: []*model.DaemonRemoteView{{
+			Remote: model.DaemonRemote{ID: remoteID, CloudAPIURL: cloudAPIURL},
+		}},
+	}}
+}
+
 func TestDaemonRemoteLoginCommandUsesDaemonLifecycleFacade(t *testing.T) {
 	lifecycle := &cmdFakeDaemonLifecycleFacade{
 		remoteLogin: &facade.DaemonLifecycleResponse{
@@ -518,13 +653,50 @@ func TestDaemonRemoteLoginCommandUsesDaemonLifecycleFacade(t *testing.T) {
 	assert.Contains(t, stdout.String(), "paxd remote login completed")
 }
 
+func TestDaemonSetupLeavesResolverUnsetForCloudDerivedDefault(t *testing.T) {
+	lifecycle := &cmdFakeDaemonLifecycleFacade{}
+	restore := stubDaemonLifecycleFacade(t, lifecycle)
+	defer restore()
+	var stdout, stderr bytes.Buffer
+
+	err := run(context.Background(), []string{
+		"daemon", "setup",
+		"--cloud-url", "https://self-hosted.test/",
+		"--dry-run",
+	}, &stdout, &stderr)
+
+	require.NoError(t, err)
+	require.NotNil(t, lifecycle.setupReq)
+	assert.Equal(t, "https://self-hosted.test/", lifecycle.setupReq.CloudURL)
+	assert.Empty(t, lifecycle.setupReq.ResolverURL)
+}
+
+func TestDaemonRemoteLoginLeavesResolverUnsetForCloudDerivedDefault(t *testing.T) {
+	lifecycle := &cmdFakeDaemonLifecycleFacade{}
+	restore := stubDaemonLifecycleFacade(t, lifecycle)
+	defer restore()
+	var stdout, stderr bytes.Buffer
+
+	err := run(context.Background(), []string{
+		"daemon", "remote", "login", "staging",
+		"--cloud-url", "https://self-hosted.test/",
+		"--dry-run",
+	}, &stdout, &stderr)
+
+	require.NoError(t, err)
+	require.NotNil(t, lifecycle.remoteLoginReq)
+	assert.Equal(t, "https://self-hosted.test/", lifecycle.remoteLoginReq.CloudURL)
+	assert.Empty(t, lifecycle.remoteLoginReq.ResolverURL)
+}
+
 func TestDaemonUpdateCheckCommandRendersLatestPaxdArtifact(t *testing.T) {
+	signedURL := "https://objects.test/paxd?X-Amz-Credential=daemon-print-secret&X-Amz-Signature=daemon-signature-secret"
 	lifecycle := &cmdFakeDaemonLifecycleFacade{
 		check: &facade.DaemonUpdateCheckResponse{
 			Binary:      "paxd",
 			Version:     "0.2.0",
 			Platform:    "linux/amd64",
-			DownloadURL: "https://download.test/paxd",
+			DownloadURL: signedURL,
 			SHA256:      "abc123",
 			SizeBytes:   42,
 			Action:      "update check",
@@ -553,6 +725,27 @@ func TestDaemonUpdateCheckCommandRendersLatestPaxdArtifact(t *testing.T) {
 	assert.Contains(t, stdout.String(), `"binary":"paxd"`)
 	assert.Contains(t, stdout.String(), `"version":"0.2.0"`)
 	assert.Contains(t, stdout.String(), `"sha256":"abc123"`)
+	assert.NotContains(t, stdout.String(), "download_url")
+	assert.NotContains(t, stdout.String(), "daemon-print-secret")
+	assert.NotContains(t, stdout.String(), "daemon-signature-secret")
+}
+
+func TestRenderDaemonUpdateCheckTextDoesNotPrintSignedURL(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	err := renderDaemonUpdateCheck(&stdout, &facade.DaemonUpdateCheckResponse{
+		Message: "Latest paxd is available.",
+		DownloadURL: "https://objects.test/paxd?" +
+			"X-Amz-Credential=text-secret&X-Amz-Signature=signature-secret",
+		SHA256:    "abc123",
+		SizeBytes: 42,
+	}, "text")
+
+	require.NoError(t, err)
+	assert.NotContains(t, stdout.String(), "URL:")
+	assert.NotContains(t, stdout.String(), "text-secret")
+	assert.NotContains(t, stdout.String(), "signature-secret")
 }
 
 func stubDaemonLifecycleFacade(t *testing.T, lifecycle *cmdFakeDaemonLifecycleFacade) func() {
@@ -600,25 +793,30 @@ func (cmdFakeDaemonCloudAgentRegistrar) RegisterCloudAgent(
 }
 
 type cmdFakeDaemonLifecycleFacade struct {
+	installReq     *facade.DaemonInstallRequest
+	updateReq      *facade.DaemonUpdateRequest
 	check          *facade.DaemonUpdateCheckResponse
 	checkReq       *facade.DaemonUpdateCheckRequest
+	setupReq       *facade.DaemonSetupRequest
 	remoteLogin    *facade.DaemonLifecycleResponse
 	remoteLoginReq *facade.DaemonRemoteLoginRequest
 }
 
 func (f *cmdFakeDaemonLifecycleFacade) Install(
-	context.Context,
-	*facade.DaemonInstallRequest,
-	...func(*facade.Option),
+	_ context.Context,
+	req *facade.DaemonInstallRequest,
+	_ ...func(*facade.Option),
 ) (*facade.DaemonLifecycleResponse, error) {
+	f.installReq = req
 	return &facade.DaemonLifecycleResponse{}, nil
 }
 
 func (f *cmdFakeDaemonLifecycleFacade) Update(
-	context.Context,
-	*facade.DaemonUpdateRequest,
-	...func(*facade.Option),
+	_ context.Context,
+	req *facade.DaemonUpdateRequest,
+	_ ...func(*facade.Option),
 ) (*facade.DaemonLifecycleResponse, error) {
+	f.updateReq = req
 	return &facade.DaemonLifecycleResponse{}, nil
 }
 
@@ -632,10 +830,11 @@ func (f *cmdFakeDaemonLifecycleFacade) Check(
 }
 
 func (f *cmdFakeDaemonLifecycleFacade) Setup(
-	context.Context,
-	*facade.DaemonSetupRequest,
-	...func(*facade.Option),
+	_ context.Context,
+	req *facade.DaemonSetupRequest,
+	_ ...func(*facade.Option),
 ) (*facade.DaemonLifecycleResponse, error) {
+	f.setupReq = req
 	return &facade.DaemonLifecycleResponse{}, nil
 }
 
@@ -663,6 +862,7 @@ type cmdFakeDaemonControlClient struct {
 	ack           *model.DaemonCommandAck
 	status        *model.DaemonQueryResult
 	remotes       *model.DaemonQueryResult
+	remotesErr    error
 	agents        *model.DaemonQueryResult
 	harnesses     *model.DaemonQueryResult
 	localSessions *model.DaemonQueryResult
@@ -697,7 +897,7 @@ func (c *cmdFakeDaemonControlClient) ListRemotes(
 	includeDisabled bool,
 ) (*model.DaemonQueryResult, error) {
 	c.includeDisabled = includeDisabled
-	return firstCmdDaemonQuery(c.remotes), nil
+	return firstCmdDaemonQuery(c.remotes), c.remotesErr
 }
 
 func (c *cmdFakeDaemonControlClient) CreateRemote(
