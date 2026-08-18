@@ -23,6 +23,8 @@ import (
 	"github.com/pax-oss/paxl/internal/facade"
 	"github.com/pax-oss/paxl/internal/model"
 	"github.com/pax-oss/paxl/internal/model/store"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"github.com/urfave/cli/v3"
 )
@@ -69,6 +71,23 @@ func TestRenderUpdateCheckTextSuggestsPaxlUpdate(t *testing.T) {
 	if got := stdout.String(); !strings.Contains(got, "Run `paxl update` to upgrade.") {
 		t.Fatalf("rendered update check = %q", got)
 	}
+}
+
+func TestRenderUpdateCheckJSONDoesNotPrintSignedURL(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	err := renderUpdateCheck(&stdout, &facade.CheckUpdateResponse{
+		CurrentVersion: "0.1.0",
+		LatestVersion:  "0.1.1",
+		DownloadURL: "https://objects.example.test/paxl?" +
+			"X-Amz-Credential=print-secret&X-Amz-Signature=signature-secret",
+	}, "json")
+
+	require.NoError(t, err)
+	assert.NotContains(t, stdout.String(), "download_url")
+	assert.NotContains(t, stdout.String(), "print-secret")
+	assert.NotContains(t, stdout.String(), "signature-secret")
 }
 
 func TestRenderApplyUpdateJSON(t *testing.T) {
@@ -316,6 +335,66 @@ func TestDownloadUpdateBinaryRejectsSizeMismatch(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "download size") {
 		t.Fatalf("downloadUpdateBinary() error = %v, want size mismatch", err)
 	}
+}
+
+func TestDownloadUpdateBinaryDoesNotFollowRedirect(t *testing.T) {
+	t.Parallel()
+
+	requestCount := 0
+	client := &http.Client{Transport: commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requestCount++
+		if requestCount > 1 {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("redirected HTML")),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Body:       io.NopCloser(strings.NewReader("redirect")),
+			Header: http.Header{
+				"Location": []string{"https://unexpected.example.test/?state=download-redirect-secret"},
+			},
+			Request: req,
+		}, nil
+	})}
+
+	_, err := downloadUpdateBinary(
+		context.Background(),
+		client,
+		"https://objects.example.test/paxl?X-Amz-Signature=source-signature-secret",
+		0,
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "download returned HTTP 302")
+	assert.NotContains(t, err.Error(), "source-signature-secret")
+	assert.NotContains(t, err.Error(), "download-redirect-secret")
+	assert.Equal(t, 1, requestCount)
+}
+
+func TestDownloadUpdateBinarySanitizesTransportError(t *testing.T) {
+	t.Parallel()
+
+	client := commandRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf(
+			"GET https://objects.example.test/paxl?X-Amz-Signature=transport-secret: network unavailable",
+		)
+	})
+
+	_, err := downloadUpdateBinary(
+		context.Background(),
+		client,
+		"https://objects.example.test/paxl?X-Amz-Signature=request-secret",
+		0,
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "artifact HTTP transport failed")
+	assert.NotContains(t, err.Error(), "transport-secret")
+	assert.NotContains(t, err.Error(), "request-secret")
 }
 
 func (s *CommandSuite) SetupTest() {
@@ -653,6 +732,28 @@ func (s *CommandSuite) TestSetupWithDaemonDryRunRendersDaemonPlan() {
 	s.Contains(s.stdout.String(), `"binary":"paxd"`)
 	s.Contains(s.stdout.String(), "Would set up paxd")
 	s.NoFileExists(filepath.Join(codexHome, "paxl", "hooks", "user-prompt.json"))
+}
+
+func (s *CommandSuite) TestSetupWithDaemonLeavesResolverUnsetForCloudDerivedDefault() {
+	setup := newSetupCommand(&s.stdout)
+	var req *facade.SetupRequest
+	setup.Action = func(_ context.Context, cmd *cli.Command) error {
+		var err error
+		req, err = parseSetupRequest(cmd)
+		return err
+	}
+	command := &cli.Command{Name: "paxl", Commands: []*cli.Command{setup}}
+
+	err := command.Run(context.Background(), []string{
+		"paxl", "setup",
+		"--with-daemon",
+		"--cloud-url", "https://self-hosted.test/",
+	})
+
+	s.Require().NoError(err)
+	s.Require().NotNil(req)
+	s.Equal("https://self-hosted.test/", req.CloudURL)
+	s.Empty(req.ResolverURL)
 }
 
 func (s *CommandSuite) TestHiddenAgentHookConsumesMatchingInjectionOnce() {
@@ -1775,6 +1876,99 @@ func (s *CommandSuite) TestUpdateCheckUsesResolverByDefault() {
 	err := run(
 		context.Background(),
 		[]string{"update", "check", "--format", "json"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"update_available":true`)
+}
+
+func (s *CommandSuite) TestUpdateCheckUsesLoggedInManagerResolverByDefault() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	_, err = opened.Store.SaveAuthCredential(
+		context.Background(),
+		&store.SaveAuthCredentialRequest{Credential: &model.AuthCredential{
+			ManagerURL: "https://self-hosted.test/",
+			APIKey:     "test-api-key",
+		}},
+	)
+	s.Require().NoError(err)
+	closeStore(opened.Store)
+
+	oldClient := updateHTTPClient
+	updateHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		s.Equal("self-hosted.test", req.URL.Host)
+		s.Equal("/api/v1/public/artifacts/download", req.URL.Path)
+		return commandJSONResponse(`{
+			"data": {
+				"url": "https://objects.test/paxl",
+				"sha256": "abc123",
+				"size_bytes": 42,
+				"version": "0.1.1",
+				"product": "paxl",
+				"platform": "test/os"
+			}
+		}`), nil
+	})
+	s.T().Cleanup(func() {
+		updateHTTPClient = oldClient
+	})
+
+	err = run(
+		context.Background(),
+		[]string{"--db", dbPath, "update", "check", "--format", "json"},
+		&s.stdout,
+		&s.stderr,
+	)
+
+	s.Require().NoError(err)
+	s.Contains(s.stdout.String(), `"update_available":true`)
+}
+
+func (s *CommandSuite) TestUpdateCheckExplicitResolverOverridesLoggedInManager() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	opened, err := store.Open(context.Background(), &store.OpenRequest{Path: dbPath})
+	s.Require().NoError(err)
+	_, err = opened.Store.SaveAuthCredential(
+		context.Background(),
+		&store.SaveAuthCredentialRequest{Credential: &model.AuthCredential{
+			ManagerURL: "https://self-hosted.test",
+			APIKey:     "test-api-key",
+		}},
+	)
+	s.Require().NoError(err)
+	closeStore(opened.Store)
+
+	oldClient := updateHTTPClient
+	updateHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		s.Equal("override.test", req.URL.Host)
+		s.Equal("/custom-resolver", req.URL.Path)
+		return commandJSONResponse(`{
+			"data": {
+				"url": "https://objects.test/paxl",
+				"sha256": "abc123",
+				"size_bytes": 42,
+				"version": "0.1.1",
+				"product": "paxl",
+				"platform": "test/os"
+			}
+		}`), nil
+	})
+	s.T().Cleanup(func() {
+		updateHTTPClient = oldClient
+	})
+
+	err = run(
+		context.Background(),
+		[]string{
+			"--db", dbPath,
+			"update", "check",
+			"--resolver-url", "https://override.test/custom-resolver",
+			"--format", "json",
+		},
 		&s.stdout,
 		&s.stderr,
 	)

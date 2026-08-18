@@ -3,8 +3,10 @@ package facade
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/suite"
@@ -86,6 +88,7 @@ func (s *UpdateFacadeSuite) TestCheckUsesResolverWhenManifestURLIsMissing() {
 	resp, err := updateFacade.Check(context.Background(), &CheckUpdateRequest{
 		CurrentVersion: "0.1.0",
 		ResolverURL:    "https://example.test/api/v1/public/artifacts/download",
+		ManagerURL:     "https://self-hosted-should-not-win.test",
 		Platform:       "linux/amd64",
 		Tag:            "stable",
 	})
@@ -97,6 +100,90 @@ func (s *UpdateFacadeSuite) TestCheckUsesResolverWhenManifestURLIsMissing() {
 	s.Equal("https://example.test/paxl", resp.DownloadURL)
 	s.Equal("abc123", resp.SHA256)
 	s.Equal(int64(42), resp.SizeBytes)
+}
+
+func (s *UpdateFacadeSuite) TestCheckDerivesResolverFromConfiguredManager() {
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		s.Equal("https", req.URL.Scheme)
+		s.Equal("self-hosted.test", req.URL.Host)
+		s.Equal("/api/v1/public/artifacts/download", req.URL.Path)
+		return jsonResponse(`{
+			"data": {
+				"url": "https://objects.test/paxl",
+				"sha256": "abc123",
+				"size_bytes": 42,
+				"version": "0.1.1",
+				"product": "paxl",
+				"platform": "linux/amd64"
+			}
+		}`), nil
+	})
+
+	resp, err := NewUpdateFacade(client).Check(context.Background(), &CheckUpdateRequest{
+		CurrentVersion: "0.1.0",
+		ManagerURL:     "https://self-hosted.test/",
+		Platform:       "linux/amd64",
+	})
+
+	s.Require().NoError(err)
+	s.True(resp.UpdateAvailable)
+}
+
+func (s *UpdateFacadeSuite) TestResolverDoesNotFollowRedirect() {
+	requestCount := 0
+	client := &http.Client{Transport: artifactRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		requestCount++
+		if requestCount > 1 {
+			return jsonResponse(`{
+				"data": {
+					"url": "https://objects.test/paxl?X-Amz-Signature=should-not-be-returned",
+					"sha256": "abc123",
+					"size_bytes": 42,
+					"version": "0.1.1"
+				}
+			}`), nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Body:       io.NopCloser(bytes.NewBufferString("redirect")),
+			Header: http.Header{
+				"Location": []string{"https://login.example.test/?state=resolver-redirect-secret"},
+			},
+			Request: req,
+		}, nil
+	})}
+
+	_, err := NewUpdateFacade(client).Check(context.Background(), &CheckUpdateRequest{
+		CurrentVersion: "0.1.0",
+		ResolverURL:    "https://manager.test/api/v1/public/artifacts/download",
+		Platform:       "linux/amd64",
+	})
+
+	s.Require().Error(err)
+	s.Contains(err.Error(), "resolver returned HTTP 302")
+	s.NotContains(err.Error(), "resolver-redirect-secret")
+	s.Equal(1, requestCount)
+}
+
+func (s *UpdateFacadeSuite) TestResolverTransportErrorIsSanitized() {
+	client := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, &url.Error{
+			Op:  "Get",
+			URL: "https://manager.test/resolver?token=resolver-transport-secret",
+			Err: errors.New("network unavailable"),
+		}
+	})
+
+	_, err := NewUpdateFacade(client).Check(context.Background(), &CheckUpdateRequest{
+		CurrentVersion: "0.1.0",
+		ResolverURL:    "https://manager.test/resolver",
+		Platform:       "linux/amd64",
+	})
+
+	s.Require().Error(err)
+	s.Contains(err.Error(), "artifact HTTP transport failed")
+	s.NotContains(err.Error(), "resolver-transport-secret")
+	s.NotContains(err.Error(), "manager.test")
 }
 
 func (s *UpdateFacadeSuite) TestCheckReportsUpToDateWhenVersionsMatch() {
@@ -161,6 +248,10 @@ func (s *UpdateFacadeSuite) TestCheckRejectsManifestWithoutCurrentPlatformArtifa
 type roundTripFunc func(req *http.Request) (*http.Response, error)
 
 func (f roundTripFunc) Do(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 

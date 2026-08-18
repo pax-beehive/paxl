@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -63,6 +62,37 @@ func TestDaemonLifecycleInstallDownloadsAndVerifiesPaxdArtifact(t *testing.T) {
 	info, err := os.Stat(filepath.Join(installDir, "paxd"))
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o755), info.Mode().Perm())
+}
+
+func TestDaemonResolverURLUsesExplicitOverrideThenCloudThenHostedFallback(t *testing.T) {
+	tests := []struct {
+		name        string
+		resolverURL string
+		cloudURL    string
+		want        string
+	}{
+		{
+			name:        "explicit resolver wins",
+			resolverURL: "https://resolver.test/custom",
+			cloudURL:    "https://self-hosted.test",
+			want:        "https://resolver.test/custom",
+		},
+		{
+			name:     "custom cloud derives resolver",
+			cloudURL: "https://self-hosted.test/",
+			want:     "https://self-hosted.test/api/v1/public/paxd/download",
+		},
+		{
+			name: "hosted fallback remains",
+			want: DefaultDaemonResolverURL,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, DaemonResolverURL(tt.resolverURL, tt.cloudURL))
+		})
+	}
 }
 
 func TestDaemonLifecycleInstallAddsProductForGenericArtifactResolver(t *testing.T) {
@@ -445,6 +475,96 @@ func TestDaemonLifecycleInstallReturnsDownloadHTTPError(t *testing.T) {
 	assert.Contains(t, err.Error(), "download returned HTTP 502")
 }
 
+func TestDaemonLifecycleResolverDoesNotFollowRedirect(t *testing.T) {
+	t.Parallel()
+
+	requestCount := 0
+	lifecycle := NewDaemonLifecycleFacade(nil)
+	lifecycle.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requestCount++
+		if requestCount > 1 {
+			return jsonResponse(`{
+				"data": {
+					"url": "https://objects.test/paxd?X-Amz-Signature=should-not-be-returned",
+					"sha256": "abc123",
+					"size_bytes": 1,
+					"version": "0.2.0"
+				}
+			}`), nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Body:       ioNopCloser([]byte("redirect")),
+			Header: http.Header{
+				"Location": []string{"https://login.test/?state=daemon-resolver-secret"},
+			},
+			Request: req,
+		}, nil
+	})}
+
+	_, err := lifecycle.Install(context.Background(), &DaemonInstallRequest{
+		ResolverURL: "https://manager.test/api/v1/public/paxd/download",
+		Platform:    "linux/amd64",
+		InstallDir:  t.TempDir(),
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolver returned HTTP 302")
+	assert.NotContains(t, err.Error(), "daemon-resolver-secret")
+	assert.Equal(t, 1, requestCount)
+}
+
+func TestDaemonLifecycleBinaryDownloadDoesNotFollowRedirect(t *testing.T) {
+	t.Parallel()
+
+	binary := []byte("paxd")
+	sum := sha256.Sum256(binary)
+	sha := hex.EncodeToString(sum[:])
+	requestCount := 0
+	lifecycle := NewDaemonLifecycleFacade(nil)
+	lifecycle.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requestCount++
+		switch req.URL.Host {
+		case "manager.test":
+			return jsonResponse(fmt.Sprintf(
+				`{"data":{"url":"https://objects.test/paxd?X-Amz-Signature=daemon-object-secret","sha256":%q,"size_bytes":%d,"version":"0.2.0"}}`,
+				sha,
+				len(binary),
+			)), nil
+		case "objects.test":
+			return &http.Response{
+				StatusCode: http.StatusTemporaryRedirect,
+				Body:       ioNopCloser([]byte("redirect")),
+				Header: http.Header{
+					"Location": []string{"https://unexpected.test/paxd?token=daemon-redirect-secret"},
+				},
+				Request: req,
+			}, nil
+		case "unexpected.test":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       ioNopCloser(binary),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		default:
+			return nil, fmt.Errorf("unexpected host")
+		}
+	})}
+
+	_, err := lifecycle.Install(context.Background(), &DaemonInstallRequest{
+		ResolverURL: "https://manager.test/api/v1/public/paxd/download",
+		Platform:    "linux/amd64",
+		InstallDir:  t.TempDir(),
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "download returned HTTP 307")
+	assert.NotContains(t, err.Error(), "daemon-object-secret")
+	assert.NotContains(t, err.Error(), "daemon-redirect-secret")
+	assert.Equal(t, 2, requestCount)
+}
+
 func TestDaemonLifecycleResolveRejectsBadResolverURL(t *testing.T) {
 	_, err := NewDaemonLifecycleFacade(nil).resolveDaemonArtifact(
 		context.Background(),
@@ -460,7 +580,9 @@ func TestDaemonLifecycleResolveRejectsBadResolverURL(t *testing.T) {
 func TestDaemonLifecycleResolveReturnsRequestError(t *testing.T) {
 	lifecycle := NewDaemonLifecycleFacade(nil)
 	lifecycle.client = roundTripFunc(func(_ *http.Request) (*http.Response, error) {
-		return nil, errors.New("network unavailable")
+		return nil, fmt.Errorf(
+			"GET https://manager.test/resolver?token=daemon-resolver-transport-secret: network unavailable",
+		)
 	})
 
 	_, err := lifecycle.resolveDaemonArtifact(
@@ -472,7 +594,8 @@ func TestDaemonLifecycleResolveReturnsRequestError(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "request resolver")
-	assert.Contains(t, err.Error(), "network unavailable")
+	assert.Contains(t, err.Error(), "artifact HTTP transport failed")
+	assert.NotContains(t, err.Error(), "daemon-resolver-transport-secret")
 }
 
 func TestDaemonLifecycleResolveRejectsMalformedJSON(t *testing.T) {
@@ -498,7 +621,9 @@ func TestDaemonLifecycleResolveRejectsMalformedJSON(t *testing.T) {
 func TestDaemonLifecycleDownloadReturnsRequestError(t *testing.T) {
 	lifecycle := NewDaemonLifecycleFacade(nil)
 	lifecycle.client = roundTripFunc(func(_ *http.Request) (*http.Response, error) {
-		return nil, errors.New("network unavailable")
+		return nil, fmt.Errorf(
+			"GET https://objects.test/paxd?X-Amz-Signature=daemon-download-transport-secret: network unavailable",
+		)
 	})
 
 	_, err := lifecycle.downloadDaemonArtifact(context.Background(), &updateArtifact{
@@ -507,7 +632,8 @@ func TestDaemonLifecycleDownloadReturnsRequestError(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "request download")
-	assert.Contains(t, err.Error(), "network unavailable")
+	assert.Contains(t, err.Error(), "artifact HTTP transport failed")
+	assert.NotContains(t, err.Error(), "daemon-download-transport-secret")
 }
 
 func TestDaemonLifecycleDownloadUsesDefaultLimitWhenSizeMissing(t *testing.T) {
@@ -562,6 +688,40 @@ func TestDaemonLifecycleSetupInstallsPaxdWhenMissing(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(installDir, "paxd"))
 	require.NoError(t, err)
 	assert.Equal(t, binary, raw)
+}
+
+func TestDaemonLifecycleSetupDerivesResolverFromCustomCloudWhenPaxdIsMissing(t *testing.T) {
+	binary := []byte("fake-paxd-binary")
+	sum := sha256.Sum256(binary)
+	sha := hex.EncodeToString(sum[:])
+	installDir := t.TempDir()
+	runner := &fakeDaemonLifecycleRunner{}
+	lifecycle := NewDaemonLifecycleFacade(runner)
+	lifecycle.client = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/api/v1/public/paxd/download":
+			assert.Equal(t, "self-hosted.test", req.URL.Host)
+			return jsonResponse(fmt.Sprintf(
+				`{"data":{"url":"https://objects.test/paxd","sha256":"%s","size_bytes":%d,"version":"0.2.0"}}`,
+				sha,
+				len(binary),
+			)), nil
+		case "/paxd":
+			return &http.Response{StatusCode: http.StatusOK, Body: ioNopCloser(binary)}, nil
+		default:
+			return &http.Response{StatusCode: http.StatusNotFound, Body: ioNopCloser(nil)}, nil
+		}
+	})
+
+	resp, err := lifecycle.Setup(context.Background(), &DaemonSetupRequest{
+		CloudURL:   "https://self-hosted.test/",
+		Platform:   "linux/amd64",
+		InstallDir: installDir,
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, SetupStatusInstalled, resp.Status)
+	assert.Equal(t, []string{"setup", "--cloud-url", "https://self-hosted.test"}, runner.args)
 }
 
 func TestDaemonLifecycleRemoteLoginRunsPaxdLogin(t *testing.T) {

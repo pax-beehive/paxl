@@ -29,13 +29,13 @@ replace the binary without explicit user approval.
 If it is missing, install the latest stable hosted build:
 
 ```sh
-curl -fsSL https://api.paxtech.net/api/v1/public/paxl/install.sh | bash
+curl -fsSL --max-redirs 1 https://api.paxtech.net/api/v1/public/paxl/install.sh | bash
 ```
 
 Install a specific uploaded version when needed:
 
 ```sh
-curl -fsSL https://api.paxtech.net/api/v1/public/paxl/install.sh | PAXL_VERSION=0.1.0 bash
+curl -fsSL --max-redirs 1 https://api.paxtech.net/api/v1/public/paxl/install.sh | PAXL_VERSION=0.1.0 bash
 ```
 
 If the installer warns that the install directory is not in `PATH`, either add

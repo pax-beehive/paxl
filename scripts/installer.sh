@@ -5,8 +5,6 @@ PAXL_DOWNLOAD_URL="${PAXL_DOWNLOAD_URL:-https://api.paxtech.net}"
 PAXL_RESOLVER_PATH="${PAXL_RESOLVER_PATH:-/api/v1/public/artifacts/download}"
 PAXL_TAG="${PAXL_TAG:-stable}"
 PAXL_VERSION="${PAXL_VERSION:-}"
-PAXL_BUCKET="${PAXL_BUCKET:-pax-tech-bucket}"
-PAXL_PREFIX="${PAXL_PREFIX:-paxl/releases}"
 PAXL_MANIFEST_URL="${PAXL_MANIFEST_URL:-}"
 PAXL_USE_RESOLVER="${PAXL_USE_RESOLVER:-1}"
 PAXL_BINARY_NAME="${PAXL_BINARY_NAME:-paxl}"
@@ -125,20 +123,6 @@ manifest_version() {
   python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])'
 }
 
-gs_to_https() {
-  local url="$1"
-  local rest bucket object
-
-  if [[ "$url" != gs://* ]]; then
-    printf '%s' "$url"
-    return
-  fi
-  rest="${url#gs://}"
-  bucket="${rest%%/*}"
-  object="${rest#*/}"
-  printf 'https://storage.googleapis.com/%s/%s' "$bucket" "$object"
-}
-
 path_has_dir() {
   [[ ":${PATH:-}:" == *":$1:"* ]]
 }
@@ -171,9 +155,13 @@ download_with_progress() {
   local output="$2"
 
   if curl --help all 2>/dev/null | grep -q -- '--progress-bar'; then
-    curl -fL --progress-bar -o "$output" "$url"
+    if ! curl -fL --max-redirs 0 --progress-bar -o "$output" "$url" 2>/dev/null; then
+      fail "failed to download paxl artifact"
+    fi
   else
-    curl -fL -o "$output" "$url"
+    if ! curl -fL --max-redirs 0 -o "$output" "$url" 2>/dev/null; then
+      fail "failed to download paxl artifact"
+    fi
   fi
 }
 
@@ -195,9 +183,12 @@ resolve_from_manifest() {
   local response storage_url
 
   log "Resolving paxl artifact from manifest"
-  response="$(curl -fsSL "$manifest_url")" || fail "failed to fetch manifest from $manifest_url"
+  response="$(curl -fsSL --max-redirs 0 "$manifest_url" 2>/dev/null)" ||
+    fail "failed to fetch paxl manifest"
   storage_url="$(printf '%s' "$response" | manifest_field "$platform" storage_url)"
-  paxl_resolved_url="$(gs_to_https "$storage_url")"
+  [[ -n "$storage_url" ]] ||
+    fail "manifest artifact for $platform has no public storage_url; use the manager resolver instead"
+  paxl_resolved_url="$storage_url"
   paxl_resolved_sha="$(printf '%s' "$response" | manifest_field "$platform" sha256)"
   paxl_resolved_size="$(printf '%s' "$response" | manifest_field "$platform" size)"
   paxl_resolved_version="$(printf '%s' "$response" | manifest_version)"
@@ -222,9 +213,10 @@ resolve_from_api() {
   else
     log "Resolving latest ${bold}${PAXL_TAG}${reset} paxl artifact"
   fi
-  response="$(curl -fsSL "$api")" || fail "failed to resolve paxl artifact from $api"
+  response="$(curl -fsSL --max-redirs 0 "$api" 2>/dev/null)" ||
+    fail "failed to resolve paxl artifact"
   if [[ "$response" != \{* ]]; then
-    fail "expected JSON from $api; got a non-JSON response"
+    fail "paxl artifact resolver returned a non-JSON response"
   fi
 
   paxl_resolved_url="$(printf '%s' "$response" | json_field data.url)"
@@ -244,14 +236,8 @@ main() {
   log "Detected platform: ${bold}${platform}${reset}"
 
   manifest_url="$PAXL_MANIFEST_URL"
-  if [[ -z "$manifest_url" ]]; then
-    if [[ "$PAXL_USE_RESOLVER" == "1" ]]; then
-      manifest_url=""
-    elif [[ -n "$PAXL_VERSION" ]]; then
-      manifest_url="https://storage.googleapis.com/${PAXL_BUCKET}/${PAXL_PREFIX}/${PAXL_VERSION}/manifest.json"
-    else
-      manifest_url="https://storage.googleapis.com/${PAXL_BUCKET}/${PAXL_PREFIX}/latest/${PAXL_TAG}/manifest.json"
-    fi
+  if [[ -z "$manifest_url" && "$PAXL_USE_RESOLVER" != "1" ]]; then
+    fail "PAXL_MANIFEST_URL is required when PAXL_USE_RESOLVER is not 1"
   fi
 
   if [[ -n "$manifest_url" ]]; then
@@ -296,4 +282,6 @@ main() {
   printf '%s\n' "${green}Done.${reset}"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

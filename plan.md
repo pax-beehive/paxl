@@ -20,7 +20,7 @@ is not published in future releases.
 Default install stays focused on `paxl`:
 
 ```sh
-curl -fsSL https://api.paxtech.net/api/v1/public/paxl/install.sh | bash
+curl -fsSL --max-redirs 1 https://api.paxtech.net/api/v1/public/paxl/install.sh | bash
 paxl version
 ```
 

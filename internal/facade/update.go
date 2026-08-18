@@ -13,9 +13,10 @@ import (
 	"time"
 )
 
-const DefaultUpdateManifestURL = "https://storage.googleapis.com/pax-tech-bucket/paxl/releases/latest/stable/manifest.json"
 const DefaultUpdateResolverURL = "https://api.paxtech.net/api/v1/public/artifacts/download"
 const DefaultUpdateTag = "stable"
+
+const updateResolverPath = "/api/v1/public/artifacts/download"
 
 type UpdateStatus string
 
@@ -32,6 +33,7 @@ type CheckUpdateRequest struct {
 	CurrentCommit  string
 	ManifestURL    string
 	ResolverURL    string
+	ManagerURL     string
 	Platform       string
 	Tag            string
 }
@@ -43,7 +45,7 @@ type CheckUpdateResponse struct {
 	Status          UpdateStatus `json:"status"`
 	UpdateAvailable bool         `json:"update_available"`
 	Platform        string       `json:"platform"`
-	DownloadURL     string       `json:"download_url"`
+	DownloadURL     string       `json:"-"`
 	SHA256          string       `json:"sha256"`
 	SizeBytes       int64        `json:"size_bytes"`
 	CheckedAt       time.Time    `json:"checked_at"`
@@ -58,10 +60,7 @@ type UpdateHTTPClient interface {
 }
 
 func NewUpdateFacade(client UpdateHTTPClient) *UpdateFacade {
-	if client == nil {
-		client = http.DefaultClient
-	}
-	return &UpdateFacade{client: client}
+	return &UpdateFacade{client: NewArtifactHTTPClient(client)}
 }
 
 func (f *UpdateFacade) Check(
@@ -119,7 +118,7 @@ func (f *UpdateFacade) resolveArtifact(
 	}
 	artifact, err := f.fetchResolverArtifact(
 		ctx,
-		firstNonEmpty(req.ResolverURL, DefaultUpdateResolverURL),
+		updateResolverURL(req.ResolverURL, req.ManagerURL),
 		platform,
 		firstNonEmpty(req.Tag, DefaultUpdateTag),
 	)
@@ -129,19 +128,29 @@ func (f *UpdateFacade) resolveArtifact(
 	return artifact, nil
 }
 
+func updateResolverURL(resolverURL string, managerURL string) string {
+	if explicit := strings.TrimSpace(resolverURL); explicit != "" {
+		return explicit
+	}
+	if manager := strings.TrimRight(strings.TrimSpace(managerURL), "/"); manager != "" {
+		return manager + updateResolverPath
+	}
+	return DefaultUpdateResolverURL
+}
+
 func (f *UpdateFacade) fetchManifest(
 	ctx context.Context,
 	manifestURL string,
 ) (*updateManifest, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, manifestURL, nil) // #nosec G107
 	if err != nil {
-		return nil, fmt.Errorf("create manifest request: %w", err)
+		return nil, fmt.Errorf("create manifest request: %w", errInvalidArtifactURL)
 	}
 	httpReq.Header.Set("Accept", "application/json")
 	httpReq.Header.Set("User-Agent", "paxl-update-check")
-	resp, err := f.client.Do(httpReq)
+	resp, err := NewArtifactHTTPClient(f.client).Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("request manifest: %w", err)
+		return nil, fmt.Errorf("request manifest: %w", SanitizeArtifactHTTPError(err))
 	}
 	defer closeBody(resp.Body)
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
@@ -150,7 +159,7 @@ func (f *UpdateFacade) fetchManifest(
 	var manifest updateManifest
 	decoder := json.NewDecoder(io.LimitReader(resp.Body, 1<<20))
 	if err := decoder.Decode(&manifest); err != nil {
-		return nil, fmt.Errorf("decode manifest: %w", err)
+		return nil, fmt.Errorf("decode manifest: %w", errInvalidArtifactResponse)
 	}
 	if err := manifest.validate(); err != nil {
 		return nil, err
@@ -166,7 +175,7 @@ func (f *UpdateFacade) fetchResolverArtifact(
 ) (*updateArtifact, error) {
 	endpoint, err := url.Parse(resolverURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse resolver URL: %w", err)
+		return nil, fmt.Errorf("parse resolver URL: %w", errInvalidArtifactURL)
 	}
 	query := endpoint.Query()
 	query.Set("product", "paxl")
@@ -181,13 +190,13 @@ func (f *UpdateFacade) fetchResolverArtifact(
 		nil,
 	) // #nosec G107
 	if err != nil {
-		return nil, fmt.Errorf("create resolver request: %w", err)
+		return nil, fmt.Errorf("create resolver request: %w", errInvalidArtifactURL)
 	}
 	httpReq.Header.Set("Accept", "application/json")
 	httpReq.Header.Set("User-Agent", "paxl-update-check")
-	resp, err := f.client.Do(httpReq)
+	resp, err := NewArtifactHTTPClient(f.client).Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("request resolver: %w", err)
+		return nil, fmt.Errorf("request resolver: %w", SanitizeArtifactHTTPError(err))
 	}
 	defer closeBody(resp.Body)
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
@@ -196,7 +205,7 @@ func (f *UpdateFacade) fetchResolverArtifact(
 	var resolverResp updateResolverResponse
 	decoder := json.NewDecoder(io.LimitReader(resp.Body, 1<<20))
 	if err := decoder.Decode(&resolverResp); err != nil {
-		return nil, fmt.Errorf("decode resolver response: %w", err)
+		return nil, fmt.Errorf("decode resolver response: %w", errInvalidArtifactResponse)
 	}
 	artifact := resolverResp.Data.toArtifact()
 	if err := artifact.validate(); err != nil {

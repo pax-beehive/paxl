@@ -33,6 +33,8 @@ var (
 
 const DefaultDaemonResolverURL = "https://api.paxtech.net/api/v1/public/paxd/download"
 
+const daemonResolverPath = "/api/v1/public/paxd/download"
+
 type DaemonInstallRequest struct {
 	DryRun      bool
 	ResolverURL string
@@ -89,7 +91,7 @@ type DaemonUpdateCheckResponse struct {
 	Binary      string `json:"binary"`
 	Version     string `json:"version"`
 	Platform    string `json:"platform"`
-	DownloadURL string `json:"download_url"`
+	DownloadURL string `json:"-"`
 	SHA256      string `json:"sha256"`
 	SizeBytes   int64  `json:"size_bytes"`
 	Action      string `json:"action"`
@@ -102,7 +104,24 @@ func NewDaemonLifecycleFacade(runner DaemonLifecycleRunner) *DaemonLifecycleFaca
 	if runner == nil {
 		runner = defaultDaemonLifecycleRunner{}
 	}
-	return &DaemonLifecycleFacade{runner: runner, client: http.DefaultClient}
+	return &DaemonLifecycleFacade{runner: runner, client: NewArtifactHTTPClient(nil)}
+}
+
+func daemonResolverURL(resolverURL string, cloudURL string) string {
+	if explicit := strings.TrimSpace(resolverURL); explicit != "" {
+		return explicit
+	}
+	if cloud := strings.TrimRight(strings.TrimSpace(cloudURL), "/"); cloud != "" {
+		return cloud + daemonResolverPath
+	}
+	return DefaultDaemonResolverURL
+}
+
+// DaemonResolverURL returns the explicit resolver when present, otherwise it
+// derives the public paxd resolver from a manager URL and finally falls back to
+// the hosted Pax resolver.
+func DaemonResolverURL(resolverURL string, cloudURL string) string {
+	return daemonResolverURL(resolverURL, cloudURL)
 }
 
 func (f *DaemonLifecycleFacade) Install(
@@ -271,7 +290,7 @@ func (f *DaemonLifecycleFacade) Setup(
 		}, nil
 	}
 	path, err := f.ensureDaemonBinary(ctx, daemonInstallSpec{
-		ResolverURL: req.ResolverURL,
+		ResolverURL: daemonResolverURL(req.ResolverURL, req.CloudURL),
 		Platform:    req.Platform,
 		Tag:         req.Tag,
 		InstallDir:  req.InstallDir,
@@ -318,7 +337,7 @@ func (f *DaemonLifecycleFacade) RemoteLogin(
 		}, nil
 	}
 	path, err := f.ensureDaemonBinary(ctx, daemonInstallSpec{
-		ResolverURL: req.ResolverURL,
+		ResolverURL: daemonResolverURL(req.ResolverURL, req.CloudURL),
 		Platform:    req.Platform,
 		Tag:         req.Tag,
 		InstallDir:  req.InstallDir,
@@ -434,7 +453,7 @@ func (f *DaemonLifecycleFacade) resolveDaemonArtifact(
 ) (*updateArtifact, error) {
 	endpoint, err := url.Parse(resolverURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse resolver URL: %w", err)
+		return nil, fmt.Errorf("parse resolver URL: %w", errInvalidArtifactURL)
 	}
 	query := endpoint.Query()
 	if strings.Contains(endpoint.Path, "/artifacts/") && query.Get("product") == "" {
@@ -450,13 +469,13 @@ func (f *DaemonLifecycleFacade) resolveDaemonArtifact(
 		nil,
 	) // #nosec G107
 	if err != nil {
-		return nil, fmt.Errorf("create resolver request: %w", err)
+		return nil, fmt.Errorf("create resolver request: %w", errInvalidArtifactURL)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "paxl-daemon-install")
-	resp, err := f.client.Do(req)
+	resp, err := NewArtifactHTTPClient(f.client).Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request resolver: %w", err)
+		return nil, fmt.Errorf("request resolver: %w", SanitizeArtifactHTTPError(err))
 	}
 	defer closeBody(resp.Body)
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
@@ -465,7 +484,7 @@ func (f *DaemonLifecycleFacade) resolveDaemonArtifact(
 	var resolverResp updateResolverResponse
 	decoder := json.NewDecoder(io.LimitReader(resp.Body, 1<<20))
 	if err := decoder.Decode(&resolverResp); err != nil {
-		return nil, fmt.Errorf("decode resolver response: %w", err)
+		return nil, fmt.Errorf("decode resolver response: %w", errInvalidArtifactResponse)
 	}
 	artifact := resolverResp.Data.toArtifact()
 	if err := validateDaemonArtifact(artifact); err != nil {
@@ -481,12 +500,12 @@ func (f *DaemonLifecycleFacade) downloadDaemonArtifact(
 ) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, artifact.URL, nil) // #nosec G107
 	if err != nil {
-		return nil, fmt.Errorf("create download request: %w", err)
+		return nil, fmt.Errorf("create download request: %w", errInvalidArtifactURL)
 	}
 	req.Header.Set("User-Agent", "paxl-daemon-install")
-	resp, err := f.client.Do(req)
+	resp, err := NewArtifactHTTPClient(f.client).Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request download: %w", err)
+		return nil, fmt.Errorf("request download: %w", SanitizeArtifactHTTPError(err))
 	}
 	defer closeBody(resp.Body)
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
@@ -498,7 +517,7 @@ func (f *DaemonLifecycleFacade) downloadDaemonArtifact(
 	}
 	binary, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if err != nil {
-		return nil, fmt.Errorf("read download: %w", err)
+		return nil, fmt.Errorf("read download: %w", errArtifactResponseRead)
 	}
 	if artifact.Size > 0 && int64(len(binary)) != artifact.Size {
 		return nil, fmt.Errorf(

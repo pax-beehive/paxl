@@ -529,8 +529,7 @@ func newSetupCommand(stdout io.Writer) *cli.Command {
 			&cli.StringFlag{Name: "cloud-url", Usage: "Pax cloud API URL for --with-daemon"},
 			&cli.StringFlag{
 				Name:  "daemon-resolver-url",
-				Value: facade.DefaultDaemonResolverURL,
-				Usage: "paxd artifact resolver URL for --with-daemon",
+				Usage: "paxd artifact resolver URL for --with-daemon; defaults to --cloud-url or hosted Pax",
 			},
 			&cli.StringFlag{
 				Name:  "daemon-platform",
@@ -1639,6 +1638,9 @@ func updateCheck(ctx context.Context, cmd *cli.Command, stdout io.Writer) error 
 	if err != nil {
 		return fmt.Errorf("parse update check request: %w", err)
 	}
+	if err := applyConfiguredUpdateManager(ctx, cmd, req); err != nil {
+		return fmt.Errorf("resolve update manager: %w", err)
+	}
 	runCtx, cancel, err := contextWithTimeout(ctx, cmd.String("timeout"))
 	if err != nil {
 		return fmt.Errorf("parse update check timeout: %w", err)
@@ -1670,6 +1672,9 @@ func updateCommand(ctx context.Context, cmd *cli.Command, stdout io.Writer) erro
 	req, err := parseCheckUpdateRequest(cmd)
 	if err != nil {
 		return fmt.Errorf("parse update request: %w", err)
+	}
+	if err := applyConfiguredUpdateManager(ctx, cmd, req); err != nil {
+		return fmt.Errorf("resolve update manager: %w", err)
 	}
 	runCtx, cancel, err := contextWithTimeout(ctx, cmd.String("timeout"))
 	if err != nil {
@@ -1728,12 +1733,12 @@ func downloadUpdateBinary(
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil) // #nosec G107
 	if err != nil {
-		return nil, fmt.Errorf("create download request: %w", err)
+		return nil, fmt.Errorf("create download request: %w", facade.SanitizeArtifactHTTPError(err))
 	}
 	req.Header.Set("User-Agent", "paxl-update")
-	resp, err := client.Do(req)
+	resp, err := facade.NewArtifactHTTPClient(client).Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request download: %w", err)
+		return nil, fmt.Errorf("request download: %w", facade.SanitizeArtifactHTTPError(err))
 	}
 	defer func() {
 		_ = resp.Body.Close()
@@ -1747,7 +1752,7 @@ func downloadUpdateBinary(
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if err != nil {
-		return nil, fmt.Errorf("read download: %w", err)
+		return nil, fmt.Errorf("read download: %w", facade.SanitizeArtifactHTTPError(err))
 	}
 	if expectedSize > 0 && int64(len(body)) != expectedSize {
 		return nil, fmt.Errorf(
@@ -4025,14 +4030,42 @@ func parseCheckUpdateRequest(cmd *cli.Command) (*facade.CheckUpdateRequest, erro
 		return nil, fmt.Errorf("unsupported format %q", cmd.String("format"))
 	}
 	meta := currentVersionMetadata()
+	resolverURL := ""
+	if cmd.IsSet("resolver-url") {
+		resolverURL = cmd.String("resolver-url")
+	}
 	return &facade.CheckUpdateRequest{
 		CurrentVersion: meta.Version,
 		CurrentCommit:  meta.Commit,
 		ManifestURL:    cmd.String("manifest-url"),
-		ResolverURL:    cmd.String("resolver-url"),
+		ResolverURL:    resolverURL,
 		Platform:       cmd.String("platform"),
 		Tag:            cmd.String("tag"),
 	}, nil
+}
+
+func applyConfiguredUpdateManager(
+	ctx context.Context,
+	cmd *cli.Command,
+	req *facade.CheckUpdateRequest,
+) error {
+	if req == nil || strings.TrimSpace(req.ManifestURL) != "" ||
+		strings.TrimSpace(req.ResolverURL) != "" {
+		return nil
+	}
+	opened, err := store.Open(ctx, &store.OpenRequest{Path: cmd.String("db")})
+	if err != nil {
+		return fmt.Errorf("open session store: %w", err)
+	}
+	defer closeStore(opened.Store)
+	stored, err := opened.Store.GetAuthCredential(ctx)
+	if err != nil {
+		return fmt.Errorf("load auth credential: %w", err)
+	}
+	if stored.Credential != nil {
+		req.ManagerURL = stored.Credential.ManagerURL
+	}
+	return nil
 }
 
 func parseAgentSelection(raw string) ([]model.AgentName, error) {
