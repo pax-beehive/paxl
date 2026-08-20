@@ -31,7 +31,7 @@ var (
 	daemonCommandStderr io.Writer = os.Stderr
 )
 
-const DefaultDaemonResolverURL = "https://api.paxtech.net/api/v1/public/paxd/download"
+const DefaultDaemonResolverURL = "https://api.lakeward.net/api/v1/public/paxd/download"
 
 const daemonResolverPath = "/api/v1/public/paxd/download"
 

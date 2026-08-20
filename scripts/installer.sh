@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PAXL_DOWNLOAD_URL="${PAXL_DOWNLOAD_URL:-https://api.paxtech.net}"
+PAXL_DOWNLOAD_URL="${PAXL_DOWNLOAD_URL:-https://api.lakeward.net}"
 PAXL_RESOLVER_PATH="${PAXL_RESOLVER_PATH:-/api/v1/public/artifacts/download}"
 PAXL_TAG="${PAXL_TAG:-stable}"
 PAXL_VERSION="${PAXL_VERSION:-}"

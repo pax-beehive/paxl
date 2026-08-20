@@ -13,7 +13,7 @@ agent session.
 ## Install
 
 ```sh
-curl -fsSL --max-redirs 1 https://api.paxtech.net/api/v1/public/paxl/install.sh | bash
+curl -fsSL --max-redirs 1 https://api.lakeward.net/api/v1/public/paxl/install.sh | bash
 paxl version
 ```
 
@@ -348,7 +348,7 @@ upload, it publishes the same artifact metadata to pax-manager with
 `generation=0` and verifies the public resolver for each platform:
 
 ```text
-https://api.paxtech.net/api/v1/public/artifacts/download?product=paxl&platform=<platform>&tags=<tag>
+https://api.lakeward.net/api/v1/public/artifacts/download?product=paxl&platform=<platform>&tags=<tag>
 ```
 
 This resolver publish step is required for `paxl update` and the installer flow

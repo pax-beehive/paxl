@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	DefaultManagerURL                 = "https://api.paxtech.net"
+	DefaultManagerURL                 = "https://api.lakeward.net"
 	defaultDeviceLoginPollIntervalSec = int64(2)
 )
 
