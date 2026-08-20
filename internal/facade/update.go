@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const DefaultUpdateResolverURL = "https://api.paxtech.net/api/v1/public/artifacts/download"
+const DefaultUpdateResolverURL = "https://api.lakeward.net/api/v1/public/artifacts/download"
 const DefaultUpdateTag = "stable"
 
 const updateResolverPath = "/api/v1/public/artifacts/download"

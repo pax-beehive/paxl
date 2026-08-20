@@ -16,7 +16,7 @@ history 上传到云端服务。
 ## 安装
 
 ```sh
-curl -fsSL --max-redirs 1 https://api.paxtech.net/api/v1/public/paxl/install.sh | bash
+curl -fsSL --max-redirs 1 https://api.lakeward.net/api/v1/public/paxl/install.sh | bash
 paxl version
 ```
 
@@ -321,7 +321,7 @@ digest 作为原生 S3 SHA-256 checksum。`stable` 等 release tag 由 pax-manag
 metadata 发布到 pax-manager，并验证每个平台的 public resolver：
 
 ```text
-https://api.paxtech.net/api/v1/public/artifacts/download?product=paxl&platform=<platform>&tags=<tag>
+https://api.lakeward.net/api/v1/public/artifacts/download?product=paxl&platform=<platform>&tags=<tag>
 ```
 
 这一步是 `paxl update` 和 installer 看到新版本的必要路径。下载使用 manager

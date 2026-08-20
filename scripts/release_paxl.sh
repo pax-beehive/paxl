@@ -27,7 +27,7 @@ Environment overrides:
   PAX_RELEASE_BUILD_ID    Build id stored in metadata. Defaults to git short SHA.
   PAX_RELEASE_DIST_DIR    Local output directory. Defaults to dist.
   PAX_RELEASE_INSTALLER_OBJECT S3 object for installer. Defaults to <prefix>/<version>/install.sh.
-  PAX_RELEASE_MANAGER_URL Public manager API base URL, also baked into the installer as its default resolver. Defaults to https://api.paxtech.net.
+  PAX_RELEASE_MANAGER_URL Public manager API base URL, also baked into the installer as its default resolver. Defaults to https://api.lakeward.net.
   PAX_RELEASE_TOKEN       Required bearer token for artifact metadata publish.
   PAX_RELEASE_ID_TOKEN    Deprecated alias for PAX_RELEASE_TOKEN.
   PAX_CLOUD_CF_CLIENT_ID  Optional Cloudflare Access service-token client ID for admin metadata publish only.
@@ -225,7 +225,7 @@ source = Path(sys.argv[1])
 destination = Path(sys.argv[2])
 manager_url = sys.argv[3]
 
-marker = 'PAXL_DOWNLOAD_URL="${PAXL_DOWNLOAD_URL:-https://api.paxtech.net}"'
+marker = 'PAXL_DOWNLOAD_URL="${PAXL_DOWNLOAD_URL:-https://api.lakeward.net}"'
 text = source.read_text(encoding="utf-8")
 if text.count(marker) != 1:
     raise SystemExit("paxl installer download URL marker is missing or ambiguous")
@@ -798,7 +798,7 @@ main() {
   local artifacts_jsonl manifest manifest_dst installer_object manager_url public_base_url
 
   require_cmd python3
-  manager_url="${PAX_RELEASE_MANAGER_URL:-https://api.paxtech.net}"
+  manager_url="${PAX_RELEASE_MANAGER_URL:-https://api.lakeward.net}"
   manager_url="$(normalize_public_manager_url "$manager_url")" || return 1
   require_cmd go
   require_cmd git
