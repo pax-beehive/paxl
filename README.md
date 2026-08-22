@@ -17,6 +17,10 @@ curl -fsSL --max-redirs 1 https://api.lakeward.net/api/v1/public/paxl/install.sh
 paxl version
 ```
 
+The installer writes `paxl` to `~/.local/bin` by default. If that directory is
+not on `PATH`, installation still succeeds and the installer prints commands
+for the current shell. Set `PAXL_INSTALL_DIR` to override the destination.
+
 The public install endpoint may redirect once to the immutable installer
 object. The one-redirect limit prevents an unexpected second hop; the
 installer itself follows zero redirects for manager resolver and signed object

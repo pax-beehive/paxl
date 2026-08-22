@@ -133,21 +133,96 @@ choose_install_dir() {
     return
   fi
 
-  if [[ -d /usr/local/bin && -w /usr/local/bin ]]; then
-    printf '%s' /usr/local/bin
-    return
+  printf '%s' "$HOME/.local/bin"
+}
+
+print_posix_path_guidance() {
+  local shell_label="$1"
+  local profile_path="$2"
+  local default_profile_ref="$3"
+  local install_dir="$4"
+  local path_command="$5"
+  local quoted_path_command quoted_profile_path
+
+  printf 'Add it to %s (copy and run):\n\n' "$shell_label" >&2
+  if [[ "$install_dir" == "$HOME/.local/bin" ]]; then
+    printf '  echo '\''export PATH="$HOME/.local/bin:$PATH"'\'' >> %s\n' \
+      "$default_profile_ref" >&2
+  else
+    printf -v quoted_path_command '%q' "$path_command"
+    printf -v quoted_profile_path '%q' "$profile_path"
+    printf '  printf '\''%%s\\n'\'' %s >> %s\n' \
+      "$quoted_path_command" \
+      "$quoted_profile_path" >&2
+  fi
+  printf '%s\n' '' 'Apply it to the current shell:' '' "  $path_command" >&2
+}
+
+print_path_guidance() {
+  local install_dir="$1"
+  local target="$2"
+  local shell_name target_command path_command quoted_install_dir
+
+  shell_name="$(basename "${SHELL:-}")"
+  printf -v target_command '%q version' "$target"
+  if [[ "$install_dir" == "$HOME/.local/bin" ]]; then
+    path_command='export PATH="$HOME/.local/bin:$PATH"'
+  else
+    printf -v quoted_install_dir '%q' "$install_dir"
+    path_command="export PATH=${quoted_install_dir}:\$PATH"
   fi
 
-  local dir
-  IFS=':' read -r -a path_dirs <<<"${PATH:-}"
-  for dir in "${path_dirs[@]}"; do
-    if [[ -n "$dir" && -d "$dir" && -w "$dir" ]]; then
-      printf '%s' "$dir"
-      return
-    fi
-  done
-
-  printf '%s' "$HOME/.local/bin"
+  warn "paxl was installed successfully, but $install_dir is not in PATH."
+  case "$shell_name" in
+    zsh)
+      print_posix_path_guidance \
+        'zsh' \
+        "$HOME/.zshrc" \
+        '"$HOME/.zshrc"' \
+        "$install_dir" \
+        "$path_command"
+      ;;
+    bash)
+      print_posix_path_guidance \
+        'bash' \
+        "$HOME/.bashrc" \
+        '"$HOME/.bashrc"' \
+        "$install_dir" \
+        "$path_command"
+      ;;
+    fish)
+      if [[ "$install_dir" == "$HOME/.local/bin" ]]; then
+        printf '%s\n' \
+          'Add it to fish (copy and run):' \
+          '' \
+          '  fish_add_path "$HOME/.local/bin"' >&2
+      else
+        printf '%s\n' \
+          'Add it to fish with fish_add_path, then restart your shell:' \
+          '' \
+          "  fish_add_path $quoted_install_dir" >&2
+      fi
+      ;;
+    sh | dash | ksh)
+      print_posix_path_guidance \
+        'your shell' \
+        "$HOME/.profile" \
+        '"$HOME/.profile"' \
+        "$install_dir" \
+        "$path_command"
+      ;;
+    *)
+      printf '%s\n' \
+        'Add this line to your shell profile, then run it in the current shell:' \
+        '' \
+        "  $path_command" >&2
+      ;;
+  esac
+  printf '%s\n' \
+    '' \
+    'Until PATH is reloaded, run:' \
+    '' \
+    "  $target_command" >&2
 }
 
 download_with_progress() {
@@ -274,8 +349,7 @@ main() {
   chmod 0755 "$target" 2>/dev/null || true
 
   if ! path_has_dir "$install_dir"; then
-    warn "$install_dir is not currently in PATH"
-    warn "add it to your shell profile, or run paxl via: $target"
+    print_path_guidance "$install_dir" "$target"
   fi
 
   log "Installed: $("${target}" version | head -n 1)"

@@ -20,6 +20,10 @@ curl -fsSL --max-redirs 1 https://api.lakeward.net/api/v1/public/paxl/install.sh
 paxl version
 ```
 
+installer 默认把 `paxl` 安装到 `~/.local/bin`。如果该目录不在 `PATH` 中，安装仍会
+成功，并按当前 shell 打印可直接复制执行的配置命令。可通过 `PAXL_INSTALL_DIR`
+覆盖安装目录。
+
 public install endpoint 最多只允许一次跳转到 immutable installer object；这一限制会
 阻止意外的第二次跳转。installer 内部请求 manager resolver 和 signed object 时均不
 跟随跳转。

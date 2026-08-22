@@ -38,8 +38,9 @@ Install a specific uploaded version when needed:
 curl -fsSL --max-redirs 1 https://api.lakeward.net/api/v1/public/paxl/install.sh | PAXL_VERSION=0.1.0 bash
 ```
 
-If the installer warns that the install directory is not in `PATH`, either add
-that directory to the shell profile or call the printed absolute `paxl` path.
+The installer uses `~/.local/bin` by default. If it warns that the directory is
+not in `PATH`, run the printed command for the current shell or call the printed
+absolute `paxl` path.
 
 ## Choose the Flow
 
