@@ -10,6 +10,22 @@ fail_test() {
   exit 1
 }
 
+stdin_marker="stdin-main-ran"
+if ! stdin_output="$(
+  awk '
+    index($0, "if [[") == 1 && index($0, "BASH_SOURCE[0]") > 0 {
+      print "main() { printf \"%s\\n\" \"stdin-main-ran\"; }"
+    }
+    { print }
+  ' "${script_dir}/installer.sh" | bash 2>&1
+)"; then
+  fail_test "installer failed when executed from standard input: ${stdin_output}"
+fi
+if [[ "$stdin_output" != "$stdin_marker" ]]; then
+  fail_test "installer did not run main when executed from standard input"
+fi
+printf 'ok - installer runs main when executed from standard input\n'
+
 test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
 curl_call_file="${test_dir}/curl-args"
