@@ -112,6 +112,10 @@ func daemonResolverURL(resolverURL string, cloudURL string) string {
 		return explicit
 	}
 	if cloud := strings.TrimRight(strings.TrimSpace(cloudURL), "/"); cloud != "" {
+		// The hosted tunnel requires Access authentication; downloads are public.
+		if strings.EqualFold(cloud, "https://wsapi.lakeward.net") {
+			return DefaultDaemonResolverURL
+		}
 		return cloud + daemonResolverPath
 	}
 	return DefaultDaemonResolverURL

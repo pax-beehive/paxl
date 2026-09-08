@@ -83,6 +83,22 @@ func TestDaemonResolverURLUsesExplicitOverrideThenCloudThenHostedFallback(t *tes
 			want:     "https://self-hosted.test/api/v1/public/paxd/download",
 		},
 		{
+			name:     "hosted tunnel uses public download origin",
+			cloudURL: "https://wsapi.lakeward.net/",
+			want:     DefaultDaemonResolverURL,
+		},
+		{
+			name:        "explicit hosted override wins",
+			resolverURL: "https://updates.example/custom",
+			cloudURL:    "https://wsapi.lakeward.net",
+			want:        "https://updates.example/custom",
+		},
+		{
+			name:     "similar hostname stays self hosted",
+			cloudURL: "https://wsapi.lakeward.net.example",
+			want:     "https://wsapi.lakeward.net.example/api/v1/public/paxd/download",
+		},
+		{
 			name: "hosted fallback remains",
 			want: DefaultDaemonResolverURL,
 		},
