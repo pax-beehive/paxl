@@ -19,6 +19,7 @@ var newDaemonFacade = func() *facade.DaemonFacade {
 }
 
 type daemonLifecycleFacade interface {
+	InstallHarness(context.Context, *facade.DaemonHarnessInstallRequest, ...func(*facade.Option)) (*facade.DaemonLifecycleResponse, error)
 	Install(
 		context.Context,
 		*facade.DaemonInstallRequest,
@@ -654,6 +655,30 @@ func newDaemonHarnessCommand(stdout io.Writer) *cli.Command {
 		Name:  "harness",
 		Usage: "List and discover local daemon harnesses",
 		Commands: []*cli.Command{
+			{
+				Name:      "install",
+				Usage:     "Install a harness on this machine (currently dsh)",
+				ArgsUsage: "<harness>",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "dry-run", Usage: "Show installation without running it"},
+					&cli.StringFlag{Name: "format", Value: "text", Usage: "Output format: text or json"},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					if cmd.Args().Len() != 1 {
+						return fmt.Errorf("usage: paxl daemon harness install <harness> [--dry-run]")
+					}
+					if format := cmd.String("format"); format != "text" && format != "json" {
+						return fmt.Errorf("unsupported format %q", format)
+					}
+					resp, err := newDaemonLifecycleFacade().InstallHarness(ctx, &facade.DaemonHarnessInstallRequest{
+						Harness: cmd.Args().First(), DryRun: cmd.Bool("dry-run"),
+					})
+					if err != nil {
+						return fmt.Errorf("install daemon harness: %w", err)
+					}
+					return renderDaemonLifecycle(stdout, resp, cmd.String("format"))
+				},
+			},
 			{
 				Name:  "list",
 				Usage: "List known harnesses",

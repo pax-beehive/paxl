@@ -28,6 +28,7 @@ Useful links:
 - Chinese docs: [doc/README_cn.md](doc/README_cn.md)
 - Architecture: [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md)
 - Hook routing: [doc/AUTOMATED_INJECTION_ROUTING.md](doc/AUTOMATED_INJECTION_ROUTING.md)
+- DeepSeek Harness: [doc/DSH_DAEMON.md](doc/DSH_DAEMON.md)
 
 ## The First Five Minutes
 
