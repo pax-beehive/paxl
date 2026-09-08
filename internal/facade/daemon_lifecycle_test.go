@@ -480,10 +480,11 @@ func TestDaemonLifecycleResolverDoesNotFollowRedirect(t *testing.T) {
 
 	requestCount := 0
 	lifecycle := NewDaemonLifecycleFacade(nil)
-	lifecycle.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		requestCount++
-		if requestCount > 1 {
-			return jsonResponse(`{
+	lifecycle.client = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			requestCount++
+			if requestCount > 1 {
+				return jsonResponse(`{
 				"data": {
 					"url": "https://objects.test/paxd?X-Amz-Signature=should-not-be-returned",
 					"sha256": "abc123",
@@ -491,16 +492,17 @@ func TestDaemonLifecycleResolverDoesNotFollowRedirect(t *testing.T) {
 					"version": "0.2.0"
 				}
 			}`), nil
-		}
-		return &http.Response{
-			StatusCode: http.StatusFound,
-			Body:       ioNopCloser([]byte("redirect")),
-			Header: http.Header{
-				"Location": []string{"https://login.test/?state=daemon-resolver-secret"},
-			},
-			Request: req,
-		}, nil
-	})}
+			}
+			return &http.Response{
+				StatusCode: http.StatusFound,
+				Body:       ioNopCloser([]byte("redirect")),
+				Header: http.Header{
+					"Location": []string{"https://login.test/?state=daemon-resolver-secret"},
+				},
+				Request: req,
+			}, nil
+		}),
+	}
 
 	_, err := lifecycle.Install(context.Background(), &DaemonInstallRequest{
 		ResolverURL: "https://manager.test/api/v1/public/paxd/download",
@@ -522,35 +524,39 @@ func TestDaemonLifecycleBinaryDownloadDoesNotFollowRedirect(t *testing.T) {
 	sha := hex.EncodeToString(sum[:])
 	requestCount := 0
 	lifecycle := NewDaemonLifecycleFacade(nil)
-	lifecycle.client = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		requestCount++
-		switch req.URL.Host {
-		case "manager.test":
-			return jsonResponse(fmt.Sprintf(
-				`{"data":{"url":"https://objects.test/paxd?X-Amz-Signature=daemon-object-secret","sha256":%q,"size_bytes":%d,"version":"0.2.0"}}`,
-				sha,
-				len(binary),
-			)), nil
-		case "objects.test":
-			return &http.Response{
-				StatusCode: http.StatusTemporaryRedirect,
-				Body:       ioNopCloser([]byte("redirect")),
-				Header: http.Header{
-					"Location": []string{"https://unexpected.test/paxd?token=daemon-redirect-secret"},
-				},
-				Request: req,
-			}, nil
-		case "unexpected.test":
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       ioNopCloser(binary),
-				Header:     make(http.Header),
-				Request:    req,
-			}, nil
-		default:
-			return nil, fmt.Errorf("unexpected host")
-		}
-	})}
+	lifecycle.client = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			requestCount++
+			switch req.URL.Host {
+			case "manager.test":
+				return jsonResponse(fmt.Sprintf(
+					`{"data":{"url":"https://objects.test/paxd?X-Amz-Signature=daemon-object-secret","sha256":%q,"size_bytes":%d,"version":"0.2.0"}}`,
+					sha,
+					len(binary),
+				)), nil
+			case "objects.test":
+				return &http.Response{
+					StatusCode: http.StatusTemporaryRedirect,
+					Body:       ioNopCloser([]byte("redirect")),
+					Header: http.Header{
+						"Location": []string{
+							"https://unexpected.test/paxd?token=daemon-redirect-secret",
+						},
+					},
+					Request: req,
+				}, nil
+			case "unexpected.test":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       ioNopCloser(binary),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			default:
+				return nil, fmt.Errorf("unexpected host")
+			}
+		}),
+	}
 
 	_, err := lifecycle.Install(context.Background(), &DaemonInstallRequest{
 		ResolverURL: "https://manager.test/api/v1/public/paxd/download",
