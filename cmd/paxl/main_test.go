@@ -341,25 +341,29 @@ func TestDownloadUpdateBinaryDoesNotFollowRedirect(t *testing.T) {
 	t.Parallel()
 
 	requestCount := 0
-	client := &http.Client{Transport: commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
-		requestCount++
-		if requestCount > 1 {
+	client := &http.Client{
+		Transport: commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			requestCount++
+			if requestCount > 1 {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader("redirected HTML")),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			}
 			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(strings.NewReader("redirected HTML")),
-				Header:     make(http.Header),
-				Request:    req,
+				StatusCode: http.StatusFound,
+				Body:       io.NopCloser(strings.NewReader("redirect")),
+				Header: http.Header{
+					"Location": []string{
+						"https://unexpected.example.test/?state=download-redirect-secret",
+					},
+				},
+				Request: req,
 			}, nil
-		}
-		return &http.Response{
-			StatusCode: http.StatusFound,
-			Body:       io.NopCloser(strings.NewReader("redirect")),
-			Header: http.Header{
-				"Location": []string{"https://unexpected.example.test/?state=download-redirect-secret"},
-			},
-			Request: req,
-		}, nil
-	})}
+		}),
+	}
 
 	_, err := downloadUpdateBinary(
 		context.Background(),

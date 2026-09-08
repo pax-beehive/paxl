@@ -131,10 +131,11 @@ func (s *UpdateFacadeSuite) TestCheckDerivesResolverFromConfiguredManager() {
 
 func (s *UpdateFacadeSuite) TestResolverDoesNotFollowRedirect() {
 	requestCount := 0
-	client := &http.Client{Transport: artifactRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		requestCount++
-		if requestCount > 1 {
-			return jsonResponse(`{
+	client := &http.Client{
+		Transport: artifactRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			requestCount++
+			if requestCount > 1 {
+				return jsonResponse(`{
 				"data": {
 					"url": "https://objects.test/paxl?X-Amz-Signature=should-not-be-returned",
 					"sha256": "abc123",
@@ -142,16 +143,19 @@ func (s *UpdateFacadeSuite) TestResolverDoesNotFollowRedirect() {
 					"version": "0.1.1"
 				}
 			}`), nil
-		}
-		return &http.Response{
-			StatusCode: http.StatusFound,
-			Body:       io.NopCloser(bytes.NewBufferString("redirect")),
-			Header: http.Header{
-				"Location": []string{"https://login.example.test/?state=resolver-redirect-secret"},
-			},
-			Request: req,
-		}, nil
-	})}
+			}
+			return &http.Response{
+				StatusCode: http.StatusFound,
+				Body:       io.NopCloser(bytes.NewBufferString("redirect")),
+				Header: http.Header{
+					"Location": []string{
+						"https://login.example.test/?state=resolver-redirect-secret",
+					},
+				},
+				Request: req,
+			}, nil
+		}),
+	}
 
 	_, err := NewUpdateFacade(client).Check(context.Background(), &CheckUpdateRequest{
 		CurrentVersion: "0.1.0",

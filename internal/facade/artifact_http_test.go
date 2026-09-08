@@ -17,25 +17,27 @@ func TestArtifactHTTPClientReturnsRedirectWithoutFollowing(t *testing.T) {
 	t.Parallel()
 
 	requestCount := 0
-	client := &http.Client{Transport: artifactRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		requestCount++
-		if requestCount > 1 {
+	client := &http.Client{
+		Transport: artifactRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			requestCount++
+			if requestCount > 1 {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader("redirected HTML")),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			}
 			return &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(strings.NewReader("redirected HTML")),
-				Header:     make(http.Header),
-				Request:    req,
+				StatusCode: http.StatusFound,
+				Body:       io.NopCloser(strings.NewReader("redirect")),
+				Header: http.Header{
+					"Location": []string{"https://login.example.test/?state=redirect-secret"},
+				},
+				Request: req,
 			}, nil
-		}
-		return &http.Response{
-			StatusCode: http.StatusFound,
-			Body:       io.NopCloser(strings.NewReader("redirect")),
-			Header: http.Header{
-				"Location": []string{"https://login.example.test/?state=redirect-secret"},
-			},
-			Request: req,
-		}, nil
-	})}
+		}),
+	}
 
 	req, err := http.NewRequestWithContext(
 		context.Background(),
