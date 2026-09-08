@@ -34,7 +34,8 @@ func (f *DaemonLifecycleFacade) InstallHarness(
 		return nil, fmt.Errorf("find npm for DSH installation: %w", err)
 	}
 	verbosef(option, "Installing DeepSeek Harness on this machine.")
-	if err := f.runner.Run(ctx, npm, []string{"install", "-g", "@deepseek-ai/dsh@latest"}); err != nil {
+	args := []string{"install", "-g", "@deepseek-ai/dsh@latest"}
+	if err := f.runner.Run(ctx, npm, args); err != nil {
 		return nil, fmt.Errorf("install DeepSeek Harness: %w", err)
 	}
 	resp.Status = SetupStatusInstalled
