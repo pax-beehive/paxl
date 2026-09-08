@@ -10,7 +10,9 @@ import (
 func TestDaemonHarnessInstallationUsesExplicitLocalNpmCommand(t *testing.T) {
 	for _, dryRun := range []bool{true, false} {
 		runner := &fakeDaemonLifecycleRunner{path: "/local/bin/npm"}
-		resp, err := NewDaemonLifecycleFacade(runner).InstallHarness(t.Context(), &DaemonHarnessInstallRequest{Harness: "dsh", DryRun: dryRun})
+		resp, err := NewDaemonLifecycleFacade(
+			runner,
+		).InstallHarness(t.Context(), &DaemonHarnessInstallRequest{Harness: "dsh", DryRun: dryRun})
 		require.NoError(t, err)
 		assert.Equal(t, "dsh", resp.Binary)
 		if dryRun {

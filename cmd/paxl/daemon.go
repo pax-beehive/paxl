@@ -19,7 +19,11 @@ var newDaemonFacade = func() *facade.DaemonFacade {
 }
 
 type daemonLifecycleFacade interface {
-	InstallHarness(context.Context, *facade.DaemonHarnessInstallRequest, ...func(*facade.Option)) (*facade.DaemonLifecycleResponse, error)
+	InstallHarness(
+		context.Context,
+		*facade.DaemonHarnessInstallRequest,
+		...func(*facade.Option),
+	) (*facade.DaemonLifecycleResponse, error)
 	Install(
 		context.Context,
 		*facade.DaemonInstallRequest,
@@ -661,11 +665,17 @@ func newDaemonHarnessCommand(stdout io.Writer) *cli.Command {
 				ArgsUsage: "<harness>",
 				Flags: []cli.Flag{
 					&cli.BoolFlag{Name: "dry-run", Usage: "Show installation without running it"},
-					&cli.StringFlag{Name: "format", Value: "text", Usage: "Output format: text or json"},
+					&cli.StringFlag{
+						Name:  "format",
+						Value: "text",
+						Usage: "Output format: text or json",
+					},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					if cmd.Args().Len() != 1 {
-						return fmt.Errorf("usage: paxl daemon harness install <harness> [--dry-run]")
+						return fmt.Errorf(
+							"usage: paxl daemon harness install <harness> [--dry-run]",
+						)
 					}
 					if format := cmd.String("format"); format != "text" && format != "json" {
 						return fmt.Errorf("unsupported format %q", format)

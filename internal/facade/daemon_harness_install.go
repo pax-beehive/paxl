@@ -12,7 +12,11 @@ type DaemonHarnessInstallRequest struct {
 }
 
 // InstallHarness installs on the CLI host; it never sends an install request to paxd.
-func (f *DaemonLifecycleFacade) InstallHarness(ctx context.Context, req *DaemonHarnessInstallRequest, opts ...func(*Option)) (*DaemonLifecycleResponse, error) {
+func (f *DaemonLifecycleFacade) InstallHarness(
+	ctx context.Context,
+	req *DaemonHarnessInstallRequest,
+	opts ...func(*Option),
+) (*DaemonLifecycleResponse, error) {
 	if req == nil || strings.TrimSpace(req.Harness) != "dsh" {
 		return nil, fmt.Errorf("harness installation currently supports dsh only")
 	}

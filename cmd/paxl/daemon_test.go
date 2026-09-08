@@ -606,7 +606,11 @@ type cmdFakeDaemonLifecycleFacade struct {
 	remoteLoginReq *facade.DaemonRemoteLoginRequest
 }
 
-func (f *cmdFakeDaemonLifecycleFacade) InstallHarness(context.Context, *facade.DaemonHarnessInstallRequest, ...func(*facade.Option)) (*facade.DaemonLifecycleResponse, error) {
+func (f *cmdFakeDaemonLifecycleFacade) InstallHarness(
+	context.Context,
+	*facade.DaemonHarnessInstallRequest,
+	...func(*facade.Option),
+) (*facade.DaemonLifecycleResponse, error) {
 	return &facade.DaemonLifecycleResponse{}, nil
 }
 

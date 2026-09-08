@@ -11,7 +11,12 @@ import (
 
 func TestDaemonHarnessInstallDSHDryRun(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	err := run(t.Context(), []string{"daemon", "harness", "install", "dsh", "--dry-run"}, &stdout, &stderr)
+	err := run(
+		t.Context(),
+		[]string{"daemon", "harness", "install", "dsh", "--dry-run"},
+		&stdout,
+		&stderr,
+	)
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), "npm install -g @deepseek-ai/dsh@latest")
 	assert.Contains(t, stdout.String(), "DEEPSEEK_API_KEY")
@@ -19,14 +24,39 @@ func TestDaemonHarnessInstallDSHDryRun(t *testing.T) {
 
 func TestDaemonDSHDiscoveryAndCreation(t *testing.T) {
 	client := &cmdFakeDaemonControlClient{
-		remotes:   &model.DaemonQueryResult{Remotes: &model.DaemonListRemotesResult{Items: []*model.DaemonRemoteView{{Remote: model.DaemonRemote{ID: "prod"}}}}},
-		harnesses: &model.DaemonQueryResult{Harnesses: &model.DaemonListHarnessesResult{Items: []*model.DaemonHarnessView{{Harness: "dsh", State: "available", Command: []string{"dsh", "--profile", "acp"}}}}},
+		remotes: &model.DaemonQueryResult{
+			Remotes: &model.DaemonListRemotesResult{
+				Items: []*model.DaemonRemoteView{{Remote: model.DaemonRemote{ID: "prod"}}},
+			},
+		},
+		harnesses: &model.DaemonQueryResult{
+			Harnesses: &model.DaemonListHarnessesResult{
+				Items: []*model.DaemonHarnessView{
+					{
+						Harness: "dsh",
+						State:   "available",
+						Command: []string{"dsh", "--profile", "acp"},
+					},
+				},
+			},
+		},
 	}
 	defer stubDaemonFacade(t, client)()
 	var stdout, stderr bytes.Buffer
-	require.NoError(t, run(t.Context(), []string{"daemon", "harness", "discover", "dsh"}, &stdout, &stderr))
+	require.NoError(
+		t,
+		run(t.Context(), []string{"daemon", "harness", "discover", "dsh"}, &stdout, &stderr),
+	)
 	assert.Contains(t, stdout.String(), "dsh")
-	require.NoError(t, run(t.Context(), []string{"daemon", "agent", "create", "--harness", "dsh", "--name", "deepseek"}, &stdout, &stderr))
+	require.NoError(
+		t,
+		run(
+			t.Context(),
+			[]string{"daemon", "agent", "create", "--harness", "dsh", "--name", "deepseek"},
+			&stdout,
+			&stderr,
+		),
+	)
 	require.NotNil(t, client.createdAgent)
 	assert.Equal(t, "dsh", client.createdAgent.Harness)
 	assert.Equal(t, "dsh", client.createdAgent.AgentType)
