@@ -84,9 +84,13 @@ func newDaemonUpdateCommand(stdout io.Writer) *cli.Command {
 		Usage: "Update the paxd daemon binary",
 		Flags: daemonUpdateFlags(true),
 		Action: func(ctx context.Context, cmd *cli.Command) error {
+			resolverURL, err := daemonCommandResolverURL(ctx, cmd)
+			if err != nil {
+				return fmt.Errorf("resolve daemon artifact source: %w", err)
+			}
 			resp, err := newDaemonLifecycleFacade().Update(ctx, &facade.DaemonUpdateRequest{
 				DryRun:      cmd.Bool("dry-run"),
-				ResolverURL: cmd.String("resolver-url"),
+				ResolverURL: resolverURL,
 				Platform:    cmd.String("platform"),
 				Tag:         cmd.String("tag"),
 				InstallDir:  cmd.String("install-dir"),
@@ -105,11 +109,15 @@ func newDaemonUpdateCommand(stdout io.Writer) *cli.Command {
 func newDaemonUpdateCheckCommand(stdout io.Writer) *cli.Command {
 	return &cli.Command{
 		Name:  "check",
-		Usage: "Check the latest hosted paxd release",
+		Usage: "Check the latest paxd release",
 		Flags: daemonUpdateFlags(false),
 		Action: func(ctx context.Context, cmd *cli.Command) error {
+			resolverURL, err := daemonCommandResolverURL(ctx, cmd)
+			if err != nil {
+				return fmt.Errorf("resolve daemon artifact source: %w", err)
+			}
 			resp, err := newDaemonLifecycleFacade().Check(ctx, &facade.DaemonUpdateCheckRequest{
-				ResolverURL: cmd.String("resolver-url"),
+				ResolverURL: resolverURL,
 				Platform:    cmd.String("platform"),
 				Tag:         cmd.String("tag"),
 			})
@@ -125,8 +133,11 @@ func daemonUpdateFlags(includeWriteFlags bool) []cli.Flag {
 	flags := []cli.Flag{
 		&cli.StringFlag{
 			Name:  "resolver-url",
-			Value: facade.DefaultDaemonResolverURL,
-			Usage: "Artifact resolver URL",
+			Usage: "Artifact resolver URL; overrides --remote",
+		},
+		&cli.StringFlag{
+			Name:  "remote",
+			Usage: "Local paxd remote whose cloud API supplies the resolver; defaults to default",
 		},
 		&cli.StringFlag{Name: "platform", Usage: "Release platform override like darwin/arm64"},
 		&cli.StringFlag{
@@ -159,8 +170,11 @@ func newDaemonInstallCommand(stdout io.Writer) *cli.Command {
 			&cli.BoolFlag{Name: "dry-run", Usage: "Show install actions without writing files"},
 			&cli.StringFlag{
 				Name:  "resolver-url",
-				Value: facade.DefaultDaemonResolverURL,
-				Usage: "Artifact resolver URL",
+				Usage: "Artifact resolver URL; overrides --remote",
+			},
+			&cli.StringFlag{
+				Name:  "remote",
+				Usage: "Local paxd remote whose cloud API supplies the resolver; defaults to default",
 			},
 			&cli.StringFlag{Name: "platform", Usage: "Release platform override like darwin/arm64"},
 			&cli.StringFlag{
@@ -172,9 +186,13 @@ func newDaemonInstallCommand(stdout io.Writer) *cli.Command {
 			&cli.StringFlag{Name: "format", Value: "text", Usage: "Output format: text or json"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
+			resolverURL, err := daemonCommandResolverURL(ctx, cmd)
+			if err != nil {
+				return fmt.Errorf("resolve daemon artifact source: %w", err)
+			}
 			resp, err := newDaemonLifecycleFacade().Install(ctx, &facade.DaemonInstallRequest{
 				DryRun:      cmd.Bool("dry-run"),
-				ResolverURL: cmd.String("resolver-url"),
+				ResolverURL: resolverURL,
 				Platform:    cmd.String("platform"),
 				Tag:         cmd.String("tag"),
 				InstallDir:  cmd.String("install-dir"),
@@ -187,6 +205,48 @@ func newDaemonInstallCommand(stdout io.Writer) *cli.Command {
 	}
 }
 
+func daemonCommandResolverURL(ctx context.Context, cmd *cli.Command) (string, error) {
+	if resolverURL := strings.TrimSpace(cmd.String("resolver-url")); resolverURL != "" {
+		return resolverURL, nil
+	}
+
+	requestedRemoteID := strings.TrimSpace(cmd.String("remote"))
+	remoteID := requestedRemoteID
+	if remoteID == "" {
+		remoteID = "default"
+	}
+
+	response, err := newDaemonFacade().ListRemotes(ctx, &facade.ListDaemonRemotesRequest{
+		IncludeDisabled: true,
+	})
+	if err != nil {
+		if requestedRemoteID != "" {
+			return "", fmt.Errorf("load daemon remote %q: %w", remoteID, err)
+		}
+		return facade.DefaultDaemonResolverURL, nil
+	}
+	if response != nil {
+		for _, remote := range response.Remotes {
+			if remote == nil || strings.TrimSpace(remote.Remote.ID) != remoteID {
+				continue
+			}
+			cloudURL := strings.TrimSpace(remote.Remote.CloudAPIURL)
+			if cloudURL != "" {
+				return facade.DaemonResolverURL("", cloudURL), nil
+			}
+			if requestedRemoteID != "" {
+				return "", fmt.Errorf("daemon remote %q has no cloud API URL", remoteID)
+			}
+			return facade.DefaultDaemonResolverURL, nil
+		}
+	}
+
+	if requestedRemoteID != "" {
+		return "", fmt.Errorf("daemon remote %q was not found", remoteID)
+	}
+	return facade.DefaultDaemonResolverURL, nil
+}
+
 func newDaemonSetupCommand(stdout io.Writer) *cli.Command {
 	return &cli.Command{
 		Name:  "setup",
@@ -196,8 +256,7 @@ func newDaemonSetupCommand(stdout io.Writer) *cli.Command {
 			&cli.StringFlag{Name: "cloud-url", Usage: "Pax cloud API URL"},
 			&cli.StringFlag{
 				Name:  "resolver-url",
-				Value: facade.DefaultDaemonResolverURL,
-				Usage: "Artifact resolver URL used when paxd is missing",
+				Usage: "Artifact resolver URL used when paxd is missing; defaults to --cloud-url or hosted Pax",
 			},
 			&cli.StringFlag{Name: "platform", Usage: "Release platform override like darwin/arm64"},
 			&cli.StringFlag{
@@ -357,8 +416,7 @@ func newDaemonRemoteCommand(stdout io.Writer) *cli.Command {
 					},
 					&cli.StringFlag{
 						Name:  "resolver-url",
-						Value: facade.DefaultDaemonResolverURL,
-						Usage: "Artifact resolver URL used when paxd is missing",
+						Usage: "Artifact resolver URL used when paxd is missing; defaults to --cloud-url or hosted Pax",
 					},
 					&cli.StringFlag{
 						Name:  "platform",
@@ -1203,8 +1261,7 @@ func renderDaemonUpdateCheck(
 		if _, err := fmt.Fprintf(stdout, "Size: %d\n", resp.SizeBytes); err != nil {
 			return err
 		}
-		_, err := fmt.Fprintf(stdout, "URL: %s\n", resp.DownloadURL)
-		return err
+		return nil
 	case "json":
 		return json.NewEncoder(stdout).Encode(resp)
 	default:

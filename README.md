@@ -13,8 +13,28 @@ agent session.
 ## Install
 
 ```sh
-curl -fsSL https://api.paxtech.net/api/v1/public/paxl/install.sh | bash
+curl -fsSL --max-redirs 1 https://api.lakeward.net/api/v1/public/paxl/install.sh | bash
 paxl version
+```
+
+The installer writes `paxl` to `~/.local/bin` by default. If that directory is
+not on `PATH`, installation still succeeds and the installer prints commands
+for the current shell. Set `PAXL_INSTALL_DIR` to override the destination.
+
+The public install endpoint may redirect once to the immutable installer
+object. The one-redirect limit prevents an unexpected second hop; the
+installer itself follows zero redirects for manager resolver and signed object
+requests.
+
+For a self-hosted manager, its released installer already defaults binary
+resolution to that manager. Passing the base URL explicitly also supports
+older installer artifacts:
+
+```sh
+export PAX_MANAGER_URL='https://pax.home.example'
+curl -fsSL --max-redirs 1 "$PAX_MANAGER_URL/api/v1/public/paxl/install.sh" |
+PAXL_DOWNLOAD_URL="$PAX_MANAGER_URL" bash
+paxl setup --with-daemon --cloud-url "$PAX_MANAGER_URL"
 ```
 
 Build from source:
@@ -279,7 +299,7 @@ is hard to reason about.
 
 ## Release Uploads
 
-`paxl` releases are native Go binaries uploaded to GCS. The release script
+`paxl` releases are native Go binaries uploaded to S3-compatible object storage. The release script
 defaults to the next patch version, derived from the latest local
 `paxl/vX.Y.Z` git tag. If no release tag exists, it starts from the version in
 `cmd/paxl/main.go`.
@@ -303,31 +323,113 @@ the native host binary with `paxl version`, writes sha256 files and a
 `manifest.json`, uploads to:
 
 ```text
-gs://pax-tech-bucket/paxl/releases/<version>/
-```
-
-For each release tag, it also updates:
-
-```text
-gs://pax-tech-bucket/paxl/releases/latest/<tag>/manifest.json
+s3://$PAX_RELEASE_BUCKET/paxl/releases/<version>/
 ```
 
 It also uploads the installer to:
 
 ```text
-gs://pax-tech-bucket/paxl/install.sh
+s3://$PAX_RELEASE_BUCKET/paxl/releases/<version>/install.sh
 ```
 
-After upload, the script publishes the same artifact metadata to pax-manager and
-verifies the public resolver for each platform:
+`PAX_RELEASE_BUCKET` is required for an upload; it has no default. Dry-run and
+build-only runs may omit it.
+
+The release script generates a copy of the installer in `dist`, safely bakes
+`PAX_RELEASE_MANAGER_URL` in as its default resolver base, and hashes, uploads,
+and publishes that generated body. A runtime `PAXL_DOWNLOAD_URL` still wins.
+Manager URLs containing credentials, a query, or a fragment are rejected before
+the installer is generated.
+
+Every upload uses `If-None-Match: *`, so an existing object is never
+overwritten. If a PUT fails (including a lost response after a successful
+write), the script uses `head-object` to compare size, content type, sha256
+metadata, and the native checksum when returned. An exact match is an
+idempotent success; any mismatch aborts the release. Each object carries its
+hex sha256 as S3 object metadata and its base64 digest as the native S3 SHA-256
+checksum. Release tags such as `stable` are selected through pax-manager
+metadata; the script does not write mutable `latest/<tag>` manifests. After
+upload, it publishes the same artifact metadata to pax-manager with
+`generation=0` and verifies the public resolver for each platform:
 
 ```text
-https://api.paxtech.net/api/v1/public/artifacts/download?product=paxl&platform=<platform>&tags=<tag>
+https://api.lakeward.net/api/v1/public/artifacts/download?product=paxl&platform=<platform>&tags=<tag>
 ```
 
 This resolver publish step is required for `paxl update` and the installer flow
-to see the new version. Set `PAX_RELEASE_SKIP_METADATA=1` only when you
-intentionally want a GCS-only upload.
+to see the new version. Downloads use the HTTPS URL signed by pax-manager; the
+bucket does not need to be public. Set `PAX_RELEASE_SKIP_METADATA=1` only when
+you intentionally want a storage-only upload.
+
+The generated manifest only contains directly downloadable `storage_url`
+values when `PAX_RELEASE_PUBLIC_BASE_URL` is set. The default private-bucket
+flow uses the manager resolver instead of the manifest. The installer likewise
+requires an explicit `PAXL_MANIFEST_URL` to opt into manifest mode; it has no
+implicit Google Storage fallback.
+
+Without an explicit `--resolver-url`, `paxl update` and `paxl version --check`
+derive this resolver from the manager URL stored by `paxl login`. If no login
+configuration exists, they retain the hosted Pax fallback. An explicit
+`--resolver-url` always wins. Likewise, `paxl setup --with-daemon --cloud-url
+<self-hosted-manager>`, `paxl daemon setup`, and `paxl daemon remote login`
+derive the paxd resolver from their `--cloud-url` unless their resolver override
+is supplied explicitly. `paxl daemon install`, `paxl daemon update`, and
+`paxl daemon update check` derive it from the local `default` remote, or from
+the remote selected with `--remote`. If the implicit default remote is not
+available they retain the hosted fallback; an explicit `--resolver-url` takes
+precedence over all remote selection.
+
+Whenever installer metadata is published, the release script also requires the public
+`/api/v1/public/paxl/install.sh` endpoint to return HTTP 302 to the same
+scheme, authority, and path returned by the `stable,installer` JSON resolver.
+This catches Cloudflare Access login redirects without logging either signed
+URL query. JSON parse failures are reported without response bodies or source
+URLs.
+
+AWS example:
+
+```sh
+export AWS_REGION='us-west-2'
+export AWS_ACCESS_KEY_ID='<access-key-id>'
+export AWS_SECRET_ACCESS_KEY='<secret-access-key>'
+export PAX_RELEASE_BUCKET='my-pax-releases'
+export PAX_RELEASE_MANAGER_URL='https://api.example.com'
+export PAX_RELEASE_TOKEN='<manager-admin-bearer-token>'
+make release-paxl RELEASE_VERSION=0.2.0 RELEASE_TAGS=stable
+```
+
+MinIO example:
+
+```sh
+export AWS_REGION='us-east-1'
+export AWS_ACCESS_KEY_ID='<minio-access-key>'
+export AWS_SECRET_ACCESS_KEY='<minio-secret-key>'
+export PAX_RELEASE_S3_ENDPOINT='http://127.0.0.1:9000'
+export PAX_RELEASE_BUCKET='pax-releases'
+export PAX_RELEASE_MANAGER_URL='https://api.example.com'
+export PAX_RELEASE_TOKEN='<manager-admin-bearer-token>'
+make release-paxl RELEASE_VERSION=0.2.0 RELEASE_TAGS=stable
+```
+
+Configure pax-manager to use the same bucket, endpoint, region, and credentials.
+`PAX_RELEASE_ID_TOKEN` remains a deprecated alias for `PAX_RELEASE_TOKEN`; the
+release script never invokes `gcloud`.
+
+If the manager admin route is protected by Cloudflare Access, export both
+service-token values before publishing:
+
+```sh
+export PAX_CLOUD_CF_CLIENT_ID='<cloudflare-access-client-id>'
+export PAX_CLOUD_CF_CLIENT_SECRET='<cloudflare-access-client-secret>'
+```
+
+The release script adds `CF-Access-Client-Id` and
+`CF-Access-Client-Secret` only to the admin metadata publish request. The public
+JSON resolver and installer redirect smoke tests are deliberately anonymous;
+they receive neither CF headers nor the admin bearer token and fail on a
+Cloudflare login redirect. Configure an Access bypass for those public routes.
+The two CF variables must be set together and are never written to logs or sent
+to AWS/S3.
 
 After a successful upload it creates a local git tag:
 
@@ -471,7 +573,7 @@ paxl capsule create codex:<session-id> \
   --keyword "installer hosting" \
   --title "paxl installer hosting" \
   --summary "Installer upload and hosting requirement." \
-  --content "The installer should be uploaded and hosted at GCS."
+  --content "The installer should be uploaded to S3-compatible object storage."
 ```
 
 Create a manual capsule when the content should not be tied to a source

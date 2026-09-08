@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PAXL_DOWNLOAD_URL="${PAXL_DOWNLOAD_URL:-https://api.paxtech.net}"
+PAXL_DOWNLOAD_URL="${PAXL_DOWNLOAD_URL:-https://api.lakeward.net}"
 PAXL_RESOLVER_PATH="${PAXL_RESOLVER_PATH:-/api/v1/public/artifacts/download}"
 PAXL_TAG="${PAXL_TAG:-stable}"
 PAXL_VERSION="${PAXL_VERSION:-}"
-PAXL_BUCKET="${PAXL_BUCKET:-pax-tech-bucket}"
-PAXL_PREFIX="${PAXL_PREFIX:-paxl/releases}"
 PAXL_MANIFEST_URL="${PAXL_MANIFEST_URL:-}"
 PAXL_USE_RESOLVER="${PAXL_USE_RESOLVER:-1}"
 PAXL_BINARY_NAME="${PAXL_BINARY_NAME:-paxl}"
@@ -125,20 +123,6 @@ manifest_version() {
   python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])'
 }
 
-gs_to_https() {
-  local url="$1"
-  local rest bucket object
-
-  if [[ "$url" != gs://* ]]; then
-    printf '%s' "$url"
-    return
-  fi
-  rest="${url#gs://}"
-  bucket="${rest%%/*}"
-  object="${rest#*/}"
-  printf 'https://storage.googleapis.com/%s/%s' "$bucket" "$object"
-}
-
 path_has_dir() {
   [[ ":${PATH:-}:" == *":$1:"* ]]
 }
@@ -149,21 +133,96 @@ choose_install_dir() {
     return
   fi
 
-  if [[ -d /usr/local/bin && -w /usr/local/bin ]]; then
-    printf '%s' /usr/local/bin
-    return
+  printf '%s' "$HOME/.local/bin"
+}
+
+print_posix_path_guidance() {
+  local shell_label="$1"
+  local profile_path="$2"
+  local default_profile_ref="$3"
+  local install_dir="$4"
+  local path_command="$5"
+  local quoted_path_command quoted_profile_path
+
+  printf 'Add it to %s (copy and run):\n\n' "$shell_label" >&2
+  if [[ "$install_dir" == "$HOME/.local/bin" ]]; then
+    printf '  echo '\''export PATH="$HOME/.local/bin:$PATH"'\'' >> %s\n' \
+      "$default_profile_ref" >&2
+  else
+    printf -v quoted_path_command '%q' "$path_command"
+    printf -v quoted_profile_path '%q' "$profile_path"
+    printf '  printf '\''%%s\\n'\'' %s >> %s\n' \
+      "$quoted_path_command" \
+      "$quoted_profile_path" >&2
+  fi
+  printf '%s\n' '' 'Apply it to the current shell:' '' "  $path_command" >&2
+}
+
+print_path_guidance() {
+  local install_dir="$1"
+  local target="$2"
+  local shell_name target_command path_command quoted_install_dir
+
+  shell_name="$(basename "${SHELL:-}")"
+  printf -v target_command '%q version' "$target"
+  if [[ "$install_dir" == "$HOME/.local/bin" ]]; then
+    path_command='export PATH="$HOME/.local/bin:$PATH"'
+  else
+    printf -v quoted_install_dir '%q' "$install_dir"
+    path_command="export PATH=${quoted_install_dir}:\$PATH"
   fi
 
-  local dir
-  IFS=':' read -r -a path_dirs <<<"${PATH:-}"
-  for dir in "${path_dirs[@]}"; do
-    if [[ -n "$dir" && -d "$dir" && -w "$dir" ]]; then
-      printf '%s' "$dir"
-      return
-    fi
-  done
-
-  printf '%s' "$HOME/.local/bin"
+  warn "paxl was installed successfully, but $install_dir is not in PATH."
+  case "$shell_name" in
+    zsh)
+      print_posix_path_guidance \
+        'zsh' \
+        "$HOME/.zshrc" \
+        '"$HOME/.zshrc"' \
+        "$install_dir" \
+        "$path_command"
+      ;;
+    bash)
+      print_posix_path_guidance \
+        'bash' \
+        "$HOME/.bashrc" \
+        '"$HOME/.bashrc"' \
+        "$install_dir" \
+        "$path_command"
+      ;;
+    fish)
+      if [[ "$install_dir" == "$HOME/.local/bin" ]]; then
+        printf '%s\n' \
+          'Add it to fish (copy and run):' \
+          '' \
+          '  fish_add_path "$HOME/.local/bin"' >&2
+      else
+        printf '%s\n' \
+          'Add it to fish with fish_add_path, then restart your shell:' \
+          '' \
+          "  fish_add_path $quoted_install_dir" >&2
+      fi
+      ;;
+    sh | dash | ksh)
+      print_posix_path_guidance \
+        'your shell' \
+        "$HOME/.profile" \
+        '"$HOME/.profile"' \
+        "$install_dir" \
+        "$path_command"
+      ;;
+    *)
+      printf '%s\n' \
+        'Add this line to your shell profile, then run it in the current shell:' \
+        '' \
+        "  $path_command" >&2
+      ;;
+  esac
+  printf '%s\n' \
+    '' \
+    'Until PATH is reloaded, run:' \
+    '' \
+    "  $target_command" >&2
 }
 
 download_with_progress() {
@@ -171,9 +230,13 @@ download_with_progress() {
   local output="$2"
 
   if curl --help all 2>/dev/null | grep -q -- '--progress-bar'; then
-    curl -fL --progress-bar -o "$output" "$url"
+    if ! curl -fL --max-redirs 0 --progress-bar -o "$output" "$url" 2>/dev/null; then
+      fail "failed to download paxl artifact"
+    fi
   else
-    curl -fL -o "$output" "$url"
+    if ! curl -fL --max-redirs 0 -o "$output" "$url" 2>/dev/null; then
+      fail "failed to download paxl artifact"
+    fi
   fi
 }
 
@@ -195,9 +258,12 @@ resolve_from_manifest() {
   local response storage_url
 
   log "Resolving paxl artifact from manifest"
-  response="$(curl -fsSL "$manifest_url")" || fail "failed to fetch manifest from $manifest_url"
+  response="$(curl -fsSL --max-redirs 0 "$manifest_url" 2>/dev/null)" ||
+    fail "failed to fetch paxl manifest"
   storage_url="$(printf '%s' "$response" | manifest_field "$platform" storage_url)"
-  paxl_resolved_url="$(gs_to_https "$storage_url")"
+  [[ -n "$storage_url" ]] ||
+    fail "manifest artifact for $platform has no public storage_url; use the manager resolver instead"
+  paxl_resolved_url="$storage_url"
   paxl_resolved_sha="$(printf '%s' "$response" | manifest_field "$platform" sha256)"
   paxl_resolved_size="$(printf '%s' "$response" | manifest_field "$platform" size)"
   paxl_resolved_version="$(printf '%s' "$response" | manifest_version)"
@@ -222,9 +288,10 @@ resolve_from_api() {
   else
     log "Resolving latest ${bold}${PAXL_TAG}${reset} paxl artifact"
   fi
-  response="$(curl -fsSL "$api")" || fail "failed to resolve paxl artifact from $api"
+  response="$(curl -fsSL --max-redirs 0 "$api" 2>/dev/null)" ||
+    fail "failed to resolve paxl artifact"
   if [[ "$response" != \{* ]]; then
-    fail "expected JSON from $api; got a non-JSON response"
+    fail "paxl artifact resolver returned a non-JSON response"
   fi
 
   paxl_resolved_url="$(printf '%s' "$response" | json_field data.url)"
@@ -244,14 +311,8 @@ main() {
   log "Detected platform: ${bold}${platform}${reset}"
 
   manifest_url="$PAXL_MANIFEST_URL"
-  if [[ -z "$manifest_url" ]]; then
-    if [[ "$PAXL_USE_RESOLVER" == "1" ]]; then
-      manifest_url=""
-    elif [[ -n "$PAXL_VERSION" ]]; then
-      manifest_url="https://storage.googleapis.com/${PAXL_BUCKET}/${PAXL_PREFIX}/${PAXL_VERSION}/manifest.json"
-    else
-      manifest_url="https://storage.googleapis.com/${PAXL_BUCKET}/${PAXL_PREFIX}/latest/${PAXL_TAG}/manifest.json"
-    fi
+  if [[ -z "$manifest_url" && "$PAXL_USE_RESOLVER" != "1" ]]; then
+    fail "PAXL_MANIFEST_URL is required when PAXL_USE_RESOLVER is not 1"
   fi
 
   if [[ -n "$manifest_url" ]]; then
@@ -288,12 +349,13 @@ main() {
   chmod 0755 "$target" 2>/dev/null || true
 
   if ! path_has_dir "$install_dir"; then
-    warn "$install_dir is not currently in PATH"
-    warn "add it to your shell profile, or run paxl via: $target"
+    print_path_guidance "$install_dir" "$target"
   fi
 
   log "Installed: $("${target}" version | head -n 1)"
   printf '%s\n' "${green}Done.${reset}"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
+  main "$@"
+fi

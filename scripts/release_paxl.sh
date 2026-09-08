@@ -7,25 +7,34 @@ Usage:
   scripts/release_paxl.sh [patch|minor|major|<version>] [tag[,tag...]]
 
 Build paxl for supported platforms, smoke-test the native binary, upload
-artifacts and release metadata to GCS, and tag the uploaded semantic version.
+artifacts to S3-compatible object storage, publish release metadata, and tag
+the uploaded semantic version. S3 uploads are write-once. A retry accepts an
+existing object only after its size, content type, and checksums match.
 
 Defaults:
   version bump: patch
   tags: stable
-  bucket: pax-tech-bucket
   object prefix: paxl/releases/<version>/
   platforms: darwin/amd64 darwin/arm64 linux/amd64 linux/arm64
 
 Environment overrides:
-  PAX_RELEASE_BUCKET      GCS bucket name.
-  PAX_RELEASE_PREFIX      GCS object prefix parent.
+  PAX_RELEASE_BUCKET      Required S3 bucket name, except for dry-run/build-only runs.
+  PAX_RELEASE_PREFIX      S3 object prefix parent.
+  PAX_RELEASE_S3_ENDPOINT Optional S3-compatible endpoint URL (for example MinIO).
+  PAX_RELEASE_PUBLIC_BASE_URL Optional stable public base URL used in manifest storage_url fields.
   PAX_RELEASE_TAGS        Comma-separated tags. Overrides the second argument.
   PAX_RELEASE_PLATFORMS   Space-separated GOOS/GOARCH platforms.
   PAX_RELEASE_BUILD_ID    Build id stored in metadata. Defaults to git short SHA.
   PAX_RELEASE_DIST_DIR    Local output directory. Defaults to dist.
-  PAX_RELEASE_INSTALLER_OBJECT GCS object for installer. Defaults to paxl/install.sh.
-  PAX_RELEASE_MANAGER_URL Public manager API base URL. Defaults to https://api.paxtech.net.
-  PAX_RELEASE_ID_TOKEN    Bearer token for artifact metadata publish. Defaults to gcloud.
+  PAX_RELEASE_INSTALLER_OBJECT S3 object for installer. Defaults to <prefix>/<version>/install.sh.
+  PAX_RELEASE_MANAGER_URL Public manager API base URL, also baked into the installer as its default resolver. Defaults to https://api.lakeward.net.
+  PAX_RELEASE_TOKEN       Required bearer token for artifact metadata publish.
+  PAX_RELEASE_ID_TOKEN    Deprecated alias for PAX_RELEASE_TOKEN.
+  PAX_CLOUD_CF_CLIENT_ID  Optional Cloudflare Access service-token client ID for admin metadata publish only.
+  PAX_CLOUD_CF_CLIENT_SECRET Matching service-token secret; both CF values must be set together.
+  AWS_REGION              AWS region used by the AWS CLI. Defaults to us-east-1.
+  AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN
+                           Standard AWS credential environment variables.
   PAX_RELEASE_DRY_RUN=1   Build and smoke-test without upload or git tag.
   PAX_RELEASE_SKIP_UPLOAD=1 Build only; also skips git tag.
   PAX_RELEASE_SKIP_VERIFY=1
@@ -40,6 +49,8 @@ Examples:
   scripts/release_paxl.sh minor beta
   scripts/release_paxl.sh 0.2.0 stable
   PAX_RELEASE_DRY_RUN=1 scripts/release_paxl.sh patch stable
+  AWS_REGION=us-west-2 PAX_RELEASE_BUCKET=my-releases PAX_RELEASE_TOKEN=... scripts/release_paxl.sh 0.2.0 stable
+  AWS_REGION=us-east-1 PAX_RELEASE_S3_ENDPOINT=http://127.0.0.1:9000 PAX_RELEASE_BUCKET=pax-releases PAX_RELEASE_TOKEN=... scripts/release_paxl.sh 0.2.0 stable
 EOF
 }
 
@@ -54,6 +65,35 @@ fail() {
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"
+}
+
+validate_cloudflare_access_credentials() {
+  local client_id="${PAX_CLOUD_CF_CLIENT_ID:-}"
+  local client_secret="${PAX_CLOUD_CF_CLIENT_SECRET:-}"
+
+  if [[ -n "$client_id" && -z "$client_secret" ]] ||
+    [[ -z "$client_id" && -n "$client_secret" ]]; then
+    fail "PAX_CLOUD_CF_CLIENT_ID and PAX_CLOUD_CF_CLIENT_SECRET must be set together"
+  fi
+}
+
+manager_admin_curl() {
+  validate_cloudflare_access_credentials
+  if [[ -n "${PAX_CLOUD_CF_CLIENT_ID:-}" ]]; then
+    curl --disable \
+      -H "CF-Access-Client-Id: ${PAX_CLOUD_CF_CLIENT_ID}" \
+      -H "CF-Access-Client-Secret: ${PAX_CLOUD_CF_CLIENT_SECRET}" \
+      "$@"
+    return
+  fi
+  curl --disable "$@"
+}
+
+anonymous_manager_curl() {
+  # Public release smoke tests must exercise the same anonymous contract as an
+  # installer or client. In particular, never reuse Cloudflare service-token
+  # headers that are valid only for the admin metadata endpoint.
+  curl --disable --no-location --max-redirs 0 "$@"
 }
 
 semver_re='^[0-9]+\.[0-9]+\.[0-9]+$'
@@ -138,6 +178,69 @@ file_size() {
   python3 -c 'import os, sys; print(os.path.getsize(sys.argv[1]))' "$1"
 }
 
+normalize_public_manager_url() {
+  local manager_url="$1"
+
+  python3 - "$manager_url" <<'PY'
+import sys
+from urllib.parse import urlsplit
+
+raw_url = sys.argv[1]
+if not raw_url or any(character.isspace() for character in raw_url):
+    raise SystemExit("manager URL must be a public HTTP(S) base URL without credentials, query, or fragment")
+manager_url = raw_url.rstrip("/")
+try:
+    parsed = urlsplit(manager_url)
+    _ = parsed.port
+except ValueError:
+    raise SystemExit("manager URL is not a valid public HTTP(S) base URL")
+if (
+    parsed.scheme.lower() not in {"http", "https"}
+    or not parsed.hostname
+    or parsed.username is not None
+    or parsed.password is not None
+    or parsed.query
+    or parsed.fragment
+):
+    raise SystemExit("manager URL must be a public HTTP(S) base URL without credentials, query, or fragment")
+sys.stdout.write(manager_url)
+PY
+}
+
+bake_installer_manager_url() {
+  local source_path="$1"
+  local output_path="$2"
+  local manager_url
+
+  manager_url="$(normalize_public_manager_url "$3")" || return 1
+
+  python3 - "$source_path" "$output_path" "$manager_url" <<'PY'
+import os
+import shlex
+import stat
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+destination = Path(sys.argv[2])
+manager_url = sys.argv[3]
+
+marker = 'PAXL_DOWNLOAD_URL="${PAXL_DOWNLOAD_URL:-https://api.lakeward.net}"'
+text = source.read_text(encoding="utf-8")
+if text.count(marker) != 1:
+    raise SystemExit("paxl installer download URL marker is missing or ambiguous")
+replacement = "\n".join(
+    (
+        "pax_release_default_download_url=" + shlex.quote(manager_url),
+        'PAXL_DOWNLOAD_URL="${PAXL_DOWNLOAD_URL:-$pax_release_default_download_url}"',
+        "unset pax_release_default_download_url",
+    )
+)
+destination.write_text(text.replace(marker, replacement), encoding="utf-8")
+os.chmod(destination, stat.S_IMODE(source.stat().st_mode))
+PY
+}
+
 artifact_name_for() {
   local version="$1"
   local platform="$2"
@@ -145,6 +248,13 @@ artifact_name_for() {
   local arch="${platform#*/}"
 
   printf 'paxl_%s_%s_%s' "$version" "$os" "$arch"
+}
+
+release_installer_object() {
+  local prefix_parent="$1"
+  local version="$2"
+
+  printf '%s' "${PAX_RELEASE_INSTALLER_OBJECT:-${prefix_parent%/}/${version}/install.sh}"
 }
 
 tag_json_array() {
@@ -255,68 +365,161 @@ with open(path, "a", encoding="utf-8") as f:
 PY
 }
 
-upload_file() {
-  local src="$1"
-  local dst="$2"
-  local content_type="$3"
+aws_s3api() {
+  local args=(--region "${AWS_REGION:-us-east-1}")
 
-  if [[ "${PAX_RELEASE_SKIP_UPLOAD:-0}" == "1" || "${PAX_RELEASE_DRY_RUN:-0}" == "1" ]]; then
-    log "skipping upload ${src} -> ${dst}"
-    return
+  if [[ -n "${PAX_RELEASE_S3_ENDPOINT:-}" ]]; then
+    args+=(--endpoint-url "$PAX_RELEASE_S3_ENDPOINT")
   fi
-  log "uploading ${src} -> ${dst}"
-  gcloud storage cp --content-type="$content_type" "$src" "$dst" >/dev/null
+  aws "${args[@]}" s3api "$@"
 }
 
-verify_gcs_object() {
-  local dst="$1"
-  local expected_size="$2"
-  local actual_size
+sha256_hex_to_base64() {
+  python3 - "$1" <<'PY'
+import base64
+import sys
+
+try:
+    digest = bytes.fromhex(sys.argv[1])
+except ValueError as exc:
+    raise SystemExit(f"invalid hex sha256: {exc}")
+if len(digest) != 32:
+    raise SystemExit("invalid hex sha256 length")
+sys.stdout.write(base64.b64encode(digest).decode("ascii"))
+PY
+}
+
+describe_s3_object() {
+  local bucket="$1"
+  local object="$2"
+  local description
+
+  # AWS requires checksum mode to return ChecksumSHA256. Some S3-compatible
+  # services do not implement that option, so retry without it and rely on the
+  # independently verified sha256 metadata in that compatibility path.
+  if description="$(aws_s3api head-object \
+    --bucket "$bucket" \
+    --key "$object" \
+    --checksum-mode ENABLED \
+    --output json 2>/dev/null)"; then
+    printf '%s' "$description"
+    return
+  fi
+  aws_s3api head-object --bucket "$bucket" --key "$object" --output json
+}
+
+upload_file() {
+  local src="$1"
+  local bucket="$2"
+  local object="$3"
+  local content_type="$4"
+  local sha="$5"
+  local checksum_sha256 put_output put_status
+
+  if [[ "${PAX_RELEASE_SKIP_UPLOAD:-0}" == "1" || "${PAX_RELEASE_DRY_RUN:-0}" == "1" ]]; then
+    if [[ -n "$bucket" ]]; then
+      log "skipping upload ${src} -> s3://${bucket}/${object}"
+    else
+      log "skipping upload ${src} (bucket not configured)"
+    fi
+    return
+  fi
+  log "uploading ${src} -> s3://${bucket}/${object}"
+  checksum_sha256="$(sha256_hex_to_base64 "$sha")"
+  if put_output="$(aws_s3api put-object \
+    --bucket "$bucket" \
+    --key "$object" \
+    --body "$src" \
+    --content-type "$content_type" \
+    --metadata "sha256=${sha}" \
+    --checksum-sha256 "$checksum_sha256" \
+    --if-none-match '*' 2>&1)"; then
+    return
+  else
+    put_status=$?
+  fi
+
+  # A successful write can still look failed when the client loses the
+  # response. Never echo AWS stderr here because it may contain sensitive
+  # endpoint context. Treat any failed PUT as idempotent only when HEAD proves
+  # that the immutable object is exactly the artifact we intended to upload.
+  put_output=""
+  log "S3 PUT exited ${put_status}; verifying an existing immutable object"
+  verify_s3_object \
+    "$bucket" \
+    "$object" \
+    "$(file_size "$src")" \
+    "$content_type" \
+    "$sha" \
+    "1"
+  log "existing S3 object matches; continuing the release"
+}
+
+verify_s3_object() {
+  local bucket="$1"
+  local object="$2"
+  local expected_size="$3"
+  local expected_content_type="$4"
+  local expected_sha="$5"
+  local force="${6:-0}"
+  local description actual_size actual_content_type actual_sha actual_checksum expected_checksum
 
   if [[ "${PAX_RELEASE_SKIP_UPLOAD:-0}" == "1" ||
-    "${PAX_RELEASE_SKIP_VERIFY:-0}" == "1" ||
     "${PAX_RELEASE_DRY_RUN:-0}" == "1" ]]; then
     return
   fi
-  actual_size="$(gcloud storage objects describe "$dst" --format='value(size)')"
-  [[ "$actual_size" == "$expected_size" ]] ||
-    fail "GCS object size mismatch for ${dst}: ${actual_size}, expected ${expected_size}"
-}
-
-gcs_object_generation() {
-  local dst="$1"
-
-  if [[ "${PAX_RELEASE_SKIP_UPLOAD:-0}" == "1" || "${PAX_RELEASE_DRY_RUN:-0}" == "1" ]]; then
-    printf '0'
+  if [[ "$force" != "1" && "${PAX_RELEASE_SKIP_VERIFY:-0}" == "1" ]]; then
     return
   fi
-  gcloud storage objects describe "$dst" --format='value(generation)'
+  description="$(describe_s3_object "$bucket" "$object")"
+  read -r actual_size actual_content_type actual_sha actual_checksum < <(printf '%s' "$description" | python3 -c '
+import json
+import sys
+
+doc = json.load(sys.stdin)
+metadata = doc.get("Metadata") or {}
+print(
+    doc.get("ContentLength", ""),
+    doc.get("ContentType", ""),
+    metadata.get("sha256", ""),
+    doc.get("ChecksumSHA256", ""),
+)
+')
+  [[ "$actual_size" == "$expected_size" ]] ||
+    fail "S3 object size mismatch for s3://${bucket}/${object}: ${actual_size}, expected ${expected_size}"
+  [[ "$actual_content_type" == "$expected_content_type" ]] ||
+    fail "S3 object content type mismatch for s3://${bucket}/${object}: ${actual_content_type}, expected ${expected_content_type}"
+  [[ "$actual_sha" == "$expected_sha" ]] ||
+    fail "S3 object sha256 metadata mismatch for s3://${bucket}/${object}"
+  if [[ -n "$actual_checksum" ]]; then
+    expected_checksum="$(sha256_hex_to_base64 "$expected_sha")"
+    [[ "$actual_checksum" == "$expected_checksum" ]] ||
+      fail "S3 object checksum mismatch for s3://${bucket}/${object}"
+  fi
 }
 
 json_field() {
   local path="$1"
-  local source="${2:-stdin}"
+  : "${2:-stdin}"
 
   python3 -c '
 import json
 import sys
 
 path = sys.argv[1].split(".")
-source = sys.argv[2]
 raw = sys.stdin.read()
 try:
     doc = json.loads(raw)
-except json.JSONDecodeError as exc:
-    snippet = raw[:500].replace("\n", "\\n")
-    raise SystemExit(f"non-JSON input while reading {'\''.'\''.join(path)} from {source}: {exc}; body={snippet!r}")
+except json.JSONDecodeError:
+    raise SystemExit(f"invalid JSON response while reading field {'\''.'\''.join(path)}")
 try:
     value = doc
     for part in path:
         value = value[part]
-except (KeyError, TypeError) as exc:
-    raise SystemExit(f"missing JSON field {'\''.'\''.join(path)} in {source}: {exc}")
+except (KeyError, TypeError):
+    raise SystemExit(f"missing JSON field {'\''.'\''.join(path)} in response")
 print(value)
-' "$path" "$source"
+' "$path"
 }
 
 json_field_checked() {
@@ -335,12 +538,48 @@ print(urllib.parse.quote(sys.argv[1], safe=""))
 PY
 }
 
+same_url_target() {
+  local first="$1"
+  local second="$2"
+
+  printf '%s\0%s\0' "$first" "$second" | python3 -c '
+import sys
+from urllib.parse import urlsplit
+
+def target(raw):
+    try:
+        parsed = urlsplit(raw)
+        _ = parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        return None
+    if parsed.username is not None or parsed.password is not None:
+        return None
+    return (parsed.scheme.lower(), parsed.netloc.lower(), parsed.path or "/")
+
+values = sys.stdin.buffer.read().split(b"\0")
+if len(values) != 3 or values[-1] != b"":
+    raise SystemExit(1)
+try:
+    left = target(values[0].decode("utf-8"))
+    right = target(values[1].decode("utf-8"))
+except UnicodeDecodeError:
+    raise SystemExit(1)
+raise SystemExit(0 if left is not None and left == right else 1)
+'
+}
+
 artifact_publish_token() {
+  if [[ -n "${PAX_RELEASE_TOKEN:-}" ]]; then
+    printf '%s' "$PAX_RELEASE_TOKEN"
+    return
+  fi
   if [[ -n "${PAX_RELEASE_ID_TOKEN:-}" ]]; then
     printf '%s' "$PAX_RELEASE_ID_TOKEN"
     return
   fi
-  gcloud auth print-identity-token
+  fail "PAX_RELEASE_TOKEN is required to publish artifact metadata"
 }
 
 should_publish_metadata() {
@@ -396,7 +635,7 @@ if record["platform"] == "script":
 print(json.dumps(payload, separators=(",", ":"), sort_keys=True))
 PY
 )"
-    if ! response="$(curl -sS \
+    if ! response="$(manager_admin_curl -sS \
       -H "Authorization: Bearer ${token}" \
       -H "Content-Type: application/json" \
       -X POST \
@@ -406,7 +645,7 @@ PY
     fi
     code="$(printf '%s' "$response" | json_field code "artifact publish response for ${platform}")"
     [[ "$code" == "200" ]] ||
-      fail "artifact metadata publish failed for ${platform}: code ${code}; response ${response}"
+      fail "artifact metadata publish failed for ${platform}"
   done <"$artifacts_jsonl"
 }
 
@@ -416,7 +655,7 @@ verify_resolver_artifacts() {
   local tags="$3"
   local manager_url="$4"
   local verify_tag line platform encoded_platform encoded_tag resolver_url response
-  local actual_version actual_sha actual_size expected_sha expected_size
+  local response_file response_status actual_version actual_sha actual_size expected_sha expected_size
 
   if ! should_publish_metadata || [[ "${PAX_RELEASE_SKIP_VERIFY:-0}" == "1" ]]; then
     log "skipping public resolver verification"
@@ -435,19 +674,97 @@ verify_resolver_artifacts() {
     expected_size="$(printf '%s' "$line" | json_field size "release artifact metadata for ${platform}")"
     encoded_platform="$(urlencode "$platform")"
     resolver_url="${manager_url%/}/api/v1/public/artifacts/download?product=paxl&platform=${encoded_platform}&tags=${encoded_tag}"
-    if ! response="$(curl -sS "$resolver_url")"; then
-      fail "resolver request failed for ${platform}: ${resolver_url}"
+    response_file="$(mktemp)"
+    if ! response_status="$(anonymous_manager_curl \
+      -sS \
+      -o "$response_file" \
+      -w '%{http_code}' \
+      "$resolver_url")"; then
+      rm -f "$response_file"
+      fail "resolver request failed for ${platform}"
     fi
+    if [[ "$response_status" != "200" ]]; then
+      rm -f "$response_file"
+      fail "resolver did not return HTTP 200 for ${platform}"
+    fi
+    response="$(<"$response_file")"
+    rm -f "$response_file"
     actual_version="$(printf '%s' "$response" | json_field_checked data.version "$resolver_url")"
     actual_sha="$(printf '%s' "$response" | json_field_checked data.sha256 "$resolver_url")"
     actual_size="$(printf '%s' "$response" | json_field_checked data.size_bytes "$resolver_url")"
     [[ "$actual_version" == "$version" ]] ||
-      fail "resolver version mismatch for ${platform}: ${actual_version}, expected ${version}"
+      fail "resolver version mismatch for ${platform}"
     [[ "$actual_sha" == "$expected_sha" ]] ||
       fail "resolver sha256 mismatch for ${platform}"
     [[ "$actual_size" == "$expected_size" ]] ||
-      fail "resolver size mismatch for ${platform}: ${actual_size}, expected ${expected_size}"
+      fail "resolver size mismatch for ${platform}"
   done <"$artifacts_jsonl"
+}
+
+verify_public_installer_redirect() {
+  local manager_url="$1"
+  local resolver_url resolver_response resolver_signed_url installer_url
+  local resolver_body_file resolver_status headers_file redirect_status redirect_location
+
+  if ! should_publish_metadata ||
+    [[ "${PAX_RELEASE_SKIP_VERIFY:-0}" == "1" ]] ||
+    [[ "${PAX_RELEASE_SKIP_INSTALLER:-0}" == "1" ]]; then
+    log "skipping public installer redirect verification"
+    return
+  fi
+
+  require_cmd curl
+  resolver_url="${manager_url%/}/api/v1/public/artifacts/download?product=paxl&platform=script&tags=$(urlencode 'stable,installer')"
+  resolver_body_file="$(mktemp)"
+  if ! resolver_status="$(anonymous_manager_curl \
+    -sS \
+    --no-location \
+    --max-redirs 0 \
+    -o "$resolver_body_file" \
+    -w '%{http_code}' \
+    "$resolver_url")"; then
+    rm -f "$resolver_body_file"
+    fail "public installer resolver request failed"
+  fi
+  if [[ "$resolver_status" != "200" ]]; then
+    rm -f "$resolver_body_file"
+    fail "public installer resolver did not return HTTP 200"
+  fi
+  resolver_response="$(<"$resolver_body_file")"
+  rm -f "$resolver_body_file"
+  resolver_signed_url="$(printf '%s' "$resolver_response" |
+    json_field_checked data.url "public installer resolver response")"
+
+  installer_url="${manager_url%/}/api/v1/public/paxl/install.sh"
+  headers_file="$(mktemp)"
+  if ! redirect_status="$(anonymous_manager_curl \
+    -sS \
+    --no-location \
+    --max-redirs 0 \
+    -D "$headers_file" \
+    -o /dev/null \
+    -w '%{http_code}' \
+    "$installer_url")"; then
+    rm -f "$headers_file"
+    fail "public installer request failed"
+  fi
+  redirect_location="$(awk '
+    tolower($0) ~ /^location:[[:space:]]*/ {
+      sub(/^[^:]*:[[:space:]]*/, "")
+      sub(/\r$/, "")
+      print
+      exit
+    }
+  ' "$headers_file")"
+  rm -f "$headers_file"
+
+  [[ "$redirect_status" == "302" ]] ||
+    fail "public installer endpoint did not return HTTP 302"
+  [[ -n "$redirect_location" ]] ||
+    fail "public installer endpoint returned HTTP 302 without Location"
+  same_url_target "$resolver_signed_url" "$redirect_location" ||
+    fail "public installer redirect does not match the stable installer resolver target"
+  log "public installer redirect verified"
 }
 
 create_release_tag() {
@@ -478,39 +795,50 @@ main() {
 
   local version_arg="${1:-patch}"
   local version tags bucket prefix_parent platforms dist_dir build_id tags_json created_at
-  local artifacts_jsonl manifest manifest_dst installer_object manager_url
+  local artifacts_jsonl manifest manifest_dst installer_object manager_url public_base_url
 
+  require_cmd python3
+  manager_url="${PAX_RELEASE_MANAGER_URL:-https://api.lakeward.net}"
+  manager_url="$(normalize_public_manager_url "$manager_url")" || return 1
   require_cmd go
   require_cmd git
-  require_cmd python3
-  if [[ "${PAX_RELEASE_SKIP_UPLOAD:-0}" != "1" && "${PAX_RELEASE_DRY_RUN:-0}" != "1" ]]; then
-    require_cmd gcloud
-  fi
-
+  validate_cloudflare_access_credentials
   ensure_clean_tree
 
   version="$(resolve_version "$version_arg")"
   tags="${PAX_RELEASE_TAGS:-${2:-stable}}"
-  bucket="${PAX_RELEASE_BUCKET:-pax-tech-bucket}"
+  bucket="${PAX_RELEASE_BUCKET:-}"
   prefix_parent="${PAX_RELEASE_PREFIX:-paxl/releases}"
   platforms="${PAX_RELEASE_PLATFORMS:-darwin/amd64 darwin/arm64 linux/amd64 linux/arm64}"
   dist_dir="${PAX_RELEASE_DIST_DIR:-dist}"
-  installer_object="${PAX_RELEASE_INSTALLER_OBJECT:-paxl/install.sh}"
-  manager_url="${PAX_RELEASE_MANAGER_URL:-https://api.paxtech.net}"
+  installer_object="$(release_installer_object "$prefix_parent" "$version")"
+  public_base_url="${PAX_RELEASE_PUBLIC_BASE_URL:-}"
   build_id="${PAX_RELEASE_BUILD_ID:-$(git rev-parse --short HEAD)}"
   tags_json="$(tag_json_array "$tags")"
   created_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   artifacts_jsonl="$(mktemp)"
+
+  if [[ "${PAX_RELEASE_SKIP_UPLOAD:-0}" != "1" && "${PAX_RELEASE_DRY_RUN:-0}" != "1" ]]; then
+    [[ -n "$bucket" ]] || fail "PAX_RELEASE_BUCKET is required for upload"
+    require_cmd aws
+  fi
 
   mkdir -p "$dist_dir"
 
   log "release version: ${version}"
   log "build id: ${build_id}"
   log "tags: ${tags}"
-  log "bucket: gs://${bucket}/${prefix_parent}/${version}/"
+  if [[ -n "$bucket" ]]; then
+    log "bucket: s3://${bucket}/${prefix_parent}/${version}/"
+  else
+    log "bucket: not configured (dry-run/build-only)"
+  fi
+  if [[ -n "${PAX_RELEASE_S3_ENDPOINT:-}" ]]; then
+    log "S3 endpoint: ${PAX_RELEASE_S3_ENDPOINT}"
+  fi
   log "platforms: ${platforms}"
 
-  local platform os arch name output sha size object dst content_type sha_file generation
+  local platform os arch name output sha size object storage_url content_type sha_file sha_file_sha generation
   for platform in $platforms; do
     os="${platform%/*}"
     arch="${platform#*/}"
@@ -529,42 +857,46 @@ main() {
     sha="$(sha256_file "$output")"
     size="$(file_size "$output")"
     object="${prefix_parent}/${version}/${name}"
-    dst="gs://${bucket}/${object}"
+    storage_url=""
+    if [[ -n "$public_base_url" ]]; then
+      storage_url="${public_base_url%/}/${object}"
+    fi
     content_type="$(content_type_for "$platform")"
     sha_file="${output}.sha256"
 
     printf '%s  %s\n' "$sha" "$name" >"$sha_file"
-    upload_file "$output" "$dst" "$content_type"
-    upload_file "$sha_file" "${dst}.sha256" "text/plain"
-    verify_gcs_object "$dst" "$size"
-    generation="$(gcs_object_generation "$dst")"
-    append_artifact_metadata "$artifacts_jsonl" "$platform" "$name" "$sha" "$size" "$dst" "$bucket" "$object" "$generation" "$content_type"
+    sha_file_sha="$(sha256_file "$sha_file")"
+    upload_file "$output" "$bucket" "$object" "$content_type" "$sha"
+    upload_file "$sha_file" "$bucket" "${object}.sha256" "text/plain" "$sha_file_sha"
+    verify_s3_object "$bucket" "$object" "$size" "$content_type" "$sha"
+    verify_s3_object "$bucket" "${object}.sha256" "$(file_size "$sha_file")" "text/plain" "$sha_file_sha"
+    generation="0"
+    append_artifact_metadata "$artifacts_jsonl" "$platform" "$name" "$sha" "$size" "$storage_url" "$bucket" "$object" "$generation" "$content_type"
   done
 
   manifest="${dist_dir}/paxl_${version}_manifest.json"
-  manifest_dst="gs://${bucket}/${prefix_parent}/${version}/manifest.json"
+  manifest_dst="${prefix_parent}/${version}/manifest.json"
   write_manifest "$manifest" "$version" "$build_id" "$tags_json" "$created_at" "$artifacts_jsonl"
-  upload_file "$manifest" "$manifest_dst" "application/json"
-  verify_gcs_object "$manifest_dst" "$(file_size "$manifest")"
-  local release_tag latest_manifest_dst
-  IFS=, read -r -a release_tags <<<"$tags"
-  for release_tag in "${release_tags[@]}"; do
-    [[ -n "$release_tag" ]] || continue
-    latest_manifest_dst="gs://${bucket}/${prefix_parent}/latest/${release_tag}/manifest.json"
-    upload_file "$manifest" "$latest_manifest_dst" "application/json"
-    verify_gcs_object "$latest_manifest_dst" "$(file_size "$manifest")"
-  done
+  local manifest_sha
+  manifest_sha="$(sha256_file "$manifest")"
+  upload_file "$manifest" "$bucket" "$manifest_dst" "application/json" "$manifest_sha"
+  verify_s3_object "$bucket" "$manifest_dst" "$(file_size "$manifest")" "application/json" "$manifest_sha"
   if [[ "${PAX_RELEASE_SKIP_INSTALLER:-0}" != "1" ]]; then
-    upload_file "scripts/installer.sh" "gs://${bucket}/${installer_object}" "text/x-shellscript"
-    verify_gcs_object "gs://${bucket}/${installer_object}" "$(file_size scripts/installer.sh)"
-    generation="$(gcs_object_generation "gs://${bucket}/${installer_object}")"
+    local installer_path installer_sha installer_size
+    installer_path="${dist_dir}/paxl_${version}_install.sh"
+    bake_installer_manager_url "scripts/installer.sh" "$installer_path" "$manager_url"
+    installer_sha="$(sha256_file "$installer_path")"
+    installer_size="$(file_size "$installer_path")"
+    upload_file "$installer_path" "$bucket" "$installer_object" "text/x-shellscript" "$installer_sha"
+    verify_s3_object "$bucket" "$installer_object" "$installer_size" "text/x-shellscript" "$installer_sha"
+    generation="0"
     append_artifact_metadata \
       "$artifacts_jsonl" \
       "script" \
       "install.sh" \
-      "$(sha256_file scripts/installer.sh)" \
-      "$(file_size scripts/installer.sh)" \
-      "gs://${bucket}/${installer_object}" \
+      "$installer_sha" \
+      "$installer_size" \
+      "${public_base_url:+${public_base_url%/}/${installer_object}}" \
       "$bucket" \
       "$installer_object" \
       "$generation" \
@@ -574,10 +906,13 @@ main() {
   fi
   publish_artifact_metadata "$artifacts_jsonl" "$version" "$build_id" "$tags_json" "$manager_url"
   verify_resolver_artifacts "$artifacts_jsonl" "$version" "$tags" "$manager_url"
+  verify_public_installer_redirect "$manager_url"
   rm -f "$artifacts_jsonl"
   create_release_tag "$version"
 
   log "release ${version} complete"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

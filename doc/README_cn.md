@@ -16,8 +16,26 @@ history 上传到云端服务。
 ## 安装
 
 ```sh
-curl -fsSL https://api.paxtech.net/api/v1/public/paxl/install.sh | bash
+curl -fsSL --max-redirs 1 https://api.lakeward.net/api/v1/public/paxl/install.sh | bash
 paxl version
+```
+
+installer 默认把 `paxl` 安装到 `~/.local/bin`。如果该目录不在 `PATH` 中，安装仍会
+成功，并按当前 shell 打印可直接复制执行的配置命令。可通过 `PAXL_INSTALL_DIR`
+覆盖安装目录。
+
+public install endpoint 最多只允许一次跳转到 immutable installer object；这一限制会
+阻止意外的第二次跳转。installer 内部请求 manager resolver 和 signed object 时均不
+跟随跳转。
+
+自托管 manager 发布的新版 installer 已默认从同一个 manager 解析 binary。显式传
+base URL 也兼容旧 installer：
+
+```sh
+export PAX_MANAGER_URL='https://pax.home.example'
+curl -fsSL --max-redirs 1 "$PAX_MANAGER_URL/api/v1/public/paxl/install.sh" |
+  PAXL_DOWNLOAD_URL="$PAX_MANAGER_URL" bash
+paxl setup --with-daemon --cloud-url "$PAX_MANAGER_URL"
 ```
 
 从源码构建：
@@ -258,7 +276,7 @@ make cognitive-complexity COGNITIVE_TARGETS=./pkg/adaptor COGNITIVE_TOP=10
 
 ## Release 上传
 
-`paxl` 以原生 Go binary 的形式发布到 GCS。release 脚本默认从最新本地
+`paxl` 以原生 Go binary 的形式发布到 S3-compatible object storage。release 脚本默认从最新本地
 `paxl/vX.Y.Z` git tag 递增 patch 版本；如果没有 release tag，则从
 `cmd/paxl/main.go` 里的版本开始递增。
 
@@ -280,30 +298,96 @@ make release-paxl
 binary 做 smoke test，生成 sha256 文件和 `manifest.json`，并上传到：
 
 ```text
-gs://pax-tech-bucket/paxl/releases/<version>/
-```
-
-对于每个 release tag，脚本也会更新：
-
-```text
-gs://pax-tech-bucket/paxl/releases/latest/<tag>/manifest.json
+s3://$PAX_RELEASE_BUCKET/paxl/releases/<version>/
 ```
 
 同时也会上传 installer：
 
 ```text
-gs://pax-tech-bucket/paxl/install.sh
+s3://$PAX_RELEASE_BUCKET/paxl/releases/<version>/install.sh
 ```
 
-上传后，脚本会把同一份 artifact metadata 发布到 pax-manager，并验证每个平台的
-public resolver：
+上传时必须显式设置 `PAX_RELEASE_BUCKET`，脚本不提供默认 bucket；dry run 和
+build-only 可以不设置。
+
+release script 会在 `dist` 生成 installer 副本，把
+`PAX_RELEASE_MANAGER_URL` 安全地写成默认 resolver base，再对生成后的内容计算
+hash、上传并发布 metadata。运行时显式设置 `PAXL_DOWNLOAD_URL` 仍然优先。带
+credentials、query 或 fragment 的 manager URL 会在生成前被拒绝。
+
+所有上传都使用 `If-None-Match: *`，因此不会覆盖已有 object。PUT 失败时（包括上传
+已经落盘但客户端丢失响应），脚本会通过 `head-object` 严格比较 size、content type、
+`sha256` metadata，以及服务返回时的原生 checksum；完全一致按幂等成功继续，任何
+不一致都会终止 release。每个 object 都带有 hex `sha256` S3 metadata，并把 base64
+digest 作为原生 S3 SHA-256 checksum。`stable` 等 release tag 由 pax-manager metadata
+选择，脚本不再写可变的
+`latest/<tag>` manifest。上传后，脚本会用 `generation=0` 把同一份 artifact
+metadata 发布到 pax-manager，并验证每个平台的 public resolver：
 
 ```text
-https://api.paxtech.net/api/v1/public/artifacts/download?product=paxl&platform=<platform>&tags=<tag>
+https://api.lakeward.net/api/v1/public/artifacts/download?product=paxl&platform=<platform>&tags=<tag>
 ```
 
-这一步是 `paxl update` 和 installer 看到新版本的必要路径。只有在明确需要
-GCS-only 上传时，才设置 `PAX_RELEASE_SKIP_METADATA=1` 跳过。
+这一步是 `paxl update` 和 installer 看到新版本的必要路径。下载使用 manager
+返回的 HTTPS signed URL，bucket 不需要公开。只有在明确需要 storage-only 上传时，
+才设置 `PAX_RELEASE_SKIP_METADATA=1` 跳过。manifest 只有在设置
+`PAX_RELEASE_PUBLIC_BASE_URL` 时才写入可直接下载的 `storage_url`；installer 的
+manifest 模式也必须显式传 `PAXL_MANIFEST_URL`，不再隐式回退到 Google Storage。
+
+未显式传 `--resolver-url` 时，`paxl update` 和 `paxl version --check` 会从
+`paxl login` 保存的 manager URL 派生 resolver；没有 login 配置时仍回退到 hosted
+Pax，显式 `--resolver-url` 始终优先。同样，`paxl setup --with-daemon --cloud-url
+<self-hosted-manager>`、`paxl daemon setup` 和 `paxl daemon remote login` 会从
+`--cloud-url` 派生 paxd resolver，除非显式提供对应 resolver override。
+`paxl daemon install`、`paxl daemon update` 和 `paxl daemon update check` 则从
+本地 `default` remote 派生，也可以用 `--remote` 选择其他 remote；隐式 default
+不可用时保留 hosted fallback，而显式 `--resolver-url` 始终拥有最高优先级。
+
+每次发布 installer metadata 时，脚本还会要求 public `/api/v1/public/paxl/install.sh` 返回
+HTTP 302，并验证其 Location 与 `stable,installer` JSON resolver 返回的 URL 具有
+相同的 scheme、authority 和 path。这样可以拒绝 Cloudflare Access login 跳转，且
+不会输出 signed query。JSON 解析失败也不会回显响应体或来源 URL。
+
+AWS S3 示例：
+
+```sh
+export AWS_REGION='us-west-2'
+export AWS_ACCESS_KEY_ID='<access-key-id>'
+export AWS_SECRET_ACCESS_KEY='<secret-access-key>'
+export PAX_RELEASE_BUCKET='my-pax-releases'
+export PAX_RELEASE_MANAGER_URL='https://api.example.com'
+export PAX_RELEASE_TOKEN='<manager-admin-bearer-token>'
+make release-paxl RELEASE_VERSION=0.2.0 RELEASE_TAGS=stable
+```
+
+MinIO 示例：
+
+```sh
+export AWS_REGION='us-east-1'
+export AWS_ACCESS_KEY_ID='<minio-access-key>'
+export AWS_SECRET_ACCESS_KEY='<minio-secret-key>'
+export PAX_RELEASE_S3_ENDPOINT='http://127.0.0.1:9000'
+export PAX_RELEASE_BUCKET='pax-releases'
+export PAX_RELEASE_MANAGER_URL='https://api.example.com'
+export PAX_RELEASE_TOKEN='<manager-admin-bearer-token>'
+make release-paxl RELEASE_VERSION=0.2.0 RELEASE_TAGS=stable
+```
+
+pax-manager 需要配置相同的 bucket、endpoint、region 和 credentials。
+`PAX_RELEASE_ID_TOKEN` 仍作为 `PAX_RELEASE_TOKEN` 的 deprecated alias；脚本不再调用
+`gcloud`。
+
+如果 manager admin 路径受 Cloudflare Access 保护，发布前同时设置：
+
+```sh
+export PAX_CLOUD_CF_CLIENT_ID='<cloudflare-access-client-id>'
+export PAX_CLOUD_CF_CLIENT_SECRET='<cloudflare-access-client-secret>'
+```
+
+这两个 header 只发送给 admin metadata publish。public JSON resolver 和 installer
+redirect smoke 会明确匿名请求，不携带 CF header 或 admin bearer token；遇到
+Cloudflare login redirect 会终止 release，因此这些 public 路径需要配置 Access
+bypass。两个变量必须同时设置，且不会写入日志或发送给 AWS/S3。
 
 上传成功后，脚本会创建本地 git tag：
 
@@ -433,7 +517,7 @@ paxl capsule create codex:<session-id> \
   --keyword "installer hosting" \
   --title "paxl installer hosting" \
   --summary "Installer upload and hosting requirement." \
-  --content "The installer should be uploaded and hosted at GCS."
+  --content "The installer should be uploaded to S3-compatible object storage."
 ```
 
 如果这条内容不需要绑定某个 source session，可以创建 manual capsule：
