@@ -19,6 +19,7 @@ const (
 	AgentNameHermes   AgentName = "hermes"
 	AgentNameOpenClaw AgentName = "openclaw"
 	AgentNamePaxl     AgentName = "paxl"
+	AgentNameDSH      AgentName = "dsh"
 )
 
 var supportedAgentNames = map[AgentName]struct{}{
@@ -32,6 +33,7 @@ var supportedAgentNames = map[AgentName]struct{}{
 	AgentNameHermes:   {},
 	AgentNameOpenClaw: {},
 	AgentNamePaxl:     {},
+	AgentNameDSH:      {},
 }
 
 func ParseAgentName(raw string) (AgentName, error) {

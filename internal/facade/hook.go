@@ -267,6 +267,7 @@ func (f *AgentHookFacade) Deliver(
 			Message:        message,
 		}, nil
 	case model.AgentNameUnknown,
+		model.AgentNameDSH,
 		model.AgentNameClaude,
 		model.AgentNamePi,
 		model.AgentNameKiro,

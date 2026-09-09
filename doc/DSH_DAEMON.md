@@ -31,3 +31,25 @@ DSH accepts per-session stdio/HTTP MCP declarations on new/resume, but requires
 absolute stdio commands and explicit credential env values. It does not expose
 slash-command catalogs or transcript replay over ACP. Existing paxd MCP injection
 and cold-route recovery remain shared with other compatible harnesses.
+
+## Local session titles and history
+
+`paxl session list --agent dsh` reads local DSH logs directly. Titles use the
+latest persisted `session/title`, then the first user prompt, then the workspace
+name or session ID. No model request or credential loading is needed.
+`paxl session get dsh:<native-id>` reads the settled transcript, including tool
+calls/results, model provenance and usage. Compaction replacements and streaming
+chunks are not duplicated as messages; original event JSON is retained.
+
+The default log root is `~/.dsh/sessions`. `DSH_HOME` changes the DSH home;
+`PAXL_DSH_SESSIONS_DIR` overrides the session directory directly. Formats v0,
+v1 and v2, plain JSONL and concatenated Zstandard frames are supported. The
+newest log generation is authoritative. Incomplete trailing writes are ignored;
+committed corruption and unknown formats produce errors. Logs are never migrated
+or modified. Decoded logs are limited to 256 MiB and individual lines to 16 MiB.
+
+This adapter supports local listing and reading, not native prompt delivery,
+new-session creation or resume. Those runtime operations remain available through
+`paxl daemon` and paxd's ACP integration. Update paxl on the daemon host to enable
+titles/history reporting; paxd forwards the connection's DSH home overrides and
+preserves workspace roots. ACP fallback alone does not provide titles/history.

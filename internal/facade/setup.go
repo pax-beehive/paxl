@@ -153,6 +153,7 @@ func (f *SetupFacade) installAgentHook(
 			dryRun,
 		)
 	case model.AgentNameUnknown,
+		model.AgentNameDSH,
 		model.AgentNameGemini,
 		model.AgentNamePaxl:
 		return &SetupAdapterResult{
@@ -211,6 +212,7 @@ func supportsAgentShim(agent model.AgentName) bool {
 		model.AgentNameOpenClaw:
 		return true
 	case model.AgentNameUnknown,
+		model.AgentNameDSH,
 		model.AgentNameGemini,
 		model.AgentNamePaxl:
 		return false
@@ -1284,6 +1286,7 @@ func genericAgentRoot(agent model.AgentName) string {
 	case model.AgentNameOpenClaw:
 		return firstNonEmpty(os.Getenv("OPENCLAW_HOME"), homePath(".openclaw"))
 	case model.AgentNameUnknown,
+		model.AgentNameDSH,
 		model.AgentNameCodex,
 		model.AgentNameClaude,
 		model.AgentNameOpenCode,

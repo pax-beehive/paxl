@@ -30,7 +30,7 @@ func (s *RegistrySuite) TestDefaultRegistryContainsBuiltInAdapters() {
 	resp, err := registry.List(context.Background(), &adaptor.ListRequest{})
 	s.Require().NoError(err)
 
-	s.Len(resp.Agents, 8)
+	s.Len(resp.Agents, 9)
 	s.Equal(model.AgentNameCodex, resp.Agents[0].Name)
 	s.Equal(model.AgentNameClaude, resp.Agents[1].Name)
 	s.Equal(model.AgentNamePi, resp.Agents[2].Name)
@@ -39,6 +39,7 @@ func (s *RegistrySuite) TestDefaultRegistryContainsBuiltInAdapters() {
 	s.Equal(model.AgentNameKimi, resp.Agents[5].Name)
 	s.Equal(model.AgentNameHermes, resp.Agents[6].Name)
 	s.Equal(model.AgentNameOpenClaw, resp.Agents[7].Name)
+	s.Equal(model.AgentNameDSH, resp.Agents[8].Name)
 }
 
 func (s *RegistrySuite) TestListAcceptsVerboseWriterOption() {
@@ -52,7 +53,7 @@ func (s *RegistrySuite) TestListAcceptsVerboseWriterOption() {
 	)
 
 	s.Require().NoError(err)
-	s.Len(resp.Agents, 8)
+	s.Len(resp.Agents, 9)
 }
 
 func (s *RegistrySuite) TestLookupRejectsUnsupportedAgent() {

@@ -24,7 +24,7 @@ func (s *AgentFacadeSuite) TestListUsesDefaultRegistryWhenRegistryIsNil() {
 	resp, err := agentFacade.List(context.Background(), &facade.ListAgentsRequest{})
 
 	s.Require().NoError(err)
-	s.Require().Len(resp.Agents, 8)
+	s.Require().Len(resp.Agents, 9)
 	s.Equal(model.AgentNameCodex, resp.Agents[0].Name)
 	s.Equal(model.AgentNameClaude, resp.Agents[1].Name)
 	s.Equal(model.AgentNamePi, resp.Agents[2].Name)
@@ -46,5 +46,5 @@ func (s *AgentFacadeSuite) TestListAcceptsVerboseWriterOption() {
 	)
 
 	s.Require().NoError(err)
-	s.Len(resp.Agents, 8)
+	s.Len(resp.Agents, 9)
 }
