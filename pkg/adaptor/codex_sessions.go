@@ -85,6 +85,12 @@ type codexUserMessagePayload struct {
 	Type         string          `json:"type"`
 	Message      string          `json:"message"`
 	TextElements json.RawMessage `json:"text_elements"`
+	Item         struct {
+		Type    string `json:"type"`
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	} `json:"item"`
 }
 
 func listCodexSessions(
@@ -566,15 +572,33 @@ func readCodexUserMessageEventTitle(path string) string {
 	for scanner.Scan() {
 		var line codexUserMessageEventLine
 		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil ||
-			line.Type != "event_msg" ||
-			line.Payload.Type != "user_message" {
+			line.Type != "event_msg" {
 			continue
 		}
-		if title := titleCandidate(codexUserMessageText(&line.Payload)); title != "" {
+		if title := titleCandidate(codexUserMessageEventText(&line.Payload)); title != "" {
 			return title
 		}
 	}
 	return ""
+}
+
+func codexUserMessageEventText(payload *codexUserMessagePayload) string {
+	if payload == nil {
+		return ""
+	}
+	if payload.Type == "user_message" {
+		return codexUserMessageText(payload)
+	}
+	if payload.Type != "item_completed" || payload.Item.Type != "UserMessage" {
+		return ""
+	}
+	texts := make([]string, 0, len(payload.Item.Content))
+	for _, content := range payload.Item.Content {
+		if text := strings.TrimSpace(content.Text); text != "" {
+			texts = append(texts, text)
+		}
+	}
+	return strings.Join(texts, "\n")
 }
 
 func codexUserMessageText(payload *codexUserMessagePayload) string {
