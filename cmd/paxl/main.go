@@ -4004,6 +4004,7 @@ func parseSetupRequest(cmd *cli.Command) (*facade.SetupRequest, error) {
 				model.AgentNameOpenClaw:
 				agents = append(agents, agent)
 			case model.AgentNameUnknown,
+				model.AgentNameDSH,
 				model.AgentNameGemini,
 				model.AgentNamePaxl:
 				return nil, fmt.Errorf("agent %q does not support setup", agent)
@@ -5189,8 +5190,18 @@ func renderSessionList(stdout io.Writer, resp *facade.ListSessionsResponse, form
 	case "jsonl":
 		encoder := json.NewEncoder(stdout)
 		for _, session := range resp.Sessions {
+			var workspaceRoots []string
+			if session.WorkspaceRootsJSON != "" {
+				if err := json.Unmarshal(
+					[]byte(session.WorkspaceRootsJSON),
+					&workspaceRoots,
+				); err != nil {
+					return fmt.Errorf("decode session workspace roots: %w", err)
+				}
+			}
 			if err := encoder.Encode(map[string]any{
 				"schemaVersion":      "paxl.session.metadata.v1",
+				"workspaceRoots":     workspaceRoots,
 				"id":                 session.ID,
 				"agent":              session.Agent,
 				"nativeId":           session.NativeID,

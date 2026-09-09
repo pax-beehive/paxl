@@ -3,6 +3,7 @@ module github.com/pax-oss/paxl
 go 1.26
 
 require (
+	github.com/klauspost/compress v1.20.0
 	github.com/stretchr/testify v1.11.1
 	github.com/urfave/cli/v3 v3.10.0
 	modernc.org/sqlite v1.52.0
