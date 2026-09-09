@@ -154,6 +154,29 @@ func (s *LocalSessionsSuite) TestListCodexSessionsPrefersStructuredUserMessageEv
 	s.Equal("Use a structured source for Codex titles.", resp.Sessions[0].Title)
 }
 
+func (s *LocalSessionsSuite) TestListCodexSessionsUsesCompletedUserMessageForTitle() {
+	codexHome := s.T().TempDir()
+	s.T().Setenv("CODEX_HOME", codexHome)
+	rolloutDir := filepath.Join(codexHome, "sessions", "2026", "09", "09")
+	s.Require().NoError(os.MkdirAll(rolloutDir, 0o700))
+	s.Require().NoError(os.WriteFile(
+		filepath.Join(rolloutDir, "rollout-test-sess-rollout.jsonl"),
+		[]byte(
+			`{"type":"session_meta","payload":{"id":"sess-rollout","timestamp":"2026-09-09T02:00:00Z","cwd":"/tmp/project"}}`+"\n"+
+				`{"timestamp":"2026-09-09T02:01:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<recommended_plugins>Injected context</recommended_plugins>"}]}}`+"\n"+
+				`{"timestamp":"2026-09-09T02:02:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Inspect Codex session titles"}]}}`+"\n"+
+				`{"timestamp":"2026-09-09T02:02:00Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","id":"item-1","content":[{"type":"text","text":"Inspect Codex session titles","text_elements":[]}]}}}`+"\n",
+		),
+		0o600,
+	))
+
+	resp, err := listCodexSessions(context.Background(), &ListSessionsRequest{})
+
+	s.Require().NoError(err)
+	s.Require().Len(resp.Sessions, 1)
+	s.Equal("Inspect Codex session titles", resp.Sessions[0].Title)
+}
+
 func (s *LocalSessionsSuite) TestListCodexSessionsHidesSubagentRolloutsByDefault() {
 	codexHome := s.T().TempDir()
 	s.T().Setenv("CODEX_HOME", codexHome)
