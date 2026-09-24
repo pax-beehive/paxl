@@ -31,7 +31,7 @@ var (
 	daemonCommandStderr io.Writer = os.Stderr
 )
 
-const DefaultDaemonResolverURL = "https://api.lakeward.net/api/v1/public/paxd/download"
+const DefaultDaemonResolverURL = "https://api.paxworkspace.net/api/v1/public/paxd/download"
 
 const daemonResolverPath = "/api/v1/public/paxd/download"
 
@@ -113,7 +113,7 @@ func daemonResolverURL(resolverURL string, cloudURL string) string {
 	}
 	if cloud := strings.TrimRight(strings.TrimSpace(cloudURL), "/"); cloud != "" {
 		// The hosted tunnel requires Access authentication; downloads are public.
-		if strings.EqualFold(cloud, "https://wsapi.lakeward.net") {
+		if strings.EqualFold(cloud, "https://wsapi.paxworkspace.net") {
 			return DefaultDaemonResolverURL
 		}
 		return cloud + daemonResolverPath

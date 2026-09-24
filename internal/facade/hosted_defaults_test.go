@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestHostedDefaultsUseLakewardAPI(t *testing.T) {
+func TestHostedDefaultsUsePaxWorkspaceAPI(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -15,19 +15,19 @@ func TestHostedDefaultsUseLakewardAPI(t *testing.T) {
 		want string
 	}{
 		{
-			name: "manager login defaults to the Lakeward API",
+			name: "manager login defaults to the PaxWorkspace API",
 			got:  DefaultManagerURL,
-			want: "https://api.lakeward.net",
+			want: "https://api.paxworkspace.net",
 		},
 		{
-			name: "self update defaults to the Lakeward artifact resolver",
+			name: "self update defaults to the PaxWorkspace artifact resolver",
 			got:  DefaultUpdateResolverURL,
-			want: "https://api.lakeward.net/api/v1/public/artifacts/download",
+			want: "https://api.paxworkspace.net/api/v1/public/artifacts/download",
 		},
 		{
-			name: "daemon install defaults to the Lakeward paxd resolver",
+			name: "daemon install defaults to the PaxWorkspace paxd resolver",
 			got:  DefaultDaemonResolverURL,
-			want: "https://api.lakeward.net/api/v1/public/paxd/download",
+			want: "https://api.paxworkspace.net/api/v1/public/paxd/download",
 		},
 	}
 

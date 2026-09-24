@@ -29,13 +29,13 @@ replace the binary without explicit user approval.
 If it is missing, install the latest stable hosted build:
 
 ```sh
-curl -fsSL --max-redirs 1 https://api.lakeward.net/api/v1/public/paxl/install.sh | bash
+curl -fsSL --max-redirs 1 https://api.paxworkspace.net/api/v1/public/paxl/install.sh | bash
 ```
 
 Install a specific uploaded version when needed:
 
 ```sh
-curl -fsSL --max-redirs 1 https://api.lakeward.net/api/v1/public/paxl/install.sh | PAXL_VERSION=0.1.0 bash
+curl -fsSL --max-redirs 1 https://api.paxworkspace.net/api/v1/public/paxl/install.sh | PAXL_VERSION=0.1.0 bash
 ```
 
 The installer uses `~/.local/bin` by default. If it warns that the directory is

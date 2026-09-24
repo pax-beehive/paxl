@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
-hosted_api="https://api.lakeward.net"
+hosted_api="https://api.paxworkspace.net"
 legacy_api="https://api.paxtech"'.net'
 
 fail_test() {
@@ -37,9 +37,9 @@ done
 
 assert_contains \
   "${repo_root}/scripts/installer.sh" \
-  'PAXL_DOWNLOAD_URL="${PAXL_DOWNLOAD_URL:-https://api.lakeward.net}"'
+  'PAXL_DOWNLOAD_URL="${PAXL_DOWNLOAD_URL:-https://api.paxworkspace.net}"'
 assert_contains \
   "${repo_root}/scripts/release_paxl.sh" \
-  'marker = '\''PAXL_DOWNLOAD_URL="${PAXL_DOWNLOAD_URL:-https://api.lakeward.net}"'\'''
+  'marker = '\''PAXL_DOWNLOAD_URL="${PAXL_DOWNLOAD_URL:-https://api.paxworkspace.net}"'\'''
 
-printf 'ok - hosted defaults and installation docs use api.lakeward.net\n'
+printf 'ok - hosted defaults and installation docs use api.paxworkspace.net\n'
