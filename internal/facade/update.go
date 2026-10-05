@@ -210,7 +210,7 @@ func (f *UpdateFacade) fetchResolverArtifact(
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		if resp.StatusCode == http.StatusGone {
 			return nil, fmt.Errorf(
-				"Current binary has known issues. No replacement is available; upgrade when a verified version is published.",
+				"current binary has known issues; no replacement is available; upgrade when a verified version is published",
 			)
 		}
 		return nil, fmt.Errorf("resolver returned HTTP %d", resp.StatusCode)
@@ -221,7 +221,7 @@ func (f *UpdateFacade) fetchResolverArtifact(
 		return nil, fmt.Errorf("decode resolver response: %w", errInvalidArtifactResponse)
 	}
 	if slices.Contains(resolverResp.Data.Tags, "disabled") {
-		return nil, fmt.Errorf("Refusing disabled binary with known issues.")
+		return nil, fmt.Errorf("refusing disabled binary with known issues")
 	}
 	artifact := resolverResp.Data.toArtifact()
 	if err := artifact.validate(); err != nil {

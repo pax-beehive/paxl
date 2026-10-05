@@ -268,7 +268,7 @@ func jsonResponse(body string) *http.Response {
 }
 
 func (s *UpdateFacadeSuite) TestGivenDisabledDownloadThenRefuseArtifact() {
-	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	client := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return jsonResponse(
 			`{"data":{"url":"https://example.test/paxl","sha256":"abc123","size_bytes":42,"version":"0.1.1","tags":["disabled"]}}`,
 		), nil
@@ -296,7 +296,7 @@ func (s *UpdateFacadeSuite) TestGivenDisabledCurrentVersionThenReturnWarningWith
 }
 
 func (s *UpdateFacadeSuite) TestGivenDisabledCurrentVersionWithoutReplacementThenExplainUpgradeWarning() {
-	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+	client := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusGone,
 			Body:       io.NopCloser(bytes.NewReader(nil)),
@@ -306,5 +306,5 @@ func (s *UpdateFacadeSuite) TestGivenDisabledCurrentVersionWithoutReplacementThe
 		client,
 	).Check(context.Background(), &CheckUpdateRequest{CurrentVersion: "0.1.49"})
 	s.Require().ErrorContains(err, "known issues")
-	s.Require().ErrorContains(err, "No replacement")
+	s.Require().ErrorContains(err, "no replacement")
 }

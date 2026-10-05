@@ -5836,7 +5836,11 @@ func TestRenderDisabledBinaryWarnings(t *testing.T) {
 				"text",
 			)
 		} else {
-			err = renderUpdateCheck(&out, &facade.CheckUpdateResponse{Warning: "Current version has known issues."}, "text")
+			err = renderUpdateCheck(
+				&out,
+				&facade.CheckUpdateResponse{Warning: "Current version has known issues."},
+				"text",
+			)
 		}
 		require.NoError(t, err)
 		assert.Contains(t, out.String(), "Warning: Current version has known issues.")
