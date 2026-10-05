@@ -1657,6 +1657,7 @@ func updateCheck(ctx context.Context, cmd *cli.Command, stdout io.Writer) error 
 }
 
 type applyUpdateResponse struct {
+	Warning         string              `json:"warning,omitempty"`
 	CurrentVersion  string              `json:"current_version"`
 	LatestVersion   string              `json:"latest_version"`
 	Status          facade.UpdateStatus `json:"status"`
@@ -1688,6 +1689,7 @@ func updateCommand(ctx context.Context, cmd *cli.Command, stdout io.Writer) erro
 	shouldApply := check.UpdateAvailable || check.Status == facade.UpdateStatusDevelopment
 	resp := &applyUpdateResponse{
 		CurrentVersion:  check.CurrentVersion,
+		Warning:         check.Warning,
 		LatestVersion:   check.LatestVersion,
 		Status:          check.Status,
 		UpdateAvailable: shouldApply,
@@ -5382,6 +5384,11 @@ func renderSetup(stdout io.Writer, resp *facade.SetupResponse, format string) er
 func renderUpdateCheck(stdout io.Writer, resp *facade.CheckUpdateResponse, format string) error {
 	switch format {
 	case "text":
+		if resp.Warning != "" {
+			if _, err := fmt.Fprintln(stdout, "Warning: "+resp.Warning); err != nil {
+				return err
+			}
+		}
 		if _, err := fmt.Fprintf(stdout, "Current: %s\n", resp.CurrentVersion); err != nil {
 			return fmt.Errorf("write current version: %w", err)
 		}
@@ -5414,6 +5421,11 @@ func renderUpdateCheck(stdout io.Writer, resp *facade.CheckUpdateResponse, forma
 func renderApplyUpdate(stdout io.Writer, resp *applyUpdateResponse, format string) error {
 	switch format {
 	case "text":
+		if resp.Warning != "" {
+			if _, err := fmt.Fprintln(stdout, "Warning: "+resp.Warning); err != nil {
+				return err
+			}
+		}
 		if resp.Updated {
 			if _, err := fmt.Fprintf(
 				stdout,

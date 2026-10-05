@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +40,8 @@ type CheckUpdateRequest struct {
 }
 
 type CheckUpdateResponse struct {
+	CurrentStatus   string       `json:"current_status,omitempty"`
+	Warning         string       `json:"warning,omitempty"`
 	CurrentVersion  string       `json:"current_version"`
 	CurrentCommit   string       `json:"current_commit,omitempty"`
 	LatestVersion   string       `json:"latest_version"`
@@ -83,6 +86,8 @@ func (f *UpdateFacade) Check(
 	}
 	return &CheckUpdateResponse{
 		CurrentVersion:  req.CurrentVersion,
+		CurrentStatus:   artifact.CurrentStatus,
+		Warning:         artifact.Warning,
 		CurrentCommit:   req.CurrentCommit,
 		LatestVersion:   artifact.Version,
 		Status:          status,
@@ -121,6 +126,7 @@ func (f *UpdateFacade) resolveArtifact(
 		updateResolverURL(req.ResolverURL, req.ManagerURL),
 		platform,
 		firstNonEmpty(req.Tag, DefaultUpdateTag),
+		req.CurrentVersion,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("fetch update resolver: %w", err)
@@ -172,6 +178,7 @@ func (f *UpdateFacade) fetchResolverArtifact(
 	resolverURL string,
 	platform string,
 	tag string,
+	currentVersion string,
 ) (*updateArtifact, error) {
 	endpoint, err := url.Parse(resolverURL)
 	if err != nil {
@@ -181,6 +188,7 @@ func (f *UpdateFacade) fetchResolverArtifact(
 	query.Set("product", "paxl")
 	query.Set("platform", platform)
 	query.Set("tags", tag)
+	query.Set("current_version", currentVersion)
 	endpoint.RawQuery = query.Encode()
 
 	httpReq, err := http.NewRequestWithContext(
@@ -200,12 +208,18 @@ func (f *UpdateFacade) fetchResolverArtifact(
 	}
 	defer closeBody(resp.Body)
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		if resp.StatusCode == http.StatusGone {
+			return nil, fmt.Errorf("Current binary has known issues. No replacement is available; upgrade when a verified version is published.")
+		}
 		return nil, fmt.Errorf("resolver returned HTTP %d", resp.StatusCode)
 	}
 	var resolverResp updateResolverResponse
 	decoder := json.NewDecoder(io.LimitReader(resp.Body, 1<<20))
 	if err := decoder.Decode(&resolverResp); err != nil {
 		return nil, fmt.Errorf("decode resolver response: %w", errInvalidArtifactResponse)
+	}
+	if slices.Contains(resolverResp.Data.Tags, "disabled") {
+		return nil, fmt.Errorf("Refusing disabled binary with known issues.")
 	}
 	artifact := resolverResp.Data.toArtifact()
 	if err := artifact.validate(); err != nil {
@@ -233,13 +247,15 @@ type updateResolverResponse struct {
 }
 
 type updateResolverArtifact struct {
-	URL       string `json:"url"`
-	SHA256    string `json:"sha256"`
-	Version   string `json:"version"`
-	Product   string `json:"product"`
-	Platform  string `json:"platform"`
-	SizeBytes int64  `json:"size_bytes"`
-	Size      int64  `json:"size"`
+	CurrentStatus string   `json:"current_status"`
+	Tags          []string `json:"tags"`
+	URL           string   `json:"url"`
+	SHA256        string   `json:"sha256"`
+	Version       string   `json:"version"`
+	Product       string   `json:"product"`
+	Platform      string   `json:"platform"`
+	SizeBytes     int64    `json:"size_bytes"`
+	Size          int64    `json:"size"`
 }
 
 func (a *updateResolverArtifact) toArtifact() *updateArtifact {
@@ -248,22 +264,26 @@ func (a *updateResolverArtifact) toArtifact() *updateArtifact {
 		size = a.Size
 	}
 	return &updateArtifact{
-		Product:  a.Product,
-		Platform: a.Platform,
-		Version:  a.Version,
-		URL:      a.URL,
-		SHA256:   a.SHA256,
-		Size:     size,
+		Product:       a.Product,
+		CurrentStatus: a.CurrentStatus,
+		Warning:       binaryQualityWarning(a.CurrentStatus),
+		Platform:      a.Platform,
+		Version:       a.Version,
+		URL:           a.URL,
+		SHA256:        a.SHA256,
+		Size:          size,
 	}
 }
 
 type updateArtifact struct {
-	Product  string
-	Platform string
-	Version  string
-	URL      string
-	SHA256   string
-	Size     int64
+	CurrentStatus string
+	Warning       string
+	Product       string
+	Platform      string
+	Version       string
+	URL           string
+	SHA256        string
+	Size          int64
 }
 
 func (a *updateArtifact) validate() error {
@@ -410,4 +430,11 @@ func currentPlatform() string {
 
 func closeBody(body io.Closer) {
 	_ = body.Close()
+}
+
+func binaryQualityWarning(state string) string {
+	if state == "disabled" {
+		return "Current version has known issues. Upgrade to a verified stable version as soon as possible."
+	}
+	return ""
 }

@@ -2028,7 +2028,7 @@ func (s *CommandSuite) TestUpdateDownloadsAndReplacesCurrentBinary() {
 	}
 	updateHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch req.URL.String() {
-		case "https://example.test/api?platform=test%2Fos&product=paxl&tags=stable":
+		case "https://example.test/api?current_version=0.1.0&platform=test%2Fos&product=paxl&tags=stable":
 			return commandJSONResponse(fmt.Sprintf(`{
 				"data": {
 					"url": "https://example.test/download/paxl",
@@ -2090,7 +2090,7 @@ func (s *CommandSuite) TestUpdateReplacesDevelopmentBuildWithLatestStable() {
 	}
 	updateHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch req.URL.String() {
-		case "https://example.test/api?platform=test%2Fos&product=paxl&tags=stable":
+		case "https://example.test/api?current_version=0.1.17-dev&platform=test%2Fos&product=paxl&tags=stable":
 			return commandJSONResponse(fmt.Sprintf(`{
 				"data": {
 					"url": "https://example.test/download/paxl",
@@ -2147,7 +2147,7 @@ func (s *CommandSuite) TestUpdateReportsUpToDateWithoutReplacingBinary() {
 	}
 	updateHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		s.Equal(
-			"https://example.test/api?platform=test%2Fos&product=paxl&tags=stable",
+			"https://example.test/api?current_version=0.1.0&platform=test%2Fos&product=paxl&tags=stable",
 			req.URL.String(),
 		)
 		return commandJSONResponse(`{
@@ -2191,7 +2191,7 @@ func (s *CommandSuite) TestUpdateRejectsBadDownloadSHA() {
 	version = "0.1.0"
 	updateHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch req.URL.String() {
-		case "https://example.test/api?platform=test%2Fos&product=paxl&tags=stable":
+		case "https://example.test/api?current_version=0.1.0&platform=test%2Fos&product=paxl&tags=stable":
 			return commandJSONResponse(`{
 				"data": {
 					"url": "https://example.test/download/paxl",
@@ -5822,5 +5822,19 @@ func TestRenderTeamAgentsTableAndJSONL(t *testing.T) {
 	}
 	if err := renderTeamAgents(&jsonl, resp, "xml"); err == nil {
 		t.Error("expected error for unknown format")
+	}
+}
+
+func TestRenderDisabledBinaryWarnings(t *testing.T) {
+	for _, apply := range []bool{false, true} {
+		var out bytes.Buffer
+		var err error
+		if apply {
+			err = renderApplyUpdate(&out, &applyUpdateResponse{Warning: "Current version has known issues."}, "text")
+		} else {
+			err = renderUpdateCheck(&out, &facade.CheckUpdateResponse{Warning: "Current version has known issues."}, "text")
+		}
+		require.NoError(t, err)
+		assert.Contains(t, out.String(), "Warning: Current version has known issues.")
 	}
 }
