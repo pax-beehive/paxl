@@ -5830,7 +5830,11 @@ func TestRenderDisabledBinaryWarnings(t *testing.T) {
 		var out bytes.Buffer
 		var err error
 		if apply {
-			err = renderApplyUpdate(&out, &applyUpdateResponse{Warning: "Current version has known issues."}, "text")
+			err = renderApplyUpdate(
+				&out,
+				&applyUpdateResponse{Warning: "Current version has known issues."},
+				"text",
+			)
 		} else {
 			err = renderUpdateCheck(&out, &facade.CheckUpdateResponse{Warning: "Current version has known issues."}, "text")
 		}

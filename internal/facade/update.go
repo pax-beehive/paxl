@@ -209,7 +209,9 @@ func (f *UpdateFacade) fetchResolverArtifact(
 	defer closeBody(resp.Body)
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		if resp.StatusCode == http.StatusGone {
-			return nil, fmt.Errorf("Current binary has known issues. No replacement is available; upgrade when a verified version is published.")
+			return nil, fmt.Errorf(
+				"Current binary has known issues. No replacement is available; upgrade when a verified version is published.",
+			)
 		}
 		return nil, fmt.Errorf("resolver returned HTTP %d", resp.StatusCode)
 	}
