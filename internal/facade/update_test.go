@@ -266,3 +266,45 @@ func jsonResponse(body string) *http.Response {
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 	}
 }
+
+func (s *UpdateFacadeSuite) TestGivenDisabledDownloadThenRefuseArtifact() {
+	client := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return jsonResponse(
+			`{"data":{"url":"https://example.test/paxl","sha256":"abc123","size_bytes":42,"version":"0.1.1","tags":["disabled"]}}`,
+		), nil
+	})
+	_, err := NewUpdateFacade(
+		client,
+	).Check(context.Background(), &CheckUpdateRequest{CurrentVersion: "0.1.0"})
+	s.Require().ErrorContains(err, "disabled")
+}
+
+func (s *UpdateFacadeSuite) TestGivenDisabledCurrentVersionThenReturnWarningWithoutSilentDowngrade() {
+	client := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		s.Equal("0.1.49", req.URL.Query().Get("current_version"))
+		return jsonResponse(
+			`{"data":{"url":"https://example.test/paxl","sha256":"abc123","size_bytes":42,"version":"0.1.48","current_status":"disabled","tags":["stable"]}}`,
+		), nil
+	})
+	resp, err := NewUpdateFacade(
+		client,
+	).Check(context.Background(), &CheckUpdateRequest{CurrentVersion: "0.1.49"})
+	s.Require().NoError(err)
+	s.Equal("disabled", resp.CurrentStatus)
+	s.Contains(resp.Warning, "known issues")
+	s.False(resp.UpdateAvailable)
+}
+
+func (s *UpdateFacadeSuite) TestGivenDisabledCurrentVersionWithoutReplacementThenExplainUpgradeWarning() {
+	client := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusGone,
+			Body:       io.NopCloser(bytes.NewReader(nil)),
+		}, nil
+	})
+	_, err := NewUpdateFacade(
+		client,
+	).Check(context.Background(), &CheckUpdateRequest{CurrentVersion: "0.1.49"})
+	s.Require().ErrorContains(err, "known issues")
+	s.Require().ErrorContains(err, "no replacement")
+}
