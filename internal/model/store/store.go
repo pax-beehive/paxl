@@ -1228,6 +1228,15 @@ func (s *Store) MarkKnowledgeInjectionConsumed(
 
 func migrate(ctx context.Context, db *sql.DB) error {
 	_, err := db.ExecContext(ctx, `
+	CREATE TABLE IF NOT EXISTS auth_login_attempts (
+		scope TEXT PRIMARY KEY, attempt_id TEXT NOT NULL UNIQUE, expires_at INTEGER NOT NULL,
+		selected_login_id TEXT, selected_manager_url TEXT, selected_user_id TEXT, selected_email TEXT, saved_key_id TEXT
+	);
+	CREATE TABLE IF NOT EXISTS auth_login_candidates (
+		attempt_id TEXT NOT NULL, manager_url TEXT NOT NULL, payload TEXT NOT NULL,
+		PRIMARY KEY(attempt_id, manager_url)
+	);
+
 	CREATE TABLE IF NOT EXISTS sessions (
 		id TEXT PRIMARY KEY,
 		agent TEXT NOT NULL,
