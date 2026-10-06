@@ -1611,6 +1611,7 @@ func (s *CommandSuite) TestAuthCommandsLoginWhoamiAndLogout() {
 			s.Contains(body["client_name"], "paxl-")
 			return commandJSONResponse(`{
 				"data":{
+					"protocol":"client_commit_v1",
 					"login_id":"login-1",
 					"user_code":"ABC123",
 					"poll_token":"poll-1",
@@ -1622,6 +1623,16 @@ func (s *CommandSuite) TestAuthCommandsLoginWhoamiAndLogout() {
 				"message":"ok"
 			}`), nil
 		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/paxl/device-login/poll":
+			var body map[string]string
+			s.Require().NoError(json.NewDecoder(req.Body).Decode(&body))
+			if body["action"] == "" {
+				return commandJSONResponse(
+					`{"data":{"status":"confirmed","user":{"user_id":"usr_1","email":"cli@example.com"}}}`,
+				), nil
+			}
+			if body["action"] == "ack" {
+				return commandJSONResponse(`{"data":{"status":"consumed"}}`), nil
+			}
 			return commandJSONResponse(`{
 				"data":{
 					"status":"approved",
@@ -1697,6 +1708,7 @@ func (s *CommandSuite) TestLoginPrintsVerificationBeforeWaitingForApproval() {
 		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/paxl/device-login/start":
 			return commandJSONResponse(`{
 				"data":{
+					"protocol":"client_commit_v1",
 					"login_id":"login-1",
 					"user_code":"ABC123",
 					"poll_token":"poll-1",

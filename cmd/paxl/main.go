@@ -391,9 +391,14 @@ func newLoginCommand(stdout io.Writer) *cli.Command {
 		Name:  "login",
 		Usage: "Authenticate paxl with pax-manager",
 		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:   "admin",
+				Usage:  "Request administrator login to an explicit --manager-url",
+				Hidden: true,
+			},
 			&cli.StringFlag{
 				Name:   "manager-url",
-				Value:  facade.DefaultManagerURL,
+				Value:  "",
 				Usage:  "pax-manager base URL",
 				Hidden: true,
 			},
@@ -1827,9 +1832,11 @@ func loginCommand(ctx context.Context, cmd *cli.Command, stdout io.Writer) error
 	authFacade := facade.NewAuthFacade(authHTTPClient, opened.Store)
 	format := cmd.String("format")
 	resp, err := authFacade.Login(ctx, &facade.LoginRequest{
-		ManagerURL: cmd.String("manager-url"),
-		ClientName: defaultLoginClientName(),
-		Timeout:    timeout,
+		ClientCommit: true,
+		Admin:        cmd.Bool("admin"),
+		ManagerURL:   cmd.String("manager-url"),
+		ClientName:   defaultLoginClientName(),
+		Timeout:      timeout,
 		OnStart: func(start *facade.LoginStart) error {
 			if format != "text" {
 				return nil

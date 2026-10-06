@@ -30,10 +30,13 @@ type AuthFacade struct {
 }
 
 type LoginRequest struct {
-	ManagerURL string
-	ClientName string
-	Timeout    time.Duration
-	OnStart    func(*LoginStart) error
+	ClientCommit bool
+	Admin        bool
+	ManagerURLs  []string
+	ManagerURL   string
+	ClientName   string
+	Timeout      time.Duration
+	OnStart      func(*LoginStart) error
 }
 
 type LoginResponse struct {
@@ -70,6 +73,8 @@ type AuthUser struct {
 }
 
 type deviceLoginStartResponse struct {
+	Protocol                string `json:"protocol"`
+	Region                  string `json:"region"`
 	LoginID                 string `json:"login_id"`
 	UserCode                string `json:"user_code"`
 	PollToken               string `json:"poll_token"`
@@ -79,6 +84,7 @@ type deviceLoginStartResponse struct {
 }
 
 type deviceLoginPollResponse struct {
+	Region    string      `json:"region"`
 	Status    string      `json:"status"`
 	APIKey    string      `json:"api_key"`
 	NodeID    string      `json:"node_id"`
@@ -100,6 +106,11 @@ func NewAuthFacade(client AuthHTTPClient, sessionStore *store.Store) *AuthFacade
 	if client == nil {
 		client = http.DefaultClient
 	}
+	if original, ok := client.(*http.Client); ok {
+		safeClient := *original
+		safeClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		client = &safeClient
+	}
 	return &AuthFacade{client: client, store: sessionStore}
 }
 
@@ -114,6 +125,9 @@ func (f *AuthFacade) Login(
 	}
 	if req == nil {
 		return nil, fmt.Errorf("login: request is required")
+	}
+	if req.ClientCommit {
+		return f.loginRegional(ctx, req)
 	}
 	managerURL, err := normalizeManagerURL(req.ManagerURL)
 	if err != nil {
