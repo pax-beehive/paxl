@@ -1706,6 +1706,21 @@ func updateCommand(ctx context.Context, cmd *cli.Command, stdout io.Writer) erro
 	if !shouldApply {
 		return renderApplyUpdate(stdout, resp, cmd.String("format"))
 	}
+	path, err := executablePath()
+	if err != nil {
+		return fmt.Errorf("resolve executable path: %w", err)
+	}
+	displayPath := path
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		return fmt.Errorf("resolve installed executable: %w", err)
+	}
+	unlock, err := facade.LockExecutableUpdate(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	binary, err := downloadUpdateBinary(
 		runCtx,
 		updateHTTPClient,
@@ -1718,15 +1733,11 @@ func updateCommand(ctx context.Context, cmd *cli.Command, stdout io.Writer) erro
 	if err := verifyUpdateBinary(binary, check.SHA256); err != nil {
 		return fmt.Errorf("verify update: %w", err)
 	}
-	path, err := executablePath()
-	if err != nil {
-		return fmt.Errorf("resolve executable path: %w", err)
-	}
 	if err := replaceExecutable(path, binary); err != nil {
 		return fmt.Errorf("replace executable: %w", err)
 	}
 	resp.Updated = true
-	resp.Path = path
+	resp.Path = displayPath
 	return renderApplyUpdate(stdout, resp, cmd.String("format"))
 }
 
