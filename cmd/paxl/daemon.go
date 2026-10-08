@@ -717,6 +717,9 @@ func newDaemonHarnessCommand(stdout io.Writer) *cli.Command {
 		Name:  "harness",
 		Usage: "List and discover local daemon harnesses",
 		Commands: []*cli.Command{
+			newHarnessInstallationCommand("inspect", stdout),
+			newHarnessInstallationCommand("upgrade", stdout),
+			newHarnessInstallationCommand("rollback", stdout),
 			{
 				Name:      "install",
 				Usage:     "Install a harness on this machine (currently dsh)",
