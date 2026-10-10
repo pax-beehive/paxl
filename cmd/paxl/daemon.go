@@ -722,7 +722,7 @@ func newDaemonHarnessCommand(stdout io.Writer) *cli.Command {
 			newHarnessInstallationCommand("rollback", stdout),
 			{
 				Name:      "install",
-				Usage:     "Install a harness on this machine (currently dsh)",
+				Usage:     "Install a harness on this machine (currently dsh and dscode)",
 				ArgsUsage: "<harness>",
 				Flags: []cli.Flag{
 					&cli.BoolFlag{Name: "dry-run", Usage: "Show installation without running it"},

@@ -43,7 +43,7 @@ chunks are not duplicated as messages; original event JSON is retained.
 
 The default log root is `~/.dsh/sessions`. `DSH_HOME` changes the DSH home;
 `PAXL_DSH_SESSIONS_DIR` overrides the session directory directly. Formats v0,
-v1 and v2, plain JSONL and concatenated Zstandard frames are supported. The
+v1 through v4, plain JSONL and concatenated Zstandard frames are supported. The
 newest log generation is authoritative. Incomplete trailing writes are ignored;
 committed corruption and unknown formats produce errors. Logs are never migrated
 or modified. Decoded logs are limited to 256 MiB and individual lines to 16 MiB.

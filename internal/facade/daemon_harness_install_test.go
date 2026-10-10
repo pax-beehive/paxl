@@ -34,3 +34,13 @@ func TestDaemonHarnessInstallationRejectsInvalidInputsBeforeExecution(t *testing
 		assert.Empty(t, runner.name)
 	}
 }
+
+func TestDSCodeInstallationUsesItsOwnPackage(t *testing.T) {
+	runner := &fakeDaemonLifecycleRunner{path: "/local/bin/npm"}
+	resp, err := NewDaemonLifecycleFacade(
+		runner,
+	).InstallHarness(t.Context(), &DaemonHarnessInstallRequest{Harness: "dscode"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"install", "-g", "@toddzheng024/dscode@latest"}, runner.args)
+	assert.Contains(t, resp.Message, "dscode install")
+}

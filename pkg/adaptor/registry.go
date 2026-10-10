@@ -119,6 +119,7 @@ func NewDefaultRegistry() *Registry {
 			NewHermesAdapter(),
 			NewOpenClawAdapter(),
 			NewDSHAdapter(),
+			NewDSCodeAdapter(),
 		},
 	}
 }
