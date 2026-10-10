@@ -222,9 +222,16 @@ func TestDaemonAgentHarnessAndLocalCommandsUseDaemonFacade(t *testing.T) {
 		"--name", "review",
 		"--harness", "codex",
 		"--command", "codex-acp",
+		"--env", "CODEX_PATH=/opt/pax/codex",
+		"--env", "CUSTOM=a,b=c",
 	}, &stdout, &stderr)
 	require.NoError(t, err)
 	assert.Equal(t, "review", client.createdAgent.Name)
+	assert.Equal(
+		t,
+		map[string]string{"CODEX_PATH": "/opt/pax/codex", "CUSTOM": "a,b=c"},
+		client.createdAgent.Env,
+	)
 	assert.Equal(t, "agent_cloud_review", client.createdAgent.CloudAgentID)
 
 	stdout.Reset()
@@ -1052,4 +1059,62 @@ func firstCmdDaemonAck(ack *model.DaemonCommandAck) *model.DaemonCommandAck {
 		return ack
 	}
 	return &model.DaemonCommandAck{OK: true, Status: model.DaemonCommandStatusReceived}
+}
+
+func TestDaemonAgentEnvironmentUpdatesPreserveValuesAndSupportClearing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want *map[string]string
+	}{
+		{name: "unchanged", args: []string{"--name", "renamed"}},
+		{name: "replace", args: []string{"--env", "CODEX_PATH=/first", "--env", "CODEX_PATH=/opt/my codex", "--env", "CUSTOM= a,b=c ", "--env", "EMPTY="}, want: envMapPointer(map[string]string{"CODEX_PATH": "/opt/my codex", "CUSTOM": " a,b=c ", "EMPTY": ""})},
+		{name: "clear", args: []string{"--clear-env"}, want: envMapPointer(map[string]string{})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &cmdFakeDaemonControlClient{
+				ack: &model.DaemonCommandAck{OK: true, Status: model.DaemonCommandStatusReceived},
+			}
+			restore := stubDaemonFacade(t, client)
+			defer restore()
+			var stdout, stderr bytes.Buffer
+			args := append([]string{"daemon", "agent", "update", "conn_work"}, tc.args...)
+			require.NoError(t, run(context.Background(), args, &stdout, &stderr))
+			assert.Equal(t, tc.want, client.updatedAgent.Env)
+		})
+	}
+}
+
+func envMapPointer(env map[string]string) *map[string]string { return &env }
+
+func TestDaemonAgentRejectsInvalidEnvironmentBeforeDispatch(t *testing.T) {
+	for _, action := range []string{"create", "update"} {
+		for _, entry := range []string{"MISSING_SECRET", "=SECRET_VALUE", "BAD NAME=SECRET_VALUE", "1BAD=SECRET_VALUE", "KEY=SECRET_VALUE\x00"} {
+			t.Run(action+"/"+entry, func(t *testing.T) {
+				client := &cmdFakeDaemonControlClient{}
+				restore := stubDaemonFacade(t, client)
+				defer restore()
+				args := []string{"daemon", "agent", action}
+				if action == "update" {
+					args = append(args, "conn_work")
+				}
+				args = append(args, "--env", entry)
+				var stdout, stderr bytes.Buffer
+				err := run(context.Background(), args, &stdout, &stderr)
+				require.ErrorContains(t, err, "--env requires KEY=VALUE")
+				assert.NotContains(t, err.Error(), "SECRET_VALUE")
+				assert.NotContains(t, err.Error(), "MISSING_SECRET")
+				assert.Nil(t, client.createdAgent)
+				assert.Nil(t, client.updatedAgent)
+			})
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	err := run(
+		context.Background(),
+		[]string{"daemon", "agent", "update", "conn_work", "--env", "KEY=value", "--clear-env"},
+		&stdout,
+		&stderr,
+	)
+	require.ErrorContains(t, err, "mutually exclusive")
 }

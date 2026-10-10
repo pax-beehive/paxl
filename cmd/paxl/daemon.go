@@ -585,8 +585,9 @@ func newDaemonAgentCommand(stdout io.Writer) *cli.Command {
 				},
 			},
 			{
-				Name:  "create",
-				Usage: "Create a local daemon agent connection",
+				Name:                      "create",
+				Usage:                     "Create a local daemon agent connection",
+				DisableSliceFlagSeparator: true,
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "remote", Usage: "Remote id"},
 					&cli.StringFlag{Name: "name", Usage: "Agent connection name"},
@@ -599,6 +600,10 @@ func newDaemonAgentCommand(stdout io.Writer) *cli.Command {
 					&cli.StringFlag{Name: "instance-id", Usage: "Agent instance id"},
 					&cli.StringFlag{Name: "agent-type", Usage: "Cloud agent type"},
 					&cli.StringFlag{Name: "working-dir", Usage: "Working directory"},
+					&cli.StringSliceFlag{
+						Name:  "env",
+						Usage: "Connection environment as KEY=VALUE; repeat for each variable. On update, replaces all saved environment overrides.",
+					},
 					&cli.StringFlag{
 						Name:  "format",
 						Value: "text",
@@ -606,7 +611,12 @@ func newDaemonAgentCommand(stdout io.Writer) *cli.Command {
 					},
 				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
+					env, err := parseDaemonAgentEnv(cmd.StringSlice("env"))
+					if err != nil {
+						return err
+					}
 					resp, err := newDaemonFacade().CreateAgent(ctx, &facade.CreateDaemonAgentRequest{
+						Env:          env,
 						RemoteID:     cmd.String("remote"),
 						Name:         cmd.String("name"),
 						Harness:      cmd.String("harness"),
@@ -628,10 +638,15 @@ func newDaemonAgentCommand(stdout io.Writer) *cli.Command {
 				},
 			},
 			{
-				Name:      "update",
-				Usage:     "Update local daemon agent desired state",
-				ArgsUsage: "<name-or-id>",
+				Name:                      "update",
+				Usage:                     "Update local daemon agent desired state",
+				DisableSliceFlagSeparator: true,
+				ArgsUsage:                 "<name-or-id>",
 				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:  "clear-env",
+						Usage: "Remove all saved connection environment overrides",
+					},
 					&cli.StringFlag{Name: "name", Usage: "Agent connection name"},
 					&cli.StringFlag{Name: "harness", Usage: "Harness to run"},
 					&cli.StringSliceFlag{
@@ -642,6 +657,10 @@ func newDaemonAgentCommand(stdout io.Writer) *cli.Command {
 					&cli.StringFlag{Name: "instance-id", Usage: "Agent instance id"},
 					&cli.StringFlag{Name: "agent-type", Usage: "Cloud agent type"},
 					&cli.StringFlag{Name: "working-dir", Usage: "Working directory"},
+					&cli.StringSliceFlag{
+						Name:  "env",
+						Usage: "Connection environment as KEY=VALUE; repeat for each variable. On update, replaces all saved environment overrides.",
+					},
 					&cli.IntFlag{
 						Name:  "desired-slots",
 						Usage: "Desired ACP slot count (1-16)",
@@ -889,6 +908,11 @@ func newDaemonLocalCommand(stdout io.Writer) *cli.Command {
 
 func parseDaemonAgentUpdateRequest(cmd *cli.Command) (*facade.UpdateDaemonAgentRequest, error) {
 	req := &facade.UpdateDaemonAgentRequest{ConnectionID: cmd.Args().First()}
+	env, err := parseDaemonAgentEnvUpdate(cmd)
+	if err != nil {
+		return nil, err
+	}
+	req.Env = env
 	if cmd.IsSet("name") {
 		value := cmd.String("name")
 		req.Name = &value
