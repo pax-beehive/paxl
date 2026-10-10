@@ -71,7 +71,9 @@ func TestDSCodeDeliversToLiveSessionAndResumesNativeCLI(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "send\nnative-1\n--\n--steer shell $HOME\n", string(raw))
 	var stdout, stderr bytes.Buffer
-	_, err = lookup.Adapter.(adaptor.SessionResumer).Resume(
+	resumer, ok := lookup.Adapter.(adaptor.SessionResumer)
+	require.True(t, ok)
+	_, err = resumer.Resume(
 		t.Context(),
 		&adaptor.ResumeSessionRequest{NativeID: "native-1"},
 		adaptor.WithStreams(strings.NewReader(""), &stdout, &stderr),
