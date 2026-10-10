@@ -927,3 +927,35 @@ The hidden agent hook performs the same reconciliation before matching routes:
 it first accepts pending envelopes, then syncs a small batch of recently
 accepted envelopes. This lets capsules accepted from the web or manager API
 arrive on the next matching local prompt without a manual CLI accept step.
+
+### Agent process environment
+
+Use repeated `--env KEY=VALUE` flags when creating a daemon agent connection:
+
+```bash
+paxl daemon agent create --name work --harness codex \
+  --env CODEX_PATH=/Users/me/.local/bin/codex \
+  --env 'PATH=/Users/me/.local/bin:/usr/local/bin:/usr/bin:/bin'
+
+paxl daemon agent update conn_work \
+  --env CODEX_PATH=/Users/me/.local/bin/codex
+
+paxl daemon agent update conn_work --clear-env
+```
+
+paxd persists these connection overrides in SQLite and injects them into the ACP
+process environment. On update, `--env` replaces the complete saved override map;
+omitting it preserves the map. `--clear-env` removes all saved overrides, allowing
+the process to inherit the daemon environment again. It cannot be combined with
+`--env`. Environment updates cause paxd to reconcile the connection runtime.
+
+Names must match `[A-Za-z_][A-Za-z0-9_]*`. Empty values (`--env KEY=`) are supported;
+values retain spaces, commas and additional equals signs. Duplicate keys use the
+last value. Repeat `--env` and `--command` for multiple entries; neither splits
+values on commas in agent create/update.
+
+For managed direct ACP launchers, use `CODEX_PATH` for Codex,
+`CLAUDE_CODE_EXECUTABLE` for Claude, or `PI_ACP_SDK_ROOT` for Pi's absolute SDK
+package directory (Pi ACP >=0.7.0). The `--command` flag selects the ACP adapter;
+these variables select its underlying harness. The selected paths must exist on
+the machine running paxd.

@@ -183,6 +183,7 @@ type UpdateDaemonAgentRequest struct {
 	AgentType    *string
 	Harness      *string
 	Command      *[]string
+	Env          *map[string]string
 	WorkingDir   *string
 	Enabled      *bool
 	DesiredState *model.DaemonDesiredState
@@ -650,6 +651,7 @@ func (f *DaemonFacade) UpdateAgent(
 			AgentType:    req.AgentType,
 			Harness:      req.Harness,
 			Command:      req.Command,
+			Env:          req.Env,
 			WorkingDir:   req.WorkingDir,
 			Enabled:      req.Enabled,
 			DesiredState: req.DesiredState,
