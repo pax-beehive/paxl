@@ -4026,6 +4026,7 @@ func parseSetupRequest(cmd *cli.Command) (*facade.SetupRequest, error) {
 				agents = append(agents, agent)
 			case model.AgentNameUnknown,
 				model.AgentNameDSH,
+				model.AgentNameDSCode,
 				model.AgentNameGemini,
 				model.AgentNamePaxl:
 				return nil, fmt.Errorf("agent %q does not support setup", agent)

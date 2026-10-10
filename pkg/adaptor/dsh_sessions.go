@@ -83,17 +83,13 @@ var dshFilename = regexp.MustCompile(`^session(?:\.v([1-9][0-9]*))?\.jsonl(?:\.z
 
 var errDSHOtherSession = errors.New("different DSH session")
 
-func dshLogPaths(ctx context.Context) ([]string, error) {
-	root, err := dshSessionsRoot()
-	if err != nil {
-		return nil, err
-	}
+func dshLogPaths(ctx context.Context, root string) ([]string, error) {
 	type generation struct {
 		version int
 		path    string
 	}
 	selected := map[string]generation{}
-	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -137,7 +133,19 @@ func dshLogPaths(ctx context.Context) ([]string, error) {
 }
 
 func listDSHSessions(ctx context.Context, req *ListSessionsRequest) (*ListSessionsResponse, error) {
-	paths, err := dshLogPaths(ctx)
+	root, err := dshSessionsRoot()
+	if err != nil {
+		return nil, err
+	}
+	return listDSHSessionsAt(ctx, req, root)
+}
+
+func listDSHSessionsAt(
+	ctx context.Context,
+	req *ListSessionsRequest,
+	root string,
+) (*ListSessionsResponse, error) {
+	paths, err := dshLogPaths(ctx, root)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +167,22 @@ func getDSHSession(ctx context.Context, req *GetSessionRequest) (*GetSessionResp
 	if req == nil || strings.TrimSpace(req.NativeID) == "" {
 		return nil, fmt.Errorf("native session id is required")
 	}
-	paths, err := dshLogPaths(ctx)
+	root, err := dshSessionsRoot()
+	if err != nil {
+		return nil, err
+	}
+	return getDSHSessionAt(ctx, req, root)
+}
+
+func getDSHSessionAt(
+	ctx context.Context,
+	req *GetSessionRequest,
+	root string,
+) (*GetSessionResponse, error) {
+	if req == nil || strings.TrimSpace(req.NativeID) == "" {
+		return nil, fmt.Errorf("native session id is required")
+	}
+	paths, err := dshLogPaths(ctx, root)
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +241,7 @@ func readDSHLog(
 	if nativeID != "" && h.ID != nativeID {
 		return nil, errDSHOtherSession
 	}
-	if h.Type != "session" || h.Version < 0 || h.Version > 2 || h.ID == "" || h.CreatedAt < 0 {
+	if h.Type != "session" || h.Version < 0 || h.Version > 4 || h.ID == "" || h.CreatedAt < 0 {
 		return nil, fmt.Errorf("unsupported DSH header or format version %d", h.Version)
 	}
 	match := dshFilename.FindStringSubmatch(filepath.Base(path))

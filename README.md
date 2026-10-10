@@ -49,6 +49,7 @@ Useful links:
 - Architecture: [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md)
 - Hook routing: [doc/AUTOMATED_INJECTION_ROUTING.md](doc/AUTOMATED_INJECTION_ROUTING.md)
 - DeepSeek Harness: [doc/DSH_DAEMON.md](doc/DSH_DAEMON.md)
+- DSCODE: [doc/DSCODE_DAEMON.md](doc/DSCODE_DAEMON.md)
 - Harness authentication: [doc/HARNESS_AUTH.md](doc/HARNESS_AUTH.md)
 
 ## The First Five Minutes

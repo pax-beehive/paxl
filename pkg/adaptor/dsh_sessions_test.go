@@ -135,13 +135,13 @@ func TestDSHSelectsNewestGenerationAndRefusesUnknownFormats(t *testing.T) {
 	require.Equal(t, "Current title", list.Sessions[0].Title)
 	raw, err := os.ReadFile(current)
 	require.NoError(t, err)
-	raw = []byte(strings.Replace(string(raw), `"version":2`, `"version":3`, 1))
+	raw = []byte(strings.Replace(string(raw), `"version":2`, `"version":5`, 1))
 	require.NoError(
 		t,
-		os.WriteFile(filepath.Join(filepath.Dir(current), "session.v3.jsonl"), raw, 0o600),
+		os.WriteFile(filepath.Join(filepath.Dir(current), "session.v5.jsonl"), raw, 0o600),
 	)
 	_, err = a.ListSessions(t.Context(), nil)
-	require.ErrorContains(t, err, "format version 3")
+	require.ErrorContains(t, err, "format version 5")
 }
 
 func TestDSHRetainsCompletePrefixAndDoesNotRepairFiles(t *testing.T) {
