@@ -46,7 +46,7 @@ type HarnessInstallation struct {
 	Source        string           `json:"source"`
 }
 
-type HarnessUpgradeFacade struct{}
+type HarnessUpgradeFacade struct{ nativeHTTP UpdateHTTPClient }
 
 func NewHarnessUpgradeFacade() *HarnessUpgradeFacade { return &HarnessUpgradeFacade{} }
 
@@ -111,6 +111,10 @@ func (f *HarnessUpgradeFacade) Inspect(
 				"unsupported installation: launcher belongs to another package manager",
 			)
 		}
+	}
+	if req.Harness == "claude" && req.Component == HarnessComponentCLI &&
+		isClaudeNativePath(resolved) {
+		return inspectClaudeNative(ctx, req, path, resolved, name)
 	}
 	pkg, err := inspectHarnessPackage(resolved, name, bin)
 	if err != nil {

@@ -62,7 +62,7 @@ func (f *HarnessUpgradeFacade) Upgrade(
 		return nil, err
 	}
 	if req.Version == "" || req.Version == "latest" {
-		version, err := resolveLatestHarnessVersion(ctx, before.Package)
+		version, err := f.resolveHarnessTarget(ctx, before)
 		if err != nil {
 			return nil, err
 		}
@@ -138,22 +138,11 @@ func (f *HarnessUpgradeFacade) stageHarnessUpgrade(
 		}
 	}()
 	verbosef(applyOptions(opts), "Staging %s version %s.", before.Package, req.Version)
-	_, err = runHarnessProcess(
-		ctx,
-		4*time.Minute,
-		"npm",
-		"install",
-		"--global",
-		"--prefix",
-		stage,
-		"--no-audit",
-		"--no-fund",
-		"--",
-		before.Package+"@"+req.Version,
-	)
+	rollbackTarget, err := f.installHarnessStage(ctx, req, before, stage)
 	if err != nil {
-		return nil, fmt.Errorf("install harness package: %w", err)
+		return nil, err
 	}
+
 	_, bin, _ := harnessPackageName(&req.HarnessInspectRequest)
 	inspection := req.HarnessInspectRequest
 	inspection.Path = filepath.Join(stage, "bin", bin)
@@ -178,7 +167,7 @@ func (f *HarnessUpgradeFacade) stageHarnessUpgrade(
 	}
 	record := &harnessRollback{
 		Path:   before.Path,
-		Before: before.ResolvedPath,
+		Before: rollbackTarget,
 		After:  next.ResolvedPath,
 	}
 	data, err := json.Marshal(record)
@@ -198,7 +187,7 @@ func (f *HarnessUpgradeFacade) stageHarnessUpgrade(
 		err = verifyHarnessExecutable(ctx, after)
 	}
 	if err != nil {
-		restoreErr := switchHarnessLauncher(before.Path, before.ResolvedPath)
+		restoreErr := switchHarnessLauncher(before.Path, rollbackTarget)
 		if restoreErr != nil {
 			return nil, fmt.Errorf(
 				"verify activated harness: %w; restore launcher: %w",
