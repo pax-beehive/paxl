@@ -122,13 +122,11 @@ if err := renderSessions(stdout, resp, req.Format); err != nil {
 
 ## Testing Workflow
 
-Before implementing code:
+Use the direction, package boundaries, and test plan already agreed in the conversation. Ask only when an unresolved decision materially changes the outcome; do not request the same approval again.
 
-- Align the change direction and package boundaries with the user.
-- Align the test plan with the user.
-- Then execute a TDD loop.
+For behavior changes, use TDD where a suitable test seam exists, and follow explicit user requests for TDD. Documentation-only edits use relevant documentation checks. Run affected checks, resolve failures introduced by the change, and broaden validation when the scope or evidence warrants it. Do not repeat passing checks without a new reason.
 
-Use this TDD flow:
+When using TDD:
 
 - Write one behavior test.
 - Confirm it fails for the expected reason.
