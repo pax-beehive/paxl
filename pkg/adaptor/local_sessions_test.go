@@ -220,13 +220,18 @@ func (s *LocalSessionsSuite) TestListCodexSessionsFiltersGuardianReviews() {
 				if indexed {
 					index += `{"id":"review","thread_name":"Guardian review","updated_at":"2026-10-16T02:00:00Z"}` + "\n"
 				}
-				s.Require().NoError(os.WriteFile(filepath.Join(home, "session_index.jsonl"), []byte(index), 0o600))
+				s.Require().
+					NoError(os.WriteFile(filepath.Join(home, "session_index.jsonl"), []byte(index), 0o600))
 				dir := filepath.Join(home, "sessions")
 				s.Require().NoError(os.MkdirAll(dir, 0o700))
 				meta := `{"type":"session_meta","payload":{"id":"review","session_id":"main","parent_thread_id":"main","thread_source":"guardian_review","source":{"subagent":{"other":"guardian"}},"timestamp":"2026-10-16T02:00:00Z"}}` + "\n"
-				s.Require().NoError(os.WriteFile(filepath.Join(dir, "rollout-review.jsonl"), []byte(meta), 0o600))
+				s.Require().
+					NoError(os.WriteFile(filepath.Join(dir, "rollout-review.jsonl"), []byte(meta), 0o600))
 
-				resp, err := listCodexSessions(context.Background(), &ListSessionsRequest{IncludeSubagents: include})
+				resp, err := listCodexSessions(
+					context.Background(),
+					&ListSessionsRequest{IncludeSubagents: include},
+				)
 
 				s.Require().NoError(err)
 				ids := make([]string, 0, len(resp.Sessions))
