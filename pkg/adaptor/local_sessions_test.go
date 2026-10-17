@@ -2,6 +2,7 @@ package adaptor
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -207,6 +208,39 @@ func (s *LocalSessionsSuite) TestListCodexSessionsHidesSubagentRolloutsByDefault
 		s.NotEqual("child-thread", session.NativeID)
 	}
 	s.Equal("parent-thread", resp.Sessions[0].NativeID)
+}
+
+func (s *LocalSessionsSuite) TestListCodexSessionsFiltersGuardianReviews() {
+	for _, indexed := range []bool{false, true} {
+		for _, include := range []bool{false, true} {
+			s.Run(fmt.Sprintf("indexed=%t/include=%t", indexed, include), func() {
+				home := s.T().TempDir()
+				s.T().Setenv("CODEX_HOME", home)
+				index := `{"id":"main","thread_name":"Guardian review","updated_at":"2026-10-16T01:00:00Z"}` + "\n"
+				if indexed {
+					index += `{"id":"review","thread_name":"Guardian review","updated_at":"2026-10-16T02:00:00Z"}` + "\n"
+				}
+				s.Require().NoError(os.WriteFile(filepath.Join(home, "session_index.jsonl"), []byte(index), 0o600))
+				dir := filepath.Join(home, "sessions")
+				s.Require().NoError(os.MkdirAll(dir, 0o700))
+				meta := `{"type":"session_meta","payload":{"id":"review","session_id":"main","parent_thread_id":"main","thread_source":"guardian_review","source":{"subagent":{"other":"guardian"}},"timestamp":"2026-10-16T02:00:00Z"}}` + "\n"
+				s.Require().NoError(os.WriteFile(filepath.Join(dir, "rollout-review.jsonl"), []byte(meta), 0o600))
+
+				resp, err := listCodexSessions(context.Background(), &ListSessionsRequest{IncludeSubagents: include})
+
+				s.Require().NoError(err)
+				ids := make([]string, 0, len(resp.Sessions))
+				for _, session := range resp.Sessions {
+					ids = append(ids, session.NativeID)
+				}
+				if include {
+					s.ElementsMatch([]string{"main", "review"}, ids)
+				} else {
+					s.Equal([]string{"main"}, ids)
+				}
+			})
+		}
+	}
 }
 
 func (s *LocalSessionsSuite) TestListCodexSessionsIncludesSubagentRolloutsWhenRequested() {
