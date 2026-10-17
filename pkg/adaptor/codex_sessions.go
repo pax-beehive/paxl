@@ -339,7 +339,8 @@ func readCodexRollouts(
 			continue
 		}
 		id := "codex:" + meta.Payload.ID
-		if !includeSubagents && meta.Payload.ThreadSource == "subagent" {
+		if !includeSubagents && (meta.Payload.ThreadSource == "subagent" ||
+			meta.Payload.ThreadSource == "guardian_review") {
 			// Index entries do not expose the thread source, so remove a matching
 			// cached entry once its rollout identifies it as an internal thread.
 			delete(sessions, id)
