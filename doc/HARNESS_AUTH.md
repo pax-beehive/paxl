@@ -369,3 +369,42 @@ Gemini, Antigravity, DSH and DSCODE still require individual SDK/TUI authenticat
 adapters. Installation/discovery does not imply local auth support. Do not
 simulate authentication by launching a general chat session and claiming success;
 PTY fallback and remote forwarding remain separate work under KEV-104.
+
+## Next stage: Console-initiated end-to-end login
+
+Requested sequence: finish local auth adapters first, then enable browser-driven
+login through Console -> Manager -> paxd -> paxl -> official CLI/SDK. This section
+records planned work, not functionality delivered by the current local-auth PR.
+
+- Paxl remains the sole harness-specific auth execution boundary. Add structured
+  challenge/progress/input capabilities before attempting remote integration;
+  human stderr interaction and the final `--format json` result are not a remote
+  authentication protocol. PTY fallback stays separate.
+- Paxd owns each login attempt and the paxl child lifetime. Browser or transport
+  disconnects must not cancel the attempt. Explicit cancellation, expiry and
+  daemon shutdown stop it; a daemon restart reports interruption rather than
+  claiming that an old attempt is still running.
+- Reuse the authenticated node-control command/query transport and its request
+  correlation. Acceptance/command ACK means the request was received, not that
+  authentication succeeded. The current main implementation still executes
+  Claude/Codex inside paxd; replace that executor with paxl delegation rather
+  than retaining two independent auth implementations.
+- Manager checks user/node ownership and forwards operations and sanitized state.
+  Bind attempts and input submissions to their authenticated owner. Keep API
+  keys, pasted authorization codes and credential-bearing URLs out of durable
+  command journals and routine logs; use the existing encrypted secret transport
+  where available rather than placing secrets in ordinary persisted commands.
+- Console offers provider/method selection according to actual adapter capability,
+  an authorization URL/device-code view, masked key or one-time-code input where
+  required, cancellation, expiry and readable errors. A refreshed page queries
+  the existing attempt instead of silently starting another login.
+- Keep login-attempt state separate from credential status. After native completion,
+  query native status and show its actual confidence (configured versus verified);
+  never label a command receipt or stored credential as verified model access.
+
+Acceptance tests must trigger from Console and traverse Manager and paxd into a
+fixture-backed paxl process. Cover browser/device authorization, provider and
+method selection, secret submission, wrong-owner access, duplicate requests,
+cancellation, expiry, websocket reconnection/page refresh, native failure and
+unsupported paxl versions. Real-account acceptance remains user-driven: automated
+checks must not install harnesses or log in/out of the user's accounts.
