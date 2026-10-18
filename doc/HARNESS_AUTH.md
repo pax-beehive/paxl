@@ -62,8 +62,8 @@ Status invokes the native status command with a 15-second deadline and returns
 only recognized authentication metadata. A known signed-out result succeeds
 with `logged_in: false`; unknown output, network errors, malformed JSON, and
 unexpected native failures are errors, not evidence that an account is logged out.
-No credential file is opened by Pax. Status is a native CLI observation, not a
-live model-request verification.
+Status delegates credential observations to native commands or the installed SDK,
+returns no raw credential data, and does not perform live model-request verification.
 
 Kimi status/logout use the selected CLI's authenticated loopback web API, because
 those operations have no standalone subcommands in the current JavaScript CLI.
@@ -151,14 +151,14 @@ shell environment. Keep those variables in the environment launching AGY.
 `--secret-stdin` is rejected for AGY. Account status is unknown; environment
 presence is only `configured`, not proof that its native account is logged in.
 
-## Remaining remote work
+## Additional credential-context work
 
 OpenCode, Kiro, Hermes and OpenClaw native commands are described below.
 Multi-provider/multi-credential work is tracked in
 [KEV-92](https://linear.app/kevin-geng/issue/KEV-92). Local and remote PTY fallback
 is tracked separately in [KEV-104](https://linear.app/kevin-geng/issue/KEV-104).
 The new local facade is the execution boundary for a future paxd → paxl path;
-the web/Manager flow will call this local execution boundary in a separate change.
+the web/Manager integration calls this boundary through the JSONL protocol below.
 
 ## Pi installation and provider authentication
 
@@ -428,41 +428,46 @@ adapters. Installation/discovery does not imply local auth support. Do not
 simulate authentication by launching a general chat session and claiming success;
 PTY fallback and remote forwarding remain separate work under KEV-104.
 
-## Next stage: Console-initiated end-to-end login
+## Console-initiated login protocol
 
-Requested sequence: finish local auth adapters first, then enable browser-driven
-login through Console -> Manager -> paxd -> paxl -> official CLI/SDK. This section
-records planned work, not functionality delivered by the current local-auth PR.
+`paxl harness auth capabilities --format json` reports protocol compatibility
+without probing credentials or requiring a harness. Manager checks this through
+paxd before starting login, so older executors are rejected with an upgrade
+instruction instead of receiving an incompatible request.
 
-- Paxl remains the sole harness-specific auth execution boundary. Add structured
-  challenge/progress/input capabilities before attempting remote integration;
-  human stderr interaction and the final `--format json` result are not a remote
-  authentication protocol. PTY fallback stays separate.
-- Paxd owns each login attempt and the paxl child lifetime. Browser or transport
-  disconnects must not cancel the attempt. Explicit cancellation, expiry and
-  daemon shutdown stop it; a daemon restart reports interruption rather than
-  claiming that an old attempt is still running.
-- Reuse the authenticated node-control command/query transport and its request
-  correlation. Acceptance/command ACK means the request was received, not that
-  authentication succeeded. The current main implementation still executes
-  Claude/Codex inside paxd; replace that executor with paxl delegation rather
-  than retaining two independent auth implementations.
-- Manager checks user/node ownership and forwards operations and sanitized state.
-  Bind attempts and input submissions to their authenticated owner. Keep API
-  keys, pasted authorization codes and credential-bearing URLs out of durable
-  command journals and routine logs; use the existing encrypted secret transport
-  where available rather than placing secrets in ordinary persisted commands.
-- Console offers provider/method selection according to actual adapter capability,
-  an authorization URL/device-code view, masked key or one-time-code input where
-  required, cancellation, expiry and readable errors. A refreshed page queries
-  the existing attempt instead of silently starting another login.
-- Keep login-attempt state separate from credential status. After native completion,
-  query native status and show its actual confidence (configured versus verified);
-  never label a command receipt or stored credential as verified model access.
+`--protocol jsonl` reserves stdout for version 1 auth events and stdin for versioned
+input frames. Normal local terminal commands keep their existing interaction.
+The daemon invokes paxl; paxl never connects to paxd to run native auth.
 
-Acceptance tests must trigger from Console and traverse Manager and paxd into a
-fixture-backed paxl process. Cover browser/device authorization, provider and
-method selection, secret submission, wrong-owner access, duplicate requests,
-cancellation, expiry, websocket reconnection/page refresh, native failure and
-unsupported paxl versions. Real-account acceptance remains user-driven: automated
-checks must not install harnesses or log in/out of the user's accounts.
+```json
+{"version":1,"type":"prompt","id":"2","kind":"secret","message":"API key"}
+{"version":1,"type":"input","id":"2","value":"<one input line>"}
+{"version":1,"type":"result","result":{"harness":"pi","state":"succeeded"}}
+```
+
+Events are `message`, `notice` (URL/code), `prompt` (text, secret or select with
+option IDs), and one final `result`. SDKs can present provider/method selection
+without a TTY. Native CLI diagnostics remain literal UI messages, not control
+instructions. All submitted input is redacted from diagnostics; bounded frames
+and current prompt IDs prevent arbitrary/replayed input. Credentials remain
+native-owned. API-key stdin methods ask for their initial secret through a
+protocol prompt instead of placing it in process arguments.
+
+paxd owns the child independently of browser/request/control-WebSocket lifetime,
+scopes it to the authenticated source/actor, deduplicates starts and inputs, and
+queries attempts without rerunning login. A command ACK is not auth completion;
+completion requires a final result and process exit. Browser refresh stores only
+handles, not authorization URLs or inputs. Challenges and secret frames bypass
+SQLite command journaling. The Manager checks node ownership and derives actor
+identity before forwarding.
+
+TTY-only native flows remain local until the separately tracked PTY transport
+(KEV-104) is available. The Console identifies those flows explicitly rather
+than sending slash commands as model prompts or silently switching billing.
+Native Google browser callbacks still require reachability of the node; the
+Console defaults Gemini to its manual-code flow instead.
+
+The cross-repo browser test uses real Console/Manager/paxd/paxl components with
+fixture native accounts, so it proves transport, prompt and process behavior
+without signing into real provider accounts. It does not prove provider uptime,
+account entitlement or every native TUI behavior.

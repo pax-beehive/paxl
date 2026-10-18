@@ -163,19 +163,27 @@ async function runGemini() {
     });
     return;
   } else {
-    if (method === "device" && !process.stdin.isTTY)
+    if (method === "device" && !process.stdin.isTTY && !protocol)
       throw new InputError(
         "Google manual-code login requires an interactive terminal. Use browser login locally.",
       );
     const feedback = (value) => write(String(value?.message ?? "") + "\n");
     sdk.coreEvents?.on("user-feedback", feedback);
     try {
+      if (protocol && method === "device")
+        event({
+          type: "prompt",
+          id: String(++promptSequence),
+          kind: "secret",
+          message:
+            "Paste the Google authorization code here after opening the displayed URL.",
+        });
       await sdk.getOauthClient(sdk.AuthType.LOGIN_WITH_GOOGLE, {
         getProxy: () => process.env.HTTPS_PROXY || process.env.HTTP_PROXY,
         isBrowserLaunchSuppressed: () =>
           method === "device" ||
           ["true", "1"].includes(process.env.NO_BROWSER?.toLowerCase()),
-        isInteractive: () => Boolean(process.stdin.isTTY),
+        isInteractive: () => Boolean(process.stdin.isTTY) || protocol,
         getAcpMode: () => true,
       });
       await geminiSettings(sdk, sdk.AuthType.LOGIN_WITH_GOOGLE);

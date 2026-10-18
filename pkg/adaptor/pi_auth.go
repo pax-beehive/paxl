@@ -71,8 +71,10 @@ func (a *NativeHarnessAuth) RunPi(
 		string(req.Operation),
 		req.Provider,
 		string(req.Method),
+		fmt.Sprint(req.Events != nil),
+		fmt.Sprint(req.SecretStdin),
 	) // #nosec G204 -- Embedded helper and parsed identifiers; secrets only on stdin.
-	var output boundedAuthOutput
+	output := sdkAuthOutput{sink: req.Events}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = req.Stdin, &output, req.Stderr
 	prepareNativeAuth(cmd)
 	// Allow readline to restore terminal mode before CommandContext's WaitDelay
@@ -89,11 +91,14 @@ func (a *NativeHarnessAuth) RunPi(
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("pi authentication: %w", ctx.Err())
 	}
-	if output.overflow {
+	if output.err != nil {
+		return nil, output.err
+	}
+	if output.result.overflow {
 		return nil, fmt.Errorf("pi authentication response exceeds limit")
 	}
 	var result model.HarnessAuthResult
-	if err := json.Unmarshal(output.data, &result); err != nil ||
+	if err := json.Unmarshal(output.result.data, &result); err != nil ||
 		result.Harness != model.AgentNamePi {
 		if runErr != nil {
 			return nil, fmt.Errorf("run Pi authentication helper: %w", runErr)

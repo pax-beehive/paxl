@@ -14,6 +14,7 @@ const [
   requestedProvider,
   requestedMethod,
   secretMode,
+  protocolMode,
 ] = process.argv.slice(1);
 const controller = new AbortController();
 process.on("SIGINT", () => controller.abort());
@@ -26,7 +27,14 @@ const safe = (value) => {
   for (const key of secrets) if (key) text = text.replaceAll(key, "[REDACTED]");
   return text;
 };
-const write = (value) => originalErr(safe(value));
+const protocol = protocolMode === "true";
+let promptSequence = 0;
+const event = (value) =>
+  originalOut(JSON.stringify({ version: 1, ...value }) + "\n");
+const write = (value) =>
+  protocol
+    ? event({ type: "message", message: safe(value) })
+    : originalErr(safe(value));
 // Native SDK diagnostics must not corrupt the final JSON or reflect a supplied key.
 process.stdout.write = (value, encoding, callback) => {
   const ok = write(value);
@@ -48,8 +56,20 @@ let terminal,
   lines,
   muted = false;
 const isTerminal = Boolean(process.stdin.isTTY && process.stderr.isTTY);
-async function question(message, secret = false, signal = controller.signal) {
+async function question(
+  message,
+  secret = false,
+  signal = controller.signal,
+  emitPrompt = true,
+) {
   signal.throwIfAborted();
+  if (protocol && emitPrompt && secretMode !== "true")
+    event({
+      type: "prompt",
+      id: String(++promptSequence),
+      kind: secret ? "secret" : "text",
+      message,
+    });
   if (secretMode === "true" && !secret)
     throw new InputError(
       "This provider needs additional prompts. Run interactively without --secret-stdin.",
@@ -116,10 +136,24 @@ async function question(message, secret = false, signal = controller.signal) {
   return answer;
 }
 async function choose(label, choices) {
-  if (!isTerminal)
+  if (!isTerminal && !protocol)
     throw new InputError(
       `${label} required. Available choices: ${choices.map((c) => c.id).join(", ")}. Use --provider/--method or run in a terminal.`,
     );
+  if (protocol) {
+    const id = String(++promptSequence);
+    event({
+      type: "prompt",
+      id,
+      kind: "select",
+      message: label,
+      options: choices,
+    });
+    const answer = await question("", false, controller.signal, false);
+    if (!choices.some((c) => c.id === answer))
+      throw new InputError("Choose one of the listed options.");
+    return answer;
+  }
   write(`${label}:\n`);
   choices.forEach((c, i) =>
     write(`  ${i + 1}. ${c.label ?? c.id} (${c.id})\n`),
@@ -134,6 +168,15 @@ async function choose(label, choices) {
   }
 }
 function notice(value) {
+  if (protocol) {
+    event({
+      type: "notice",
+      message: safe(value.message ?? ""),
+      url: value.url,
+      code: value.code,
+    });
+    return;
+  }
   if (value.message) write(value.message + "\n");
   if (value.url) write(value.url + "\n");
   if (value.code) write("Enter code in browser: " + value.code + "\n");
