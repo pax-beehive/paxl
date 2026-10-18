@@ -5858,3 +5858,24 @@ func TestRenderDisabledBinaryWarnings(t *testing.T) {
 		assert.Contains(t, out.String(), "Warning: Current version has known issues.")
 	}
 }
+
+func (s *CommandSuite) TestSessionTimelineJSONLPreservesRichElementMetadata() {
+	resp := &facade.GetSessionResponse{
+		Session: &model.Session{ID: "codex:main"},
+		Elements: []*model.Element{
+			{
+				SessionID:     "codex:main",
+				Seq:           1,
+				Type:          "tool_call",
+				NormalizedRaw: map[string]any{"callId": "c1"},
+				UsageJSON:     `{"tokens":4}`,
+				RawJSON:       "original",
+			},
+		},
+	}
+	s.Require().NoError(renderSessionTimeline(&s.stdout, resp, "jsonl"))
+	records := decodeJSONLLines(s.T(), s.stdout.String())
+	s.Equal(map[string]any{"callId": "c1"}, records[1]["normalized"])
+	s.Equal(`{"tokens":4}`, records[1]["usageJson"])
+	s.Equal("original", records[1]["raw"])
+}

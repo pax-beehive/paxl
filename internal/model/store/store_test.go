@@ -1046,3 +1046,51 @@ func (s *StoreSuite) TestSearchElementsReflectsElementReplacement() {
 	s.Require().NoError(err)
 	s.Require().Len(resp.Results, 1)
 }
+
+func (s *StoreSuite) TestSessionElementsPreserveNormalizedMetadata() {
+	_, err := s.store.UpsertSessions(
+		s.ctx,
+		&store.UpsertSessionsRequest{
+			Agent:    model.AgentNameCodex,
+			Sessions: []*model.Session{{NativeID: "main"}},
+		},
+	)
+	s.Require().NoError(err)
+	_, err = s.store.ReplaceSessionElements(
+		s.ctx,
+		&store.ReplaceSessionElementsRequest{
+			SessionID: "codex:main",
+			Elements: []*model.Element{
+				{Seq: 1, Type: "tool_call", NormalizedRaw: map[string]any{"callId": "c1"}},
+			},
+		},
+	)
+	s.Require().NoError(err)
+	session, err := s.store.FindSession(s.ctx, &store.FindSessionRequest{ID: "codex:main"})
+	s.Require().NoError(err)
+	elements, err := s.store.Elements(s.ctx, &store.ElementsRequest{Session: session.Session})
+	s.Require().NoError(err)
+	s.Require().Len(elements.Elements, 1)
+	s.Equal(map[string]any{"callId": "c1"}, elements.Elements[0].NormalizedRaw)
+}
+
+func (s *StoreSuite) TestSessionElementsRejectInvalidNormalizedMetadata() {
+	_, err := s.store.UpsertSessions(
+		s.ctx,
+		&store.UpsertSessionsRequest{
+			Agent:    model.AgentNameCodex,
+			Sessions: []*model.Session{{NativeID: "main"}},
+		},
+	)
+	s.Require().NoError(err)
+	_, err = s.store.ReplaceSessionElements(
+		s.ctx,
+		&store.ReplaceSessionElementsRequest{
+			SessionID: "codex:main",
+			Elements: []*model.Element{
+				{Seq: 1, NormalizedRaw: map[string]any{"invalid": make(chan int)}},
+			},
+		},
+	)
+	s.Require().ErrorContains(err, "encode normalized element")
+}

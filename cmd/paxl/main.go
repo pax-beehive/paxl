@@ -5175,6 +5175,9 @@ func renderSessionTimeline(stdout io.Writer, resp *facade.GetSessionResponse, fo
 				"startedAt":     element.StartedAt,
 				"completedAt":   element.CompletedAt,
 				"durationMs":    element.DurationMS,
+				"normalized":    element.NormalizedRaw,
+				"usageJson":     element.UsageJSON,
+				"raw":           element.RawJSON,
 				"contentText":   element.ContentText,
 			}); err != nil {
 				return fmt.Errorf("encode session element: %w", err)
