@@ -186,6 +186,21 @@ For script routes `state: completed` means the official script exited successful
 not that a requested install action or provider access was independently verified.
 Scripts can offer maintenance actions for existing installs. npm routes return
 `installed` on npm success. Open a new terminal if the installer updated PATH.
+Paxl compares common user shell startup files before and after successful installs,
+including Bash profiles, Zsh files (also under absolute `ZDOTDIR`), publisher XDG
+candidates and both hardcoded and XDG Fish paths. Results contain only changed
+paths in the optional JSON field `changed_shell_files`, never configuration contents.
+Text output lists observed changes and recommends a new terminal. A single changed,
+existing Bash or Zsh file also gets a safely quoted `source` example, conditional
+on the shell currently in use. Other shells and multiple-file changes get no guessed
+reload command. If no changes are observed, output points to a new terminal or the
+installer's PATH instructions when the command is not found.
+This is best-effort observation of conventional files, not attribution to the
+installer or verification of PATH. Unreadable, non-regular and over-2-MiB files are
+skipped. Arbitrary custom files are not monitored; `/etc/profile` is included on
+Unix because OpenCode can select it. Dry runs do not
+inspect configuration. Paxl cannot update the parent terminal's PATH and does not
+execute shell configuration files.
 Installation does not imply that every harness has local login/inspect/upgrade
 support: those command capabilities remain independent. For Pi managed installs,
 inspect and SDK authentication are supported; use native `pi update` for updates.
@@ -216,3 +231,31 @@ No verified exact-version flag is exposed, so explicit `--version` is rejected.
 Auth, discovery, sessions and ACP integration remain follow-up work under KEV-107.
 
 Official installation reference: https://www.antigravity.google/docs/cli/install/
+
+### Shell configuration audit (2026-10-18)
+
+The following records inspection of downloaded publisher scripts without executing
+installers. A candidate is not a promise of mutation: scripts check PATH, existing
+content, shell and user choices. Bootstrap binaries and dependency installers may
+have additional behavior that is not visible in the outer script.
+
+| Publisher entry | Observed shell configuration behavior |
+| --- | --- |
+| [Codex](https://chatgpt.com/codex/install.sh) | `pick_profile`: macOS Zsh uses `~/.zprofile`, macOS Bash `~/.bash_profile`; Linux Zsh uses `~/.zshrc`, Linux Bash `~/.bashrc`; fallback `~/.profile`. Adds/replaces a delimited PATH block when needed. |
+| [Pi](https://pi.dev/install.sh) | `shell_config_file` selects `${ZDOTDIR:-$HOME}/.zshrc`, `~/.bashrc` if present otherwise `~/.profile`, or hardcoded `~/.config/fish/config.fish`. `prompt_add_path_to_profile` asks through `/dev/tty` before appending and skips a matching line. |
+| [Kimi](https://code.kimi.com/kimi-code/install.sh) | `_detect_shell_rc` selects `~/.zshrc`; Bash picks the first existing `.bashrc`, `.bash_profile`, `.profile` (otherwise `.bashrc`); Fish uses hardcoded `~/.config/fish/config.fish`; fallback `.profile`. `_update_path` skips when disabled, already on PATH or already configured. |
+| [OpenCode](https://opencode.ai/install) | Chooses the first existing candidate. Zsh checks `${ZDOTDIR:-$HOME}/.zshrc`, `.zshenv`, then `$XDG_CONFIG_HOME/zsh/.zshrc`, `.zshenv`; Bash checks `~/.bashrc`, `.bash_profile`, `.profile`, then `$XDG_CONFIG_HOME/bash/.bashrc`, `.bash_profile`. Fish uses hardcoded `~/.config/fish/config.fish`; sh/ash checks `~/.ashrc`, `~/.profile`, `/etc/profile`. Respects `--no-modify-path`; does not create a missing startup file in this branch. |
+| [Hermes](https://hermes-agent.nousresearch.com/install.sh) | `wire_shell_path` updates both `.zshrc` and `.zprofile` for Zsh; hardcoded `~/.config/fish/config.fish` for Fish; otherwise `.bashrc`, `.profile`, and existing `.bash_profile`/`.bash_login`. Skips matching PATH setup. |
+| [OpenClaw](https://openclaw.ai/install.sh) | `persist_shell_path_prepend` can update multiple Bash/Zsh files and hardcoded `~/.config/fish/conf.d/openclaw.fish`, including existing files for other shells. Other branches also inspect `${ZDOTDIR:-$HOME}` files and may prepare Node/Homebrew. |
+| [DSCODE](https://raw.githubusercontent.com/qiz029/dscode/main/install.sh) | Fresh-install shell script creates the command link and prints `Add ... to PATH` if needed; it does not itself write a shell startup file. An existing managed install may delegate to the binary's updater. |
+| [Claude](https://claude.ai/install.sh) | Downloads a binary and runs `claude install`; the outer script does not choose or write a startup file. Do not infer a specific file from it. |
+| [Antigravity](https://antigravity.google/cli/install.sh) | Runs `agy install` after downloading; the outer script does not implement startup-file selection. Existing binaries cause an early exit. An [upstream report](https://github.com/google-antigravity/antigravity-cli/issues/745) describes changes to `.zshrc`, `.zprofile`, `.bashrc`, `.profile`; this is reported binary behavior, not independently reproduced here. |
+| [Kiro](https://cli.kiro.dev/install) | macOS copies and opens Kiro CLI.app, delegating setup to the app; Linux executes the archive's install.sh with `KIRO_CLI_SKIP_SETUP=1`. Outer script does not enumerate dotfiles. An [upstream report](https://github.com/kirodotdev/Kiro/issues/4138) describes Zsh startup integration; timing can outlive the outer installer. |
+| Gemini / DSH | Official persistent routes use npm. Registry metadata for `@google/gemini-cli@0.64.0` and `@deepseek-ai/dsh@0.2.0-rc.2` has no package-level lifecycle scripts. This does not rule out dependency hooks or changes made by a separately installed Node/npm toolchain. |
+
+The observer covers these explicit startup-file candidates, including both the
+hardcoded and XDG config roots and the `/etc/profile` fallback on Unix. It does
+not recursively watch arbitrary dotfiles, dependency installation paths or
+background mutations occurring after the installer returns. The reminder also
+covers already-configured PATH entries: an unchanged file does not prove the
+current terminal has loaded it.

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/pax-oss/paxl/internal/facade"
@@ -78,6 +80,7 @@ func installResultLines(result *facade.HarnessInstallResult) []string {
 		lines,
 		"The installed version and launcher have not been independently verified.",
 	)
+	lines = append(lines, shellActivationLines(result.ChangedShellFiles)...)
 	if result.Harness == "claude" || result.Harness == "pi" ||
 		result.Component == facade.HarnessComponentACP {
 		lines = append(
@@ -94,6 +97,44 @@ func installResultLines(result *facade.HarnessInstallResult) []string {
 	}
 	if result.Harness == "antigravity" {
 		lines = append(lines, "Check: agy --version")
+	}
+	return lines
+}
+
+func shellActivationLines(paths []string) []string {
+	if len(paths) == 0 {
+		return []string{
+			"No shell configuration changes were observed.",
+			"If the command is not found, open a new terminal or follow the installer's PATH instructions above.",
+		}
+	}
+	lines := []string{"Shell configuration changes detected during installation:"}
+	for _, path := range paths {
+		lines = append(lines, "  "+path)
+	}
+	lines = append(lines, "Open a new terminal to load the updated PATH.")
+	if len(paths) != 1 {
+		return lines
+	}
+	shell := ""
+	switch filepath.Base(paths[0]) {
+	case ".bashrc", ".bash_profile", ".bash_login":
+		shell = "bash"
+	case ".zshrc", ".zprofile", ".zshenv", ".zlogin":
+		shell = "zsh"
+	}
+	info, err := os.Stat(paths[0])
+	if shell != "" && err == nil && info.Mode().IsRegular() {
+		// Quote paths as shell data, including spaces and embedded apostrophes.
+		quoted := "'" + strings.ReplaceAll(paths[0], "'", "'\"'\"'") + "'"
+		lines = append(
+			lines,
+			fmt.Sprintf(
+				"If this terminal uses %s, you can reload it with: source %s",
+				shell,
+				quoted,
+			),
+		)
 	}
 	return lines
 }
