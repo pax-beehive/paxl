@@ -20,7 +20,7 @@ func TestOpenCodeAuthRunsNativeProviderSelectionLocally(t *testing.T) {
 		os.WriteFile(
 			binary,
 			[]byte(
-				"#!/bin/sh\n[ \"$*\" = 'auth login --provider openai --method ChatGPT Plus/Pro' ] || exit 23\necho 'Complete native browser authorization' >&2\n",
+				"#!/bin/sh\n[ \"$*\" = 'auth login --provider openai' ] || exit 23\necho 'Complete native browser authorization' >&2\n",
 			),
 			0700,
 		),
@@ -37,8 +37,6 @@ func TestOpenCodeAuthRunsNativeProviderSelectionLocally(t *testing.T) {
 			"opencode",
 			"--provider",
 			"openai",
-			"--method",
-			"ChatGPT Plus/Pro",
 			"--format",
 			"json",
 		},
@@ -49,7 +47,7 @@ func TestOpenCodeAuthRunsNativeProviderSelectionLocally(t *testing.T) {
 	require.NoError(t, err)
 	require.JSONEq(
 		t,
-		`{"harness":"opencode","state":"succeeded","provider":"openai","method":"ChatGPT Plus/Pro"}`,
+		`{"harness":"opencode","state":"succeeded","provider":"openai"}`,
 		out.String(),
 	)
 	require.Contains(t, diagnostics.String(), "Complete native browser authorization")
@@ -149,8 +147,17 @@ func TestOpenCodeAuthRejectsUnsupportedInputBeforeRunning(t *testing.T) {
 func TestProviderAuthHelpDocumentsMethodsAndInputBoundaries(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	var out, diagnostics bytes.Buffer
-	require.NoError(t, runWithInput(t.Context(), []string{"auth", "login", "-h"}, strings.NewReader(""), &out, &diagnostics))
-	for _, text := range []string{"OpenCode:", "Kiro:", "Hermes:", "OpenClaw:", "--provider", "--profile", "--secret-stdin", "native method label", "masked prompt"} {
+	require.NoError(
+		t,
+		runWithInput(
+			t.Context(),
+			[]string{"auth", "login", "-h"},
+			strings.NewReader(""),
+			&out,
+			&diagnostics,
+		),
+	)
+	for _, text := range []string{"OpenCode:", "Kiro:", "Hermes:", "OpenClaw:", "--provider", "--profile", "--secret-stdin", "Explicit --method is rejected", "masked prompt"} {
 		require.Contains(t, out.String(), text)
 	}
 }

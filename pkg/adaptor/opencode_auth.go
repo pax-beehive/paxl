@@ -27,17 +27,9 @@ func openCodeAuthArgs(req *NativeAuthRequest) ([]string, error) {
 		if _, err := model.ParseHarnessAuthMethod(string(req.Method), req.Harness); err != nil {
 			return nil, err
 		}
-		if req.Method != "" && req.Provider == "" {
-			return nil, fmt.Errorf(
-				"OpenCode --method requires --provider; omit both to choose interactively",
-			)
-		}
 		args := []string{"auth", "login"}
 		if req.Provider != "" {
 			args = append(args, "--provider", req.Provider)
-		}
-		if req.Method != "" {
-			args = append(args, "--method", string(req.Method))
 		}
 		return args, nil
 	case model.HarnessAuthLogout:

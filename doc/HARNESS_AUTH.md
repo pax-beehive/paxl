@@ -270,7 +270,7 @@ and returns only recognized metadata, never raw credentials or diagnostics.
 
 | Harness | Login | Status | Logout |
 | --- | --- | --- | --- |
-| OpenCode | `opencode auth login`, optional `--provider` and native method label | `opencode auth list`; stored credential count only | `opencode auth logout`, optional provider positional argument |
+| OpenCode | `opencode auth login`, optional `--provider`; method selection stays native | `opencode auth list`; stored credential count only | `opencode auth logout`, optional provider positional argument |
 | Kiro | `kiro-cli login`; `--method device` adds `--use-device-flow` | `kiro-cli whoami --format json`; recognized account type only | `kiro-cli logout` |
 | Hermes | `hermes auth add <provider>`, optional `--type oauth` or `--type api-key` | `hermes auth status <provider>`; recognized native provider state only | `hermes auth logout <provider>` |
 | OpenClaw | `openclaw models auth login`, optional native provider/method; API-key stdin uses `models auth paste-api-key` | `models auth list --json`; selected profile ID, provider and credential type only | `models auth logout <profileId>`; native confirmation remains enabled |
@@ -285,11 +285,9 @@ paxl harness auth logout --harness opencode --provider openai
 ```
 
 The installed OpenCode provider/plugin selects subscription/OAuth versus API-key
-methods; native API-key prompts are masked. `--method`, when provided together
-with `--provider`, is the exact native method **label**, not a generic Pax enum.
-Omit it to see the current choices. Unknown labels for plugin methods are checked
-by OpenCode and reported with available labels. Non-plugin providers may always
-use their native API-key path. Pax does not invent OAuth support for a provider.
+methods; native API-key prompts are masked. `--method` is rejected: native plugins use method labels, but non-plugin
+providers can silently ignore that flag and take the API-key path. Select the
+method in the native menu so Pax cannot pretend a requested method was applied. Pax does not invent OAuth support for a provider.
 `--secret-stdin` is rejected because no dedicated safe native key-stdin flag was
 established. `auth methods` remains Pi-only. Status lists all providers, so
 `--provider` on OpenCode status is rejected instead of silently ignored.

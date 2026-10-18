@@ -17,7 +17,7 @@ func TestLocalAuthHarnessAndProviderMethodBoundaries(t *testing.T) {
 	}
 	_, err := model.ParseLocalAuthHarness("not-a-harness")
 	require.Error(t, err)
-	for _, harness := range []model.AgentName{model.AgentNameOpenCode, model.AgentNameOpenClaw} {
+	for _, harness := range []model.AgentName{model.AgentNameOpenClaw} {
 		for _, method := range []string{"API Key", "ChatGPT Plus/Pro", "device-code"} {
 			result, err := model.ParseHarnessAuthMethod(method, harness)
 			require.NoError(t, err)
@@ -32,6 +32,8 @@ func TestLocalAuthHarnessAndProviderMethodBoundaries(t *testing.T) {
 		_, err := model.ParseHarnessAuthMethod("not-a-method", harness)
 		require.ErrorContains(t, err, "supported methods")
 	}
+	_, err = model.ParseHarnessAuthMethod("API Key", model.AgentNameOpenCode)
+	require.ErrorContains(t, err, "omit --method")
 	_, err = model.ParseHarnessAuthMethod("oauth", model.AgentNameUnknown)
 	require.Error(t, err)
 }

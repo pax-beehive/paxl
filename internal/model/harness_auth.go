@@ -56,7 +56,15 @@ func ParseLocalAuthHarness(raw string) (AgentName, error) {
 }
 
 func ParseHarnessAuthMethod(raw string, harness AgentName) (HarnessAuthMethod, error) {
-	if harness == AgentNameOpenCode || harness == AgentNameOpenClaw {
+	if harness == AgentNameOpenCode {
+		if raw != "" {
+			return HarnessAuthMethodUnknown, fmt.Errorf(
+				"opencode requires native method selection; omit --method to see this provider's subscription/OAuth and API-key choices (the native CLI can ignore --method for non-plugin providers)",
+			)
+		}
+		return HarnessAuthMethodUnknown, nil
+	}
+	if harness == AgentNameOpenClaw {
 		// Installed provider plugins own method labels/IDs; do not hardcode their
 		// provider-specific OAuth or API-key choices into Pax.
 		if len(raw) > 128 || strings.IndexFunc(raw, unicode.IsControl) >= 0 ||

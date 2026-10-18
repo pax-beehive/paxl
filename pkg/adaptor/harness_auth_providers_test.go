@@ -74,7 +74,7 @@ func TestProviderAuthStatusNormalizesMetadataAndRejectsUnknownOutput(t *testing.
 func TestProviderAuthUsesSelectedNativeCommandAndPreservesInput(t *testing.T) {
 	for _, tc := range []struct{ harness, provider, profile, operation, method, args string }{
 		{"opencode", "", "", "login", "", "auth login"},
-		{"opencode", "openai", "", "login", "ChatGPT Plus/Pro", "auth login --provider openai --method ChatGPT Plus/Pro"},
+		{"opencode", "openai", "", "login", "", "auth login --provider openai"},
 		{"opencode", "", "", "logout", "", "auth logout"},
 		{"opencode", "openai", "", "logout", "", "auth logout openai"},
 		{"kiro", "", "", "login", "", "login"},

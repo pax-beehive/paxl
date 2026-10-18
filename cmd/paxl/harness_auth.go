@@ -51,9 +51,9 @@ METHODS:
   OpenCode:
     Omit --method to choose subscription/OAuth or an API key using the native
     provider menu. --provider optionally skips provider selection.
-    With --provider, --method accepts the exact native method label, not the
-    generic Pi/Codex method names. Installed plugins own the available methods;
-    an unknown label is reported by OpenCode with its supported choices.
+    Explicit --method is rejected because OpenCode can ignore it for non-plugin
+    providers. Installed plugins own the available choices; select them natively
+    instead of assuming that a requested method was applied.
     API keys use the native masked prompt; --secret-stdin is not supported.
 
   Kiro:
