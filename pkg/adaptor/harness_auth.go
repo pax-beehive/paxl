@@ -22,22 +22,32 @@ type NativeHarnessAuth struct{}
 func NewNativeHarnessAuth() *NativeHarnessAuth { return &NativeHarnessAuth{} }
 
 type NativeAuthRequest struct {
-	Profile   string
-	Provider  string
-	Harness   model.AgentName
-	Operation model.HarnessAuthOperation
-	Method    model.HarnessAuthMethod
-	Stdin     io.Reader
-	Stdout    io.Writer
-	Stderr    io.Writer
+	SecretStdin bool
+	Profile     string
+	Provider    string
+	Harness     model.AgentName
+	Operation   model.HarnessAuthOperation
+	Method      model.HarnessAuthMethod
+	Stdin       io.Reader
+	Stdout      io.Writer
+	Stderr      io.Writer
 }
 
 func nativeAuthArgs(req *NativeAuthRequest) ([]string, error) {
 	if req == nil {
 		return nil, fmt.Errorf("authentication request is required")
 	}
+	if req.Harness == model.AgentNameAntigravity {
+		return nil, validateAntigravityAuth(req)
+	}
+	if req.Harness == model.AgentNameKimi && req.Operation != model.HarnessAuthLogin {
+		return nil, validateKimiAuth(req)
+	}
 	if req.Harness == model.AgentNamePi {
 		return nil, validatePiAuthRequest(req)
+	}
+	if isSDKAuth(req.Harness) {
+		return nil, validateSDKAuth(req)
 	}
 	if req.Harness == model.AgentNameOpenCode {
 		return openCodeAuthArgs(req)
@@ -121,6 +131,18 @@ func nativeLoginArgs(req *NativeAuthRequest) ([]string, error) {
 }
 
 func (a *NativeHarnessAuth) Run(ctx context.Context, req *NativeAuthRequest) error {
+	if req != nil && req.Harness == model.AgentNameAntigravity {
+		_, err := a.RunAntigravity(ctx, req)
+		return err
+	}
+	if req != nil && req.Harness == model.AgentNameKimi && req.Operation != model.HarnessAuthLogin {
+		_, err := a.RunKimi(ctx, req)
+		return err
+	}
+	if req != nil && isSDKAuth(req.Harness) {
+		_, err := a.RunSDK(ctx, req)
+		return err
+	}
 	if req != nil && req.Harness == model.AgentNamePi {
 		_, err := a.RunPi(ctx, req)
 		return err
@@ -174,6 +196,13 @@ func authExecutable(harness model.AgentName) string {
 		return "kiro-cli"
 	case model.AgentNameHermes:
 		key = "HERMES_EXECUTABLE"
+	case model.AgentNameKimi:
+		key = "KIMI_EXECUTABLE"
+	case model.AgentNameAntigravity:
+		if value := os.Getenv("AGY_EXECUTABLE"); value != "" {
+			return value
+		}
+		return "agy"
 	}
 	if value := os.Getenv(key); key != "" && value != "" {
 		return value
@@ -282,6 +311,15 @@ func (a *NativeHarnessAuth) Status(
 	ctx context.Context,
 	req *NativeAuthRequest,
 ) (*model.HarnessAuthResult, error) {
+	if req != nil && req.Harness == model.AgentNameAntigravity {
+		return a.RunAntigravity(ctx, req)
+	}
+	if req != nil && req.Harness == model.AgentNameKimi {
+		return a.RunKimi(ctx, req)
+	}
+	if req != nil && isSDKAuth(req.Harness) {
+		return a.RunSDK(ctx, req)
+	}
 	if req != nil && req.Harness == model.AgentNamePi {
 		return a.RunPi(ctx, req)
 	}

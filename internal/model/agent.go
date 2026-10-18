@@ -8,19 +8,20 @@ import (
 type AgentName string
 
 const (
-	AgentNameUnknown  AgentName = "unknown"
-	AgentNameCodex    AgentName = "codex"
-	AgentNameClaude   AgentName = "claude"
-	AgentNamePi       AgentName = "pi"
-	AgentNameKiro     AgentName = "kiro"
-	AgentNameOpenCode AgentName = "opencode"
-	AgentNameKimi     AgentName = "kimi"
-	AgentNameGemini   AgentName = "gemini"
-	AgentNameHermes   AgentName = "hermes"
-	AgentNameOpenClaw AgentName = "openclaw"
-	AgentNamePaxl     AgentName = "paxl"
-	AgentNameDSH      AgentName = "dsh"
-	AgentNameDSCode   AgentName = "dscode"
+	AgentNameUnknown     AgentName = "unknown"
+	AgentNameCodex       AgentName = "codex"
+	AgentNameClaude      AgentName = "claude"
+	AgentNamePi          AgentName = "pi"
+	AgentNameKiro        AgentName = "kiro"
+	AgentNameOpenCode    AgentName = "opencode"
+	AgentNameKimi        AgentName = "kimi"
+	AgentNameGemini      AgentName = "gemini"
+	AgentNameHermes      AgentName = "hermes"
+	AgentNameOpenClaw    AgentName = "openclaw"
+	AgentNamePaxl        AgentName = "paxl"
+	AgentNameDSH         AgentName = "dsh"
+	AgentNameDSCode      AgentName = "dscode"
+	AgentNameAntigravity AgentName = "antigravity"
 )
 
 var supportedAgentNames = map[AgentName]struct{}{

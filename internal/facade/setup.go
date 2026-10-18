@@ -152,7 +152,8 @@ func (f *SetupFacade) installAgentHook(
 			dbPath,
 			dryRun,
 		)
-	case model.AgentNameUnknown,
+	case model.AgentNameAntigravity,
+		model.AgentNameUnknown,
 		model.AgentNameDSH,
 		model.AgentNameDSCode,
 		model.AgentNameGemini,
@@ -212,7 +213,8 @@ func supportsAgentShim(agent model.AgentName) bool {
 		model.AgentNameHermes,
 		model.AgentNameOpenClaw:
 		return true
-	case model.AgentNameUnknown,
+	case model.AgentNameAntigravity,
+		model.AgentNameUnknown,
 		model.AgentNameDSH,
 		model.AgentNameDSCode,
 		model.AgentNameGemini,
@@ -1287,7 +1289,8 @@ func genericAgentRoot(agent model.AgentName) string {
 		return firstNonEmpty(os.Getenv("KIRO_HOME"), homePath(".kiro"))
 	case model.AgentNameOpenClaw:
 		return firstNonEmpty(os.Getenv("OPENCLAW_HOME"), homePath(".openclaw"))
-	case model.AgentNameUnknown,
+	case model.AgentNameAntigravity,
+		model.AgentNameUnknown,
 		model.AgentNameDSH,
 		model.AgentNameDSCode,
 		model.AgentNameCodex,

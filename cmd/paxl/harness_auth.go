@@ -26,6 +26,10 @@ DEFAULTS:
   kiro    Use native browser/device detection
   hermes  Native provider default; --provider is required
   openclaw Choose a provider and method in the native CLI (TTY required)
+  gemini  Google browser login
+  dsh     Choose a provider and method from the installed SDK
+  dscode  Choose a provider and method from the installed SDK
+  antigravity Open the native AGY account UI (TTY required)
 
 METHODS:
   Claude:
@@ -76,6 +80,28 @@ METHODS:
     Status lists saved profiles; logout requires --profile with one exact ID.
     Login/logout can update OpenClaw configuration through its own CLI.
 
+  Gemini:
+    browser       Native Google OAuth (default).
+    device        Native manual authorization-code flow; TTY required.
+    api-key       Save through Gemini's native SDK; requires --secret-stdin.
+    vertex        Select native Vertex auth with existing project/location/ADC.
+
+  DSH / DSCODE:
+    browser/oauth/api-key are provider-specific. Run auth methods to discover
+    the selected installation's actual providers and supported methods.
+    Omit --provider/--method to choose interactively. Explicit api-key requires
+    --secret-stdin and --provider. Credentials stay in the native SDK stores.
+    DSCODE's antigravity provider is separate from the AGY application's login.
+
+  Antigravity (alias: agy):
+    interactive   Open the official AGY account UI; finish there, then exit.
+                  Logout opens the same UI: enter /logout yourself. Closing
+                  the UI does not independently confirm account state.
+    api-key       Require existing GEMINI_API_KEY; select native Gemini mode.
+    adc           Require AGY_ADC_AUTH=true and existing ADC.
+                  Keep environment variables in the environment launching AGY.
+                  --secret-stdin is not supported; no duplicate key store.
+
 EXAMPLES:
   paxl harness auth login --harness pi
   paxl harness auth login --harness pi --provider openai --method oauth
@@ -109,7 +135,9 @@ the browser. Press Ctrl-C to stop login. Native interaction is written to stderr
 --format json reserves stdout for the final result.
 
 Methods are specific to each harness and apply only to login. Status and logout
-support Claude, Codex, Pi, OpenCode, Kiro, Hermes, and OpenClaw. The additional
+support all listed harnesses. Kimi status/logout require its native web API;
+Kimi logout also disconnects this machine's Remote Control session. AGY account
+status remains unknown because its CLI has no account-query API. The additional
 adapters report recognized credential/account metadata, not verified model access.
 Credentials use the current shell environment;
 existing API keys or cloud settings may affect which credentials the harness uses.`
@@ -145,7 +173,7 @@ func newHarnessAuthCommand(stdin io.Reader, stdout, stderr io.Writer) *cli.Comma
 				},
 				&cli.BoolFlag{
 					Name:  "secret-stdin",
-					Usage: "Read one secret line for Codex, Pi, or OpenClaw API-key login (also Codex access-token)",
+					Usage: "Read one API-key line for Codex, Pi, OpenClaw, Gemini, DSH, or DSCODE (also Codex access-token)",
 				},
 			)
 		}
@@ -156,7 +184,7 @@ func newHarnessAuthCommand(stdin io.Reader, stdout, stderr io.Writer) *cli.Comma
 		command.Commands = append(command.Commands, &cli.Command{
 			Description: description,
 			Name:        operation,
-			Usage:       map[string]string{"login": "Run official login locally", "status": "Read native authentication status", "logout": "Remove native credentials", "methods": "List installed Pi providers and login methods"}[operation],
+			Usage:       map[string]string{"login": "Run official login locally", "status": "Read native authentication status", "logout": "Remove native credentials", "methods": "List providers and methods exposed by the selected installation"}[operation],
 			Flags:       flags,
 			Action: func(ctx context.Context, cmd *cli.Command) error {
 				return runLocalHarnessAuth(ctx, cmd, stdin, stdout, stderr)
@@ -171,11 +199,11 @@ func harnessAuthFlags() []cli.Flag {
 		&cli.StringFlag{
 			Name:     "harness",
 			Required: true,
-			Usage:    "Harness: claude (alias: claude-code), codex, kimi, pi, opencode, kiro (alias: kiro-cli), hermes, or openclaw",
+			Usage:    "Harness: claude (alias: claude-code), codex, kimi, pi, opencode, kiro (alias: kiro-cli), hermes, openclaw, gemini, dsh, dscode, or antigravity (alias: agy)",
 		},
 		&cli.StringFlag{
 			Name:  "provider",
-			Usage: "Pi/OpenCode/OpenClaw provider ID (optional for login); required for Hermes",
+			Usage: "Native provider ID; required for Hermes and for DSH/DSCODE secret input",
 		},
 		&cli.StringFlag{
 			Name:  "profile",
@@ -272,7 +300,7 @@ func renderLocalHarnessAuth(out io.Writer, result *model.HarnessAuthResult, form
 		}
 	}
 	if result.RuntimeVersion != "" {
-		if _, err := fmt.Fprintf(out, "Pi version: %s\n", result.RuntimeVersion); err != nil {
+		if _, err := fmt.Fprintf(out, "Runtime version: %s\n", result.RuntimeVersion); err != nil {
 			return err
 		}
 	}

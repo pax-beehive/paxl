@@ -28,6 +28,9 @@ const (
 	HarnessAuthAPIKey        HarnessAuthMethod = "api-key"
 	HarnessAuthOAuth         HarnessAuthMethod = "oauth"
 	HarnessAuthAccessToken   HarnessAuthMethod = "access-token"
+	HarnessAuthInteractive   HarnessAuthMethod = "interactive"
+	HarnessAuthVertex        HarnessAuthMethod = "vertex"
+	HarnessAuthADC           HarnessAuthMethod = "adc"
 )
 
 func ParseLocalAuthHarness(raw string) (AgentName, error) {
@@ -48,9 +51,17 @@ func ParseLocalAuthHarness(raw string) (AgentName, error) {
 		return AgentNameHermes, nil
 	case "openclaw":
 		return AgentNameOpenClaw, nil
+	case "gemini":
+		return AgentNameGemini, nil
+	case "dsh":
+		return AgentNameDSH, nil
+	case "dscode":
+		return AgentNameDSCode, nil
+	case "antigravity", "agy":
+		return AgentNameAntigravity, nil
 	default:
 		return AgentNameUnknown, fmt.Errorf(
-			"local authentication currently supports claude, codex, kimi, pi, opencode, kiro, hermes, and openclaw",
+			"local authentication supports claude, codex, kimi, pi, opencode, kiro, hermes, openclaw, gemini, dsh, dscode, and antigravity",
 		)
 	}
 }
@@ -88,6 +99,15 @@ func ParseHarnessAuthMethod(raw string, harness AgentName) (HarnessAuthMethod, e
 		AgentNamePi:     {HarnessAuthOAuth, HarnessAuthAPIKey},
 		AgentNameKiro:   {HarnessAuthBrowser, HarnessAuthDevice},
 		AgentNameHermes: {HarnessAuthOAuth, HarnessAuthAPIKey},
+		AgentNameGemini: {
+			HarnessAuthBrowser,
+			HarnessAuthDevice,
+			HarnessAuthAPIKey,
+			HarnessAuthVertex,
+		},
+		AgentNameDSH:         {HarnessAuthBrowser, HarnessAuthOAuth, HarnessAuthAPIKey},
+		AgentNameDSCode:      {HarnessAuthBrowser, HarnessAuthOAuth, HarnessAuthAPIKey},
+		AgentNameAntigravity: {HarnessAuthInteractive, HarnessAuthAPIKey, HarnessAuthADC},
 	}
 	supported, ok := methods[harness]
 	if !ok {

@@ -38,14 +38,15 @@ func (f *HarnessAuthFacade) Execute(
 	}
 	option := applyOptions(opts)
 	native := &adaptor.NativeAuthRequest{
-		Profile:   req.Profile,
-		Provider:  req.Provider,
-		Harness:   req.Harness,
-		Operation: req.Operation,
-		Method:    req.Method,
-		Stdin:     option.Stdin,
-		Stdout:    option.Stderr,
-		Stderr:    option.Stderr,
+		SecretStdin: req.SecretStdin,
+		Profile:     req.Profile,
+		Provider:    req.Provider,
+		Harness:     req.Harness,
+		Operation:   req.Operation,
+		Method:      req.Method,
+		Stdin:       option.Stdin,
+		Stdout:      option.Stderr,
+		Stderr:      option.Stderr,
 	}
 	if err := f.native.Validate(native); err != nil {
 		return nil, err
@@ -61,8 +62,18 @@ func (f *HarnessAuthFacade) Execute(
 		native.Stdin = strings.NewReader(secret + "\n")
 	}
 	verbosef(option, "Running native %s authentication locally.", req.Harness)
+	if req.Harness == model.AgentNameAntigravity {
+		return f.native.RunAntigravity(ctx, native)
+	}
+	if req.Harness == model.AgentNameKimi {
+		return f.native.RunKimi(ctx, native)
+	}
 	if req.Harness == model.AgentNamePi {
 		return f.native.RunPi(ctx, native)
+	}
+	if req.Harness == model.AgentNameGemini || req.Harness == model.AgentNameDSH ||
+		req.Harness == model.AgentNameDSCode {
+		return f.native.RunSDK(ctx, native)
 	}
 	if err := f.native.Run(ctx, native); err != nil {
 		return nil, fmt.Errorf("local harness authentication: %w", err)
@@ -95,6 +106,18 @@ func validateLocalAuth(req *HarnessAuthRequest) error {
 	if req.Operation != model.HarnessAuthLogin && req.SecretStdin {
 		return fmt.Errorf("secret input is only valid for login")
 	}
+	return validateAuthSecret(req)
+}
+
+func validateAuthSecret(req *HarnessAuthRequest) error {
+	if req.Harness == model.AgentNameAntigravity {
+		if req.SecretStdin {
+			return fmt.Errorf(
+				"antigravity uses existing GEMINI_API_KEY or ADC environment; --secret-stdin is not supported",
+			)
+		}
+		return nil
+	}
 	if req.Harness == model.AgentNameOpenCode || req.Harness == model.AgentNameHermes {
 		if req.SecretStdin {
 			return fmt.Errorf(
@@ -114,6 +137,11 @@ func validateLocalAuth(req *HarnessAuthRequest) error {
 			"pi secret input requires --provider; list choices with paxl harness auth methods --harness pi",
 		)
 	}
+	if (req.Harness == model.AgentNameDSH || req.Harness == model.AgentNameDSCode) &&
+		req.SecretStdin &&
+		req.Provider == "" {
+		return fmt.Errorf("SDK secret input requires --provider; use auth methods to list choices")
+	}
 	if req.Operation == model.HarnessAuthLogin && req.SecretStdin != secretMethod {
 		return fmt.Errorf(
 			"API-key and access-token login require --secret-stdin; other methods do not accept it",
@@ -129,10 +157,10 @@ func validateAuthSelectors(req *HarnessAuthRequest) error {
 		case model.AgentNamePi,
 			model.AgentNameOpenCode,
 			model.AgentNameHermes,
-			model.AgentNameOpenClaw:
+			model.AgentNameOpenClaw, model.AgentNameGemini, model.AgentNameDSH, model.AgentNameDSCode:
 		default:
 			return fmt.Errorf(
-				"--provider is currently supported only for Pi, OpenCode, Hermes, and OpenClaw",
+				"--provider is supported for Pi, OpenCode, Hermes, OpenClaw, Gemini, DSH, and DSCODE",
 			)
 		}
 	}

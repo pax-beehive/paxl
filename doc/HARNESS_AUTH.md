@@ -65,9 +65,15 @@ unexpected native failures are errors, not evidence that an account is logged ou
 No credential file is opened by Pax. Status is a native CLI observation, not a
 live model-request verification.
 
-Kimi status and logout are deliberately unsupported here: this implementation
-has not established independent native commands for them. It does not start a
-TUI automatically or guess credential file contents.
+Kimi status/logout use the selected CLI's authenticated loopback web API, because
+those operations have no standalone subcommands in the current JavaScript CLI.
+Pax starts one owned `kimi web --host 127.0.0.1 --port 0 --no-open` process,
+consumes its startup bearer URL privately, queries `/api/v1/auth` or posts to
+`/api/v1/oauth/logout`, and reaps that process on completion/cancellation. No
+ambient HTTP proxy or redirects are used. Startup output/token are never emitted.
+Native Kimi logout also disconnects this machine's Remote Control session;
+API-key providers/environment credentials may remain. Old releases without the
+native API fail explicitly rather than editing token files.
 
 Logout delegates to the official command. Completion does not claim that all
 authentication is removed: keys in the environment, cloud identity, helpers,
@@ -93,11 +99,62 @@ work normally. Pipe-backed commands use a separate process group on Unix for
 cancellation and descendant cleanup. Windows currently relies on native process
 cancellation and does not promise Unix-style process-tree cleanup.
 
-## Remaining work
+## SDK authentication and native account UI
 
-Gemini, Antigravity, DSH and DSCODE still need their own SDK/TUI authentication
-adapters. OpenCode, Kiro, Hermes and OpenClaw native commands are described below. Discovery/session support does not imply login
-support. Multi-provider/multi-credential work is tracked in
+Gemini, DSH and DSCODE bind to the SDK in the selected installed launcher.
+Pax never downloads another SDK or falls back to another installation. Overrides
+are `GEMINI_EXECUTABLE`, `DSH_EXECUTABLE`, `DSCODE_EXECUTABLE`; DSCODE uses its own
+bundled Node runtime. Gemini/DSH use Node on PATH (`PAXL_AUTH_NODE` overrides it).
+Kimi accepts `KIMI_EXECUTABLE`; AGY accepts `AGY_EXECUTABLE`.
+
+```sh
+paxl harness auth methods --harness gemini
+paxl harness auth login --harness gemini
+printenv GEMINI_API_KEY | paxl harness auth login --harness gemini --method api-key --secret-stdin
+paxl harness auth methods --harness dsh
+paxl harness auth login --harness dsh --provider deepseek-account --method browser
+paxl harness auth methods --harness dscode
+paxl harness auth login --harness dscode --provider openai --method oauth
+paxl harness auth status --harness dscode
+paxl harness auth logout --harness dscode --provider openai
+paxl harness auth login --harness antigravity
+```
+
+Gemini supports Google browser OAuth (default), manual-code OAuth (`device`,
+terminal required), native API-key storage, and selecting existing Vertex
+credentials (`vertex`, requires project/location). Its installed SDK owns Google
+OAuth, keychain/file credentials and clearing native cached credentials. Pax only
+updates the native selected-auth preference while preserving unrelated settings.
+Status reports observed metadata; missing OAuth files do not prove the encrypted
+keyring is signed out. Environment, ADC and other applications remain outside
+native cached-credential logout.
+
+DSH discovers the installed AuthorizationService's real provider/method catalog,
+plus the native DeepSeek account browser service. DSCODE uses its installed
+provider plugins, private state root and bundled runtime. Provider selection is
+interactive by default; use `methods` for exact IDs. Explicit API-key input needs
+`--provider --method api-key --secret-stdin`. Native owners store/remove the
+credentials; no Pax credential database is created. Read-only metadata discovery
+does not mount the DeepSeek account service, whose initialization may migrate
+old issuer credentials. DSCODE OAuth requires a new native credential commit;
+a preexisting token does not make a cancelled attempt successful. The external
+Grok CLI's read-only token is not advertised as a DSCODE-managed login method.
+DSCODE's `antigravity` provider owns a separate grant and does not authenticate AGY.
+
+AGY currently exposes only its account TUI, without an independent auth command
+or public account SDK. Default `interactive` opens that foreground UI in a real
+terminal. For logout, enter `/logout` there and exit. Closing it returns `unknown`,
+not fabricated login success. `api-key` requires existing `GEMINI_API_KEY` and
+selects `modelProvider: gemini` in native settings; `adc` requires existing
+`AGY_ADC_AUTH=true` and ADC. Neither persists a secret or modifies the parent
+shell environment. Keep those variables in the environment launching AGY.
+`--secret-stdin` is rejected for AGY. Account status is unknown; environment
+presence is only `configured`, not proof that its native account is logged in.
+
+## Remaining remote work
+
+OpenCode, Kiro, Hermes and OpenClaw native commands are described below.
+Multi-provider/multi-credential work is tracked in
 [KEV-92](https://linear.app/kevin-geng/issue/KEV-92). Local and remote PTY fallback
 is tracked separately in [KEV-104](https://linear.app/kevin-geng/issue/KEV-104).
 The new local facade is the execution boundary for a future paxd → paxl path;
@@ -228,7 +285,8 @@ SHA-512 against its manifest, and delegates shell setup to `agy install`. An
 existing binary makes this installer exit without reinstalling it; a successful
 script exit therefore remains `completed`, not a verified installation claim.
 No verified exact-version flag is exposed, so explicit `--version` is rejected.
-Auth, discovery, sessions and ACP integration remain follow-up work under KEV-107.
+Native account UI and environment-auth entry points are described above. Discovery,
+sessions and ACP integration remain follow-up work under KEV-107.
 
 Official installation reference: https://www.antigravity.google/docs/cli/install/
 
