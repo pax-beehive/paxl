@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -24,7 +23,7 @@ func newHarnessInstallationCommand(action string, stdout io.Writer) *cli.Command
 			Name:  "path",
 			Usage: "Exact local launcher path (defaults to the component on PATH)",
 		},
-		&cli.StringFlag{Name: "format", Value: "json", Usage: "Output format: json"},
+		&cli.StringFlag{Name: "format", Value: "text", Usage: "Output format: text or json"},
 		&cli.BoolFlag{Name: "verbose", Usage: "Write progress to stderr"},
 	}
 	if action == "upgrade" {
@@ -55,8 +54,11 @@ func newHarnessInstallationCommand(action string, stdout io.Writer) *cli.Command
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			if cmd.Args().Len() != 1 || cmd.String("format") != "json" {
-				return fmt.Errorf("expected one harness name and --format json")
+			if cmd.Args().Len() != 1 {
+				return fmt.Errorf("expected one harness name")
+			}
+			if err := validateHarnessOutputFormat(cmd.String("format")); err != nil {
+				return err
 			}
 			component, err := facade.ParseHarnessComponent(cmd.String("component"))
 			if err != nil {
@@ -91,10 +93,7 @@ func newHarnessInstallationCommand(action string, stdout io.Writer) *cli.Command
 			if err != nil {
 				return fmt.Errorf("%s harness installation: %w", action, err)
 			}
-			if err := json.NewEncoder(stdout).Encode(result); err != nil {
-				return fmt.Errorf("render harness installation: %w", err)
-			}
-			return nil
+			return renderHarnessOutput(stdout, result, cmd.String("format"), action)
 		},
 	}
 }

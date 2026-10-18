@@ -46,6 +46,7 @@ func TestHarnessCommandsKeepMachineOutputSeparateFromVerboseProgress(t *testing.
 			"--component",
 			"acp",
 			"--verbose",
+			"--format", "json",
 		}
 		if action == "upgrade" {
 			args = append(args, "--version", "1.2.4", "--dry-run")
@@ -58,6 +59,15 @@ func TestHarnessCommandsKeepMachineOutputSeparateFromVerboseProgress(t *testing.
 		if action == "upgrade" {
 			require.Equal(t, "planned", result["phase"])
 		}
+		textArgs := []string{"harness", action, "codex", "--path", launcher, "--component", "acp"}
+		if action == "upgrade" {
+			textArgs = append(textArgs, "--version", "1.2.4", "--dry-run")
+		}
+		stdout.Reset()
+		require.NoError(t, run(t.Context(), textArgs, &stdout, &stderr))
+		require.Contains(t, stdout.String(), "Version: 1.2.3")
+		require.Contains(t, stdout.String(), "Path: "+launcher)
+		require.False(t, json.Valid(stdout.Bytes()))
 	}
 	require.NoDirExists(t, filepath.Join(root, "bin", ".paxl-harness-versions"))
 }
@@ -65,7 +75,7 @@ func TestHarnessCommandsKeepMachineOutputSeparateFromVerboseProgress(t *testing.
 func TestHarnessCommandsRejectInvalidArguments(t *testing.T) {
 	for _, args := range [][]string{
 		{"inspect"}, {"inspect", "codex", "--component", "unknown"},
-		{"inspect", "codex", "--format", "text"}, {"upgrade", "codex", "--version", "invalid"},
+		{"inspect", "codex", "--format", "xml"}, {"upgrade", "codex", "--version", "invalid"},
 		{"rollback", "codex"},
 	} {
 		var stdout, stderr bytes.Buffer
@@ -113,7 +123,7 @@ func TestHarnessUpgradeDefaultsToNativeCLIAndLatest(t *testing.T) {
 		t,
 		run(
 			t.Context(),
-			[]string{"daemon", "harness", "upgrade", "codex", "--dry-run"},
+			[]string{"daemon", "harness", "upgrade", "codex", "--dry-run", "--format", "json"},
 			&stdout,
 			&stderr,
 		),

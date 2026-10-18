@@ -908,6 +908,8 @@ func (s *CommandSuite) TestHiddenAgentHookNoopsWhenNoInjectionMatchesAndIsHidden
 }
 
 func (s *CommandSuite) TestSessionListWithCleanHomeReturnsEmptyList() {
+	// Keep locally installed harnesses from starting services during this test.
+	s.T().Setenv("PATH", s.T().TempDir())
 	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
 
 	err := run(
