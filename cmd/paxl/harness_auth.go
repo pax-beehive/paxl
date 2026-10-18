@@ -162,6 +162,33 @@ func newHarnessAuthCommand(stdin io.Reader, stdout, stderr io.Writer) *cli.Comma
 		Usage:       "Authenticate harnesses on this machine",
 		Description: "Local native authentication; no paxd required. Usually only --harness is needed; Hermes requires --provider. Run paxl harness auth login -h for methods, defaults, required flags, and examples.",
 	}
+	command.Commands = append(
+		command.Commands,
+		&cli.Command{
+			Name:  "capabilities",
+			Usage: "Report machine authentication protocol compatibility",
+			Flags: []cli.Flag{
+				&cli.StringFlag{
+					Name:  "format",
+					Value: "text",
+					Usage: "Output format: text or json",
+				},
+			},
+			Action: func(_ context.Context, cmd *cli.Command) error {
+				switch cmd.String("format") {
+				case "text":
+					_, err := fmt.Fprintln(stdout, "Authentication protocol: 1")
+					return err
+				case "json":
+					return json.NewEncoder(stdout).Encode(struct {
+						ProtocolVersion int `json:"protocol_version"`
+					}{ProtocolVersion: 1})
+				default:
+					return fmt.Errorf("unsupported output format %q", cmd.String("format"))
+				}
+			},
+		},
+	)
 	for _, operation := range []string{"login", "status", "logout", "methods"} {
 		flags := harnessAuthFlags()
 		if operation == "login" {
@@ -211,6 +238,10 @@ func harnessAuthFlags() []cli.Flag {
 		},
 		&cli.StringFlag{Name: "format", Value: "text", Usage: "Output format: text or json"},
 		&cli.BoolFlag{Name: "verbose", Usage: "Print operation diagnostics"},
+		&cli.StringFlag{
+			Name:  "protocol",
+			Usage: "Machine interaction protocol: jsonl (versioned events/input; no paxd required)",
+		},
 	}
 }
 
@@ -231,8 +262,15 @@ func runLocalHarnessAuth(
 	if err != nil {
 		return err
 	}
+	if protocol := cmd.String("protocol"); protocol != "" && protocol != "jsonl" {
+		return fmt.Errorf("unsupported auth protocol %q", protocol)
+	}
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if cmd.String("protocol") == "jsonl" {
+		return facade.NewHarnessAuthFacade().
+			ExecuteProtocol(ctx, req, facade.WithStreams(stdin, stdout, stderr))
+	}
 	result, err := facade.NewHarnessAuthFacade().
 		Execute(ctx, req, facade.WithStreams(stdin, stdout, stderr), harnessAuthVerbose(cmd, stderr))
 	if err != nil {

@@ -38,6 +38,7 @@ func (f *HarnessAuthFacade) Execute(
 	}
 	option := applyOptions(opts)
 	native := &adaptor.NativeAuthRequest{
+		Events:      option.AuthEvents,
 		SecretStdin: req.SecretStdin,
 		Profile:     req.Profile,
 		Provider:    req.Provider,

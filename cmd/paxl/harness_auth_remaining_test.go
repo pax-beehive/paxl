@@ -119,3 +119,19 @@ func TestLocalAuthHelpIncludesEveryRemainingHarnessAndNativeLimits(t *testing.T)
 		require.Contains(t, output.String(), text)
 	}
 }
+
+func TestAuthCapabilitiesDoesNotRequireAHarnessOrStartAuthentication(t *testing.T) {
+	var output, diagnostics bytes.Buffer
+	require.NoError(
+		t,
+		runWithInput(
+			t.Context(),
+			[]string{"harness", "auth", "capabilities", "--format", "json"},
+			strings.NewReader(""),
+			&output,
+			&diagnostics,
+		),
+	)
+	require.JSONEq(t, `{"protocol_version":1}`, output.String())
+	require.Empty(t, diagnostics.String())
+}

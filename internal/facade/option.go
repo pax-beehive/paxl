@@ -1,8 +1,13 @@
 package facade
 
-import "io"
+import (
+	"io"
+
+	"github.com/pax-oss/paxl/internal/model"
+)
 
 type Option struct {
+	AuthEvents    model.HarnessAuthEventSink
 	VerboseWriter io.Writer
 	Stdin         io.Reader
 	Stdout        io.Writer
@@ -31,4 +36,8 @@ func applyOptions(opts []func(*Option)) *Option {
 		}
 	}
 	return option
+}
+
+func WithAuthEvents(sink model.HarnessAuthEventSink) func(*Option) {
+	return func(option *Option) { option.AuthEvents = sink }
 }

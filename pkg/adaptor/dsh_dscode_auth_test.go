@@ -201,3 +201,29 @@ func TestSDKAccountFlowAndCancelledProviderDoNotReportSuccess(t *testing.T) {
 		})
 	}
 }
+
+func TestSDKProtocolCanSelectProviderAndAnswerMaskedPromptWithoutTTY(t *testing.T) {
+	providerSDKFixture(t, "dsh")
+	auth := adaptor.NewNativeHarnessAuth()
+	var events []model.HarnessAuthEvent
+	req := &adaptor.NativeAuthRequest{
+		Harness:   model.AgentNameDSH,
+		Operation: model.HarnessAuthLogin,
+		Stdin:     strings.NewReader("openai\nprotocol-private-key\n"),
+		Events:    func(event *model.HarnessAuthEvent) error { events = append(events, *event); return nil },
+	}
+	result, err := auth.RunSDK(t.Context(), req)
+	require.NoError(t, err)
+	require.Equal(t, model.HarnessAuthSucceeded, result.State)
+	var prompts []model.HarnessAuthEvent
+	for _, event := range events {
+		require.NotContains(t, event.Message, "protocol-private-key")
+		if event.Type == "prompt" {
+			prompts = append(prompts, event)
+		}
+	}
+	require.Len(t, prompts, 2)
+	require.Equal(t, "select", prompts[0].Kind)
+	require.Equal(t, "secret", prompts[1].Kind)
+	require.NotEqual(t, prompts[0].ID, prompts[1].ID)
+}

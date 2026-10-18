@@ -22,6 +22,7 @@ type NativeHarnessAuth struct{}
 func NewNativeHarnessAuth() *NativeHarnessAuth { return &NativeHarnessAuth{} }
 
 type NativeAuthRequest struct {
+	Events      model.HarnessAuthEventSink
 	SecretStdin bool
 	Profile     string
 	Provider    string

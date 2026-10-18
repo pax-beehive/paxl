@@ -148,8 +148,9 @@ func (a *NativeHarnessAuth) RunSDK(
 		req.Provider,
 		string(req.Method),
 		fmt.Sprint(req.SecretStdin),
+		fmt.Sprint(req.Events != nil),
 	) // #nosec G204 G702 -- Caller-selected installed runtime and fixed embedded helper; validated provider/method arguments, no shell; secrets only on stdin.
-	var out boundedAuthOutput
+	out := sdkAuthOutput{sink: req.Events}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = req.Stdin, &out, req.Stderr
 	prepareNativeAuth(cmd)
 	cmd.Cancel = func() error {
@@ -164,11 +165,15 @@ func (a *NativeHarnessAuth) RunSDK(
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("SDK authentication: %w", ctx.Err())
 	}
-	if out.overflow {
+	if out.err != nil {
+		return nil, out.err
+	}
+	if out.result.overflow {
 		return nil, fmt.Errorf("SDK authentication response exceeds limit")
 	}
 	var result model.HarnessAuthResult
-	if err := json.Unmarshal(out.data, &result); err != nil || result.Harness != req.Harness {
+	if err := json.Unmarshal(out.result.data, &result); err != nil ||
+		result.Harness != req.Harness {
 		if runErr != nil {
 			return nil, fmt.Errorf("run native SDK helper: %w", runErr)
 		}
