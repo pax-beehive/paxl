@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/pax-oss/paxl/pkg/adaptor"
 )
 
 type HarnessComponent string
@@ -104,6 +106,24 @@ func (f *HarnessUpgradeFacade) Inspect(
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve harness installation: %w", err)
+	}
+	if req.Harness == "pi" && req.Component == HarnessComponentCLI {
+		installation, err := adaptor.ResolvePiInstallation(path)
+		if err != nil {
+			return nil, err
+		}
+		if installation.Source == "pi-managed" {
+			return &HarnessInstallation{
+				SchemaVersion: 1,
+				Harness:       req.Harness,
+				Component:     req.Component,
+				Path:          path,
+				ResolvedPath:  installation.Executable,
+				Package:       name,
+				Version:       installation.Version,
+				Source:        installation.Source,
+			}, nil
+		}
 	}
 	for _, part := range strings.Split(filepath.ToSlash(resolved), "/") {
 		if part == "Cellar" || part == "Caskroom" || part == ".pnpm" || part == ".bun" {

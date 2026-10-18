@@ -118,14 +118,12 @@ type DaemonCommandAck struct {
 }
 
 type DaemonCommandResult struct {
-	HarnessAuth     *DaemonHarnessAuthView     `json:"harness_auth,omitempty"`
 	Remote          *DaemonRemoteView          `json:"remote,omitempty"`
 	AgentConnection *DaemonAgentConnectionView `json:"agent_connection,omitempty"`
 	Command         *DaemonCommandView         `json:"command,omitempty"`
 }
 
 type DaemonQueryResult struct {
-	HarnessAuth      *DaemonHarnessAuthView            `json:"harness_auth,omitempty"`
 	Error            *DaemonControlError               `json:"error,omitempty"`
 	Status           *DaemonStatus                     `json:"status,omitempty"`
 	Remotes          *DaemonListRemotesResult          `json:"remotes,omitempty"`

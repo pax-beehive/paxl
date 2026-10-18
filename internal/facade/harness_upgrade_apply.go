@@ -58,6 +58,11 @@ func (f *HarnessUpgradeFacade) Upgrade(
 	if err != nil {
 		return nil, err
 	}
+	if before.Source == "pi-managed" {
+		return nil, fmt.Errorf(
+			"pi managed installation owns updates; run pi update (paxl upgrade/rollback support for this layout is not implemented)",
+		)
+	}
 	if err := requireHarnessSymlink(before.Path); err != nil {
 		return nil, err
 	}

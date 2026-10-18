@@ -31,7 +31,7 @@ require (
 	github.com/uudashr/gocognit v1.2.1 // indirect
 	github.com/zimmski/osutil v1.6.1 // indirect
 	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/term v0.17.0 // indirect
+	golang.org/x/term v0.17.0
 	golang.org/x/tools v0.42.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/libc v1.72.3 // indirect

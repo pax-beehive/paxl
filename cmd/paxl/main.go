@@ -112,6 +112,7 @@ func newCommandWithDiagnostics(
 			newUpdateCommand(stdout),
 			newLoginCommand(stdout),
 			newHarnessAuthCommand(stdin, stdout, stderr),
+			newLocalHarnessCommand(stdin, stdout, stderr),
 			newWhoamiCommand(stdout),
 			newLogoutCommand(stdout),
 			newDeviceCommand(stdout, stderr, diagnostics),
