@@ -22,6 +22,7 @@ type NativeHarnessAuth struct{}
 func NewNativeHarnessAuth() *NativeHarnessAuth { return &NativeHarnessAuth{} }
 
 type NativeAuthRequest struct {
+	Profile   string
 	Provider  string
 	Harness   model.AgentName
 	Operation model.HarnessAuthOperation
@@ -37,6 +38,15 @@ func nativeAuthArgs(req *NativeAuthRequest) ([]string, error) {
 	}
 	if req.Harness == model.AgentNamePi {
 		return nil, validatePiAuthRequest(req)
+	}
+	if req.Harness == model.AgentNameOpenCode {
+		return openCodeAuthArgs(req)
+	}
+	if req.Harness == model.AgentNameOpenClaw {
+		return openClawAuthArgs(req)
+	}
+	if req.Harness == model.AgentNameKiro || req.Harness == model.AgentNameHermes {
+		return additionalNativeAuthArgs(req)
 	}
 	if req.Operation == model.HarnessAuthLogin {
 		return nativeLoginArgs(req)
@@ -125,7 +135,9 @@ func (a *NativeHarnessAuth) Run(ctx context.Context, req *NativeAuthRequest) err
 		command,
 		args...) // #nosec G204 -- Fixed native subcommands, no shell.
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = req.Stdin, req.Stdout, req.Stderr
-	if req.Method == model.HarnessAuthAPIKey || req.Method == model.HarnessAuthAccessToken {
+	if (req.Harness == model.AgentNameCodex &&
+		(req.Method == model.HarnessAuthAPIKey || req.Method == model.HarnessAuthAccessToken)) ||
+		(req.Harness == model.AgentNameOpenClaw && req.Method == model.HarnessAuthAPIKey) {
 		// Native output is untrusted and may echo the supplied secret on failure.
 		cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
 	}
@@ -151,6 +163,17 @@ func authExecutable(harness model.AgentName) string {
 		key = "CLAUDE_CODE_EXECUTABLE"
 	case model.AgentNameCodex:
 		key = "CODEX_PATH"
+	case model.AgentNameOpenCode:
+		key = "OPENCODE_EXECUTABLE"
+	case model.AgentNameOpenClaw:
+		key = "OPENCLAW_EXECUTABLE"
+	case model.AgentNameKiro:
+		if value := os.Getenv("KIRO_CLI_EXECUTABLE"); value != "" {
+			return value
+		}
+		return "kiro-cli"
+	case model.AgentNameHermes:
+		key = "HERMES_EXECUTABLE"
 	}
 	if value := os.Getenv(key); key != "" && value != "" {
 		return value
@@ -268,6 +291,15 @@ func (a *NativeHarnessAuth) Status(
 	}
 	if req.Harness == model.AgentNameCodex {
 		return ParseNativeCodexAuthStatus(data)
+	}
+	if req.Harness == model.AgentNameOpenCode {
+		return parseOpenCodeAuthStatus(data)
+	}
+	if req.Harness == model.AgentNameOpenClaw {
+		return parseOpenClawAuthStatus(req, data)
+	}
+	if req.Harness == model.AgentNameKiro || req.Harness == model.AgentNameHermes {
+		return parseAdditionalNativeAuthStatus(req, data)
 	}
 	var raw struct {
 		LoggedIn   *bool  `json:"loggedIn"`

@@ -95,8 +95,8 @@ cancellation and does not promise Unix-style process-tree cleanup.
 
 ## Remaining work
 
-Hermes, Gemini, OpenCode, OpenClaw, Kiro, DSH and DSCODE still need their own
-provider-aware native adapters. Discovery/session support does not imply login
+Gemini, Antigravity, DSH and DSCODE still need their own SDK/TUI authentication
+adapters. OpenCode, Kiro, Hermes and OpenClaw native commands are described below. Discovery/session support does not imply login
 support. Multi-provider/multi-credential work is tracked in
 [KEV-92](https://linear.app/kevin-geng/issue/KEV-92). Local and remote PTY fallback
 is tracked separately in [KEV-104](https://linear.app/kevin-geng/issue/KEV-104).
@@ -259,3 +259,115 @@ not recursively watch arbitrary dotfiles, dependency installation paths or
 background mutations occurring after the installer returns. The reminder also
 covers already-configured PATH entries: an unchanged file does not prove the
 current terminal has loaded it.
+
+## Additional local native authentication
+
+These adapters run dedicated native commands, without paxd, PTY emulation, hidden
+installs, or a second credential store. The installed CLI must expose the mapped
+subcommands and flags; older versions fail explicitly. Secrets entered through a
+native masked prompt stay in that native process. Status captures bounded output
+and returns only recognized metadata, never raw credentials or diagnostics.
+
+| Harness | Login | Status | Logout |
+| --- | --- | --- | --- |
+| OpenCode | `opencode auth login`, optional `--provider` and native method label | `opencode auth list`; stored credential count only | `opencode auth logout`, optional provider positional argument |
+| Kiro | `kiro-cli login`; `--method device` adds `--use-device-flow` | `kiro-cli whoami --format json`; recognized account type only | `kiro-cli logout` |
+| Hermes | `hermes auth add <provider>`, optional `--type oauth` or `--type api-key` | `hermes auth status <provider>`; recognized native provider state only | `hermes auth logout <provider>` |
+| OpenClaw | `openclaw models auth login`, optional native provider/method; API-key stdin uses `models auth paste-api-key` | `models auth list --json`; selected profile ID, provider and credential type only | `models auth logout <profileId>`; native confirmation remains enabled |
+
+### OpenCode
+
+```sh
+paxl harness auth login --harness opencode
+paxl harness auth login --harness opencode --provider openai
+paxl harness auth status --harness opencode
+paxl harness auth logout --harness opencode --provider openai
+```
+
+The installed OpenCode provider/plugin selects subscription/OAuth versus API-key
+methods; native API-key prompts are masked. `--method`, when provided together
+with `--provider`, is the exact native method **label**, not a generic Pax enum.
+Omit it to see the current choices. Unknown labels for plugin methods are checked
+by OpenCode and reported with available labels. Non-plugin providers may always
+use their native API-key path. Pax does not invent OAuth support for a provider.
+`--secret-stdin` is rejected because no dedicated safe native key-stdin flag was
+established. `auth methods` remains Pi-only. Status lists all providers, so
+`--provider` on OpenCode status is rejected instead of silently ignored.
+
+The credential-summary parser was checked against the native list implementation
+in [OpenCode v1.19.3](https://github.com/anomalyco/opencode/blob/v1.19.3/packages/opencode/src/cli/cmd/providers.ts).
+It returns `configured` for a nonzero count, `unknown` for zero (environment
+credentials may still apply), and an error for unrecognized output. Native
+command completion does not guarantee provider access or that OAuth succeeded.
+
+### Kiro
+
+```sh
+paxl harness auth login --harness kiro
+paxl harness auth login --harness kiro --method device
+paxl harness auth status --harness kiro
+paxl harness auth logout --harness kiro
+```
+
+`kiro-cli` is accepted as a harness alias. Default login and `--method browser`
+run the same native command; Kiro can still select device flow in a remote
+environment. Only `--method device` explicitly forces device flow. Browser
+account selection stays native. API-key environments remain owned by
+`KIRO_API_KEY`; Pax does not persist a key or change the shell environment.
+Status requires recognized JSON account metadata; native failures and unknown
+schemas remain errors. `configured` is not proof of an active subscription or
+model entitlement. See the [native command reference](https://kiro.dev/docs/cli/reference/cli-commands/).
+
+### Hermes
+
+```sh
+paxl harness auth login --harness hermes --provider openai-codex --method oauth
+paxl harness auth login --harness hermes --provider anthropic --method api-key
+paxl harness auth status --harness hermes --provider anthropic
+paxl harness auth logout --harness hermes --provider anthropic
+```
+
+Hermes requires `--provider` for these operations. An omitted method uses the
+provider's native default, which can be API key or OAuth. The installed CLI checks
+provider capability. API-key entry uses its secure prompt; `--secret-stdin` is
+rejected. Provider logout follows Hermes' native semantics and may clear several
+credentials owned by that provider. Pax does not substitute removal of one pool
+entry. Status is conservative: recognized configured credentials become
+`configured`; a recognized no-active-login result becomes `unknown` because other
+pooled/environment credentials may apply. Errors or unrecognized output are not
+reported as logged out. Hermes status can perform its own credential-pool healing;
+Pax does not suppress the native behavior. References:
+[native parser](https://github.com/NousResearch/hermes-agent/blob/main/hermes_cli/subcommands/auth.py),
+[native handlers](https://github.com/NousResearch/hermes-agent/blob/main/hermes_cli/auth_commands.py).
+
+### OpenClaw
+
+```sh
+paxl harness auth login --harness openclaw
+paxl harness auth login --harness openclaw --provider openai-codex --method device-code
+printenv OPENAI_API_KEY | paxl harness auth login --harness openclaw --provider openai --method api-key --secret-stdin
+paxl harness auth status --harness openclaw
+paxl harness auth status --harness openclaw --provider openai
+paxl harness auth logout --harness openclaw --profile openai:manual
+```
+
+Interactive login requires a real terminal. Native plugins own method IDs;
+`api-key` is the explicit Pax route to `paste-api-key` and requires one bounded
+secret line on stdin. Secret-entry native output is discarded, including failure
+output, to prevent key echoes. No secret appears in argv. The native CLI owns
+profile persistence/configuration and any communication with an existing Gateway.
+Pax does not pass `--set-default`, `--relogin`, or `--yes`.
+Status is stored profile metadata, not a live credential probe. An empty list
+means `unknown`; profiles mean `configured`, including possibly expired profiles.
+Logout requires one exact `--profile` from status and rejects `--provider` to avoid
+ambiguously removing accounts. Other credentials and environment keys may remain.
+The native version must support [models auth list/logout](https://github.com/openclaw/openclaw/blob/main/src/cli/models-cli.ts).
+
+Executable overrides for these adapters are `OPENCODE_EXECUTABLE`,
+`KIRO_CLI_EXECUTABLE`, `HERMES_EXECUTABLE` and `OPENCLAW_EXECUTABLE`. They are
+executable paths, not shell strings. Otherwise the caller's PATH selects the CLI.
+
+Gemini, Antigravity, DSH and DSCODE still require individual SDK/TUI authentication
+adapters. Installation/discovery does not imply local auth support. Do not
+simulate authentication by launching a general chat session and claiming success;
+PTY fallback and remote forwarding remain separate work under KEV-104.

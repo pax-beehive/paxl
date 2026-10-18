@@ -20,6 +20,7 @@ func NewHarnessAuthFacade() *HarnessAuthFacade {
 }
 
 type HarnessAuthRequest struct {
+	Profile     string
 	Provider    string
 	Harness     model.AgentName
 	Operation   model.HarnessAuthOperation
@@ -37,6 +38,7 @@ func (f *HarnessAuthFacade) Execute(
 	}
 	option := applyOptions(opts)
 	native := &adaptor.NativeAuthRequest{
+		Profile:   req.Profile,
 		Provider:  req.Provider,
 		Harness:   req.Harness,
 		Operation: req.Operation,
@@ -68,9 +70,10 @@ func (f *HarnessAuthFacade) Execute(
 	// Successful command completion is not a provider-request verification.
 	// In particular, logout may leave environment credentials active.
 	return &model.HarnessAuthResult{
-		Harness: req.Harness,
-		State:   "succeeded",
-		Method:  req.Method,
+		Harness:  req.Harness,
+		Provider: req.Provider,
+		State:    "succeeded",
+		Method:   req.Method,
 	}, nil
 }
 
@@ -81,8 +84,8 @@ func validateLocalAuth(req *HarnessAuthRequest) error {
 	if _, err := model.ParseLocalAuthHarness(string(req.Harness)); err != nil {
 		return err
 	}
-	if req.Provider != "" && req.Harness != model.AgentNamePi {
-		return fmt.Errorf("--provider is currently supported only for Pi")
+	if err := validateAuthSelectors(req); err != nil {
+		return err
 	}
 	if req.Operation == model.HarnessAuthLogin {
 		if _, err := model.ParseHarnessAuthMethod(string(req.Method), req.Harness); err != nil {
@@ -92,8 +95,20 @@ func validateLocalAuth(req *HarnessAuthRequest) error {
 	if req.Operation != model.HarnessAuthLogin && req.SecretStdin {
 		return fmt.Errorf("secret input is only valid for login")
 	}
+	if req.Harness == model.AgentNameOpenCode || req.Harness == model.AgentNameHermes {
+		if req.SecretStdin {
+			return fmt.Errorf(
+				"%s uses native masked API-key prompts; --secret-stdin is not supported",
+				req.Harness,
+			)
+		}
+		return nil
+	}
 	secretMethod := req.Method == model.HarnessAuthAPIKey ||
 		req.Method == model.HarnessAuthAccessToken
+	if req.Harness == model.AgentNameOpenClaw {
+		secretMethod = req.Method == model.HarnessAuthAPIKey
+	}
 	if req.Harness == model.AgentNamePi && req.SecretStdin && req.Provider == "" {
 		return fmt.Errorf(
 			"pi secret input requires --provider; list choices with paxl harness auth methods --harness pi",
@@ -103,6 +118,26 @@ func validateLocalAuth(req *HarnessAuthRequest) error {
 		return fmt.Errorf(
 			"API-key and access-token login require --secret-stdin; other methods do not accept it",
 		)
+	}
+	return nil
+}
+
+func validateAuthSelectors(req *HarnessAuthRequest) error {
+	if req.Provider != "" {
+		//exhaustive:ignore
+		switch req.Harness {
+		case model.AgentNamePi,
+			model.AgentNameOpenCode,
+			model.AgentNameHermes,
+			model.AgentNameOpenClaw:
+		default:
+			return fmt.Errorf(
+				"--provider is currently supported only for Pi, OpenCode, Hermes, and OpenClaw",
+			)
+		}
+	}
+	if req.Profile != "" && req.Harness != model.AgentNameOpenClaw {
+		return fmt.Errorf("--profile is currently supported only for OpenClaw logout")
 	}
 	return nil
 }

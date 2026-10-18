@@ -3,6 +3,7 @@ package model
 import (
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // Local authentication is independent of the daemon's wire protocol.
@@ -39,14 +40,34 @@ func ParseLocalAuthHarness(raw string) (AgentName, error) {
 		return AgentNameKimi, nil
 	case "pi":
 		return AgentNamePi, nil
+	case "opencode":
+		return AgentNameOpenCode, nil
+	case "kiro", "kiro-cli":
+		return AgentNameKiro, nil
+	case "hermes":
+		return AgentNameHermes, nil
+	case "openclaw":
+		return AgentNameOpenClaw, nil
 	default:
 		return AgentNameUnknown, fmt.Errorf(
-			"local authentication currently supports claude, codex, kimi, and pi",
+			"local authentication currently supports claude, codex, kimi, pi, opencode, kiro, hermes, and openclaw",
 		)
 	}
 }
 
 func ParseHarnessAuthMethod(raw string, harness AgentName) (HarnessAuthMethod, error) {
+	if harness == AgentNameOpenCode || harness == AgentNameOpenClaw {
+		// Installed provider plugins own method labels/IDs; do not hardcode their
+		// provider-specific OAuth or API-key choices into Pax.
+		if len(raw) > 128 || strings.IndexFunc(raw, unicode.IsControl) >= 0 ||
+			strings.HasPrefix(raw, "-") || strings.TrimSpace(raw) != raw {
+			return HarnessAuthMethodUnknown, fmt.Errorf(
+				"invalid %s method; omit --method to select from installed provider methods",
+				harness,
+			)
+		}
+		return HarnessAuthMethod(raw), nil
+	}
 	methods := map[AgentName][]HarnessAuthMethod{
 		AgentNameClaude: {HarnessAuthSubscription, HarnessAuthConsole},
 		AgentNameCodex: {
@@ -55,8 +76,10 @@ func ParseHarnessAuthMethod(raw string, harness AgentName) (HarnessAuthMethod, e
 			HarnessAuthAPIKey,
 			HarnessAuthAccessToken,
 		},
-		AgentNameKimi: {HarnessAuthDevice},
-		AgentNamePi:   {HarnessAuthOAuth, HarnessAuthAPIKey},
+		AgentNameKimi:   {HarnessAuthDevice},
+		AgentNamePi:     {HarnessAuthOAuth, HarnessAuthAPIKey},
+		AgentNameKiro:   {HarnessAuthBrowser, HarnessAuthDevice},
+		AgentNameHermes: {HarnessAuthOAuth, HarnessAuthAPIKey},
 	}
 	supported, ok := methods[harness]
 	if !ok {
@@ -76,8 +99,11 @@ func ParseHarnessAuthMethod(raw string, harness AgentName) (HarnessAuthMethod, e
 		choices = append(choices, string(method))
 	}
 	defaultMethod := string(supported[0])
-	if harness == AgentNamePi {
-		defaultMethod = "provider choice"
+	if harness == AgentNamePi || harness == AgentNameHermes {
+		defaultMethod = "provider-specific choice"
+	}
+	if harness == AgentNameKiro {
+		defaultMethod = "native environment detection"
 	}
 	return HarnessAuthMethodUnknown, fmt.Errorf(
 		"unsupported authentication method %q; supported methods for %s: %s (default: %s)",
@@ -98,6 +124,7 @@ const (
 )
 
 type HarnessAuthProvider struct {
+	ProfileID      string              `json:"profile_id,omitempty"`
 	ID             string              `json:"id"`
 	Label          string              `json:"label,omitempty"`
 	Methods        []HarnessAuthMethod `json:"methods,omitempty"`
