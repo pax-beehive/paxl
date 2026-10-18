@@ -28,6 +28,7 @@ func TestHarnessInstallDefaultsToReadableText(t *testing.T) {
 	require.Contains(t, stdout.String(), "Install plan: claude (cli)")
 	require.Contains(t, stdout.String(), "Installer: https://claude.ai/install.sh")
 	require.NotContains(t, stdout.String(), `"state"`)
+	require.NotContains(t, stdout.String(), "Open a new terminal")
 }
 
 func TestHarnessResultTextAndJSONKeepDistinctSemantics(t *testing.T) {
@@ -96,6 +97,10 @@ func TestHarnessResultTextAndJSONKeepDistinctSemantics(t *testing.T) {
 		var textOutput, jsonOutput bytes.Buffer
 		require.NoError(t, renderHarnessOutput(&textOutput, tc.result, "text", tc.action))
 		require.Contains(t, textOutput.String(), tc.expected)
+		if tc.action == "install" {
+			require.Contains(t, textOutput.String(), "open a new terminal")
+			require.NotContains(t, textOutput.String(), "source ~/.zshrc")
+		}
 		require.NoError(t, renderHarnessOutput(&jsonOutput, tc.result, "json", tc.action))
 		expected, err := json.Marshal(tc.result)
 		require.NoError(t, err)
@@ -211,4 +216,52 @@ func TestAntigravityInstallGuidanceNamesActualCLI(t *testing.T) {
 		),
 	)
 	require.Contains(t, stdout.String(), "Antigravity CLI official installer (command: agy)")
+}
+
+func TestInstallShellGuidanceUsesObservedFiles(t *testing.T) {
+	home := t.TempDir()
+	bash := filepath.Join(home, ".bashrc")
+	zsh := filepath.Join(home, "custom zsh's config", ".zshrc")
+	fish := filepath.Join(home, "config.fish")
+	for _, path := range []string{bash, zsh, fish} {
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0700))
+		require.NoError(t, os.WriteFile(path, []byte("private configuration"), 0600))
+	}
+	cases := []struct {
+		name     string
+		paths    []string
+		expected string
+		reload   bool
+	}{
+		{"bash", []string{bash}, "If this terminal uses bash", true},
+		{"custom zsh", []string{zsh}, "If this terminal uses zsh", true},
+		{"multiple", []string{bash, zsh}, "Open a new terminal", false},
+		{"fish", []string{fish}, "Open a new terminal", false},
+		{"removed", []string{filepath.Join(home, ".bash_profile")}, "Open a new terminal", false},
+		{"unobserved", nil, "If the command is not found", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := &facade.HarnessInstallResult{
+				Harness:           "gemini",
+				State:             "installed",
+				ChangedShellFiles: tc.paths,
+			}
+			var out bytes.Buffer
+			require.NoError(t, renderHarnessOutput(&out, result, "text", "install"))
+			require.Contains(t, out.String(), tc.expected)
+			for _, path := range tc.paths {
+				require.Contains(t, out.String(), path)
+			}
+			if tc.reload {
+				require.Contains(t, out.String(), "source '")
+			} else {
+				require.NotContains(t, out.String(), "source ")
+			}
+			require.NotContains(t, out.String(), "private configuration")
+			if tc.name == "custom zsh" {
+				require.Contains(t, out.String(), `'"'"'`)
+			}
+		})
+	}
 }

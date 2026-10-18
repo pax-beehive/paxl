@@ -31,15 +31,16 @@ type HarnessInstallRequest struct {
 }
 
 type HarnessInstallResult struct {
-	Harness   string            `json:"harness"`
-	Component HarnessComponent  `json:"component"`
-	Package   string            `json:"package"`
-	Version   string            `json:"version"`
-	State     string            `json:"state"`
-	Command   []string          `json:"command"`
-	Via       HarnessInstallVia `json:"via"`
-	Source    string            `json:"source"`
-	ScriptURL string            `json:"script_url,omitempty"`
+	Harness           string            `json:"harness"`
+	Component         HarnessComponent  `json:"component"`
+	Package           string            `json:"package"`
+	Version           string            `json:"version"`
+	State             string            `json:"state"`
+	Command           []string          `json:"command"`
+	Via               HarnessInstallVia `json:"via"`
+	Source            string            `json:"source"`
+	ScriptURL         string            `json:"script_url,omitempty"`
+	ChangedShellFiles []string          `json:"changed_shell_files,omitempty"`
 }
 
 func (f *HarnessInstallFacade) Install(
@@ -83,9 +84,11 @@ func (f *HarnessInstallFacade) Install(
 		args[0] = path
 	}
 	verbosef(option, "Installing %s using its official %s route.", result.Harness, result.Source)
+	shellBefore := snapshotShellConfigs()
 	if err := runner.Run(ctx, command, args); err != nil {
 		return nil, fmt.Errorf("install %s: %w", result.Harness, err)
 	}
+	result.ChangedShellFiles = changedShellConfigs(shellBefore)
 	result.State = "installed"
 	if result.Source == "script" {
 		result.State = "completed"
