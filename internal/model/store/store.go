@@ -756,7 +756,7 @@ func (s *Store) Elements(ctx context.Context, req *ElementsRequest) (*ElementsRe
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT session_id, sync_version, seq, type, COALESCE(role, ''), COALESCE(model, ''),
 			COALESCE(started_at, ''), COALESCE(completed_at, ''), COALESCE(duration_ms, 0),
-			COALESCE(usage_json, ''), COALESCE(content_text, ''), COALESCE(raw_json, '')
+			COALESCE(usage_json, ''), COALESCE(content_text, ''), COALESCE(raw_json, ''), COALESCE(normalized_json, '')
 		FROM session_elements
 		WHERE session_id = ? AND sync_version = ?
 		ORDER BY seq
@@ -1521,14 +1521,18 @@ func insertElement(
 	version int64,
 	element *model.Element,
 ) error {
+	normalized, err := json.Marshal(element.NormalizedRaw)
+	if err != nil {
+		return fmt.Errorf("encode normalized element: %w", err)
+	}
 	elementType := firstNonEmpty(element.Type, "message")
-	_, err := tx.ExecContext(
+	_, err = tx.ExecContext(
 		ctx,
 		`
 		INSERT INTO session_elements (
 			session_id, sync_version, seq, type, role, model, started_at, completed_at,
-			duration_ms, usage_json, content_text, raw_json
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			duration_ms, usage_json, content_text, raw_json, normalized_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		sessionID,
 		version,
@@ -1542,6 +1546,7 @@ func insertElement(
 		element.UsageJSON,
 		element.ContentText,
 		element.RawJSON,
+		string(normalized),
 	)
 	return err
 }
@@ -1630,6 +1635,7 @@ func scanElements(rows *sql.Rows) ([]*model.Element, error) {
 	var elements []*model.Element
 	for rows.Next() {
 		element := &model.Element{}
+		var normalized string
 		if err := rows.Scan(
 			&element.SessionID,
 			&element.SyncVersion,
@@ -1643,8 +1649,14 @@ func scanElements(rows *sql.Rows) ([]*model.Element, error) {
 			&element.UsageJSON,
 			&element.ContentText,
 			&element.RawJSON,
+			&normalized,
 		); err != nil {
 			return nil, fmt.Errorf("scan element row: %w", err)
+		}
+		if normalized != "" {
+			if err := json.Unmarshal([]byte(normalized), &element.NormalizedRaw); err != nil {
+				return nil, fmt.Errorf("decode normalized element: %w", err)
+			}
 		}
 		elements = append(elements, element)
 	}

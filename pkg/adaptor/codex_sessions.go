@@ -62,6 +62,7 @@ type codexMetaLine struct {
 		ID             string          `json:"id"`
 		SessionID      string          `json:"session_id"`
 		ParentThreadID string          `json:"parent_thread_id"`
+		ForkedFromID   string          `json:"forked_from_id"`
 		Timestamp      string          `json:"timestamp"`
 		CWD            string          `json:"cwd"`
 		Originator     string          `json:"originator"`
@@ -211,16 +212,7 @@ func findCodexRollout(nativeID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for _, name := range []string{"sessions", "archived_sessions"} {
-		found, err := findCodexRolloutInDir(filepath.Join(root, name), nativeID)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return "", err
-		}
-		if found != "" {
-			return found, nil
-		}
-	}
-	return "", fmt.Errorf("codex rollout %q not found", nativeID)
+	return findCodexConversationRollout(root, nativeID)
 }
 
 func findCodexRolloutInDir(root string, nativeID string) (string, error) {
@@ -253,12 +245,22 @@ func readCodexElements(path string, sessionID string) ([]*model.Element, error) 
 	}
 	defer closeFile(file)
 	var elements []*model.Element
+	durations := make(map[string]int64)
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), scannerMaxTokenSize)
 	for scanner.Scan() {
+		callID, duration := codexEventDuration(scanner.Bytes())
+		if callID != "" && duration > 0 {
+			durations[callID] = duration
+		}
 		element, ok := decodeCodexElement(scanner.Bytes(), int64(len(elements)+1), sessionID)
 		if ok {
 			elements = append(elements, element)
+		}
+	}
+	for _, e := range elements {
+		if id, ok := e.NormalizedRaw["callId"].(string); ok {
+			e.DurationMS = durations[id]
 		}
 	}
 	return elements, scanner.Err()
@@ -266,14 +268,20 @@ func readCodexElements(path string, sessionID string) ([]*model.Element, error) 
 
 func decodeCodexElement(raw []byte, seq int64, sessionID string) (*model.Element, bool) {
 	var envelope codexEnvelope
-	if err := json.Unmarshal(raw, &envelope); err != nil || envelope.Type != "response_item" {
+	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return nil, false
+	}
+	if envelope.Type != "response_item" {
+		return decodeCodexHistoryElement(raw, seq, sessionID)
 	}
 	var kind struct {
 		Type string `json:"type"`
 	}
-	if err := json.Unmarshal(envelope.Payload, &kind); err != nil || kind.Type != "message" {
+	if err := json.Unmarshal(envelope.Payload, &kind); err != nil {
 		return nil, false
+	}
+	if kind.Type != "message" {
+		return decodeCodexHistoryElement(raw, seq, sessionID)
 	}
 	var payload struct {
 		Role    string `json:"role"`
@@ -330,25 +338,25 @@ func readCodexRollouts(
 	if err != nil {
 		return err
 	}
-	for _, path := range paths {
+	rollouts, parents, err := codexConversationRollouts(ctx, paths)
+	if err != nil {
+		return err
+	}
+	mergeCodexConversationIndex(sessions, rollouts, parents, includeSubagents)
+	for _, rollout := range rollouts {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		meta, metaErr := readCodexMeta(path)
-		if shouldSkipCodexMeta(meta, metaErr) {
+		path, meta := rollout.path, rollout.meta
+		if !includeSubagents && isCodexInternal(meta) {
 			continue
 		}
-		id := "codex:" + meta.Payload.ID
-		if !includeSubagents && (meta.Payload.ThreadSource == "subagent" ||
-			meta.Payload.ThreadSource == "guardian_review") {
-			// Index entries do not expose the thread source, so remove a matching
-			// cached entry once its rollout identifies it as an internal thread.
-			delete(sessions, id)
-			continue
-		}
+		nativeID := codexConversationRoot(meta.Payload.ID, parents)
+		id := "codex:" + nativeID
+
 		session := sessions[id]
 		if session == nil {
-			session = &model.Session{ID: id, Agent: model.AgentNameCodex, NativeID: meta.Payload.ID}
+			session = &model.Session{ID: id, Agent: model.AgentNameCodex, NativeID: nativeID}
 		}
 		if session.Title == "" {
 			session.Title = firstNonEmpty(
@@ -641,5 +649,5 @@ func codexRoot() (string, error) {
 }
 
 func shouldSkipCodexMeta(meta *codexMetaLine, err error) bool {
-	return err != nil || meta.Payload.ID == ""
+	return err != nil || meta == nil || meta.Payload.ID == ""
 }
