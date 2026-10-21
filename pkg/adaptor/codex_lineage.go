@@ -89,10 +89,10 @@ func mergeCodexConversationIndex(
 		key := "codex:" + root
 		existing := merged[key]
 		if existing == nil {
-			copy := *session
-			copy.ID = key
-			copy.NativeID = root
-			merged[key] = &copy
+			sessionCopy := *session
+			sessionCopy.ID = key
+			sessionCopy.NativeID = root
+			merged[key] = &sessionCopy
 			continue
 		}
 		// Compare index timestamps before rollout activity changes UpdatedAt.
@@ -108,16 +108,16 @@ func mergeCodexConversationIndex(
 	}
 }
 
-func findCodexConversationRollout(root, nativeID string) (string, error) {
+func findCodexConversationRollout(ctx context.Context, root, nativeID string) (string, error) {
 	var paths []string
 	for _, dir := range []string{"sessions", "archived_sessions"} {
-		found, err := recentCodexRolloutPaths(context.Background(), filepath.Join(root, dir), 0)
+		found, err := recentCodexRolloutPaths(ctx, filepath.Join(root, dir), 0)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return "", err
 		}
 		paths = append(paths, found...)
 	}
-	rollouts, parents, err := codexConversationRollouts(context.Background(), paths)
+	rollouts, parents, err := codexConversationRollouts(ctx, paths)
 	if err != nil {
 		return "", err
 	}
@@ -148,7 +148,7 @@ func findCodexConversationRollout(root, nativeID string) (string, error) {
 	}
 	// Metadata can be missing in older rollouts; exact filename lookup still works.
 	for _, dir := range []string{"sessions", "archived_sessions"} {
-		path, err := findCodexRolloutInDir(filepath.Join(root, dir), nativeID)
+		path, err := findCodexRolloutInDir(ctx, filepath.Join(root, dir), nativeID)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return "", err
 		}

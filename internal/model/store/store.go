@@ -1273,35 +1273,6 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		PRIMARY KEY(session_id, sync_version, seq)
 	);
 
-	-- FTS5 full-text search index on session element content.
-	-- External content table: indexes content_text without duplicating it.
-	CREATE VIRTUAL TABLE IF NOT EXISTS session_elements_fts USING fts5(
-		content_text,
-		content='session_elements',
-		content_rowid='rowid'
-	);
-
-	-- Triggers keep FTS index in sync with session_elements.
-	CREATE TRIGGER IF NOT EXISTS session_elements_fts_insert
-	AFTER INSERT ON session_elements BEGIN
-		INSERT INTO session_elements_fts(rowid, content_text)
-		VALUES (new.rowid, COALESCE(new.content_text, ''));
-	END;
-
-	CREATE TRIGGER IF NOT EXISTS session_elements_fts_delete
-	AFTER DELETE ON session_elements BEGIN
-		INSERT INTO session_elements_fts(session_elements_fts, rowid, content_text)
-		VALUES ('delete', old.rowid, COALESCE(old.content_text, ''));
-	END;
-
-	CREATE TRIGGER IF NOT EXISTS session_elements_fts_update
-	AFTER UPDATE ON session_elements BEGIN
-		INSERT INTO session_elements_fts(session_elements_fts, rowid, content_text)
-		VALUES ('delete', old.rowid, COALESCE(old.content_text, ''));
-		INSERT INTO session_elements_fts(rowid, content_text)
-		VALUES (new.rowid, COALESCE(new.content_text, ''));
-	END;
-
 	CREATE TABLE IF NOT EXISTS knowledge_capsules (
 		capsule_id TEXT PRIMARY KEY,
 		source_session_id TEXT NOT NULL,
@@ -1394,11 +1365,8 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	if _, err := db.ExecContext(
-		ctx,
-		`INSERT INTO session_elements_fts(session_elements_fts) VALUES ('rebuild')`,
-	); err != nil {
-		return fmt.Errorf("rebuild session element search index: %w", err)
+	if err := migrateSessionSearchIndex(ctx, db); err != nil {
+		return err
 	}
 	columns := []struct {
 		table      string
@@ -1463,6 +1431,84 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+const sessionSearchSchema = `
+	-- FTS5 full-text search index on session element content.
+	-- External content table: indexes content_text without duplicating it.
+	CREATE VIRTUAL TABLE IF NOT EXISTS session_elements_fts USING fts5(
+		content_text,
+		content='session_elements',
+		content_rowid='rowid'
+	);
+
+	-- Triggers keep FTS index in sync with session_elements.
+	CREATE TRIGGER IF NOT EXISTS session_elements_fts_insert
+	AFTER INSERT ON session_elements BEGIN
+		INSERT INTO session_elements_fts(rowid, content_text)
+		VALUES (new.rowid, COALESCE(new.content_text, ''));
+	END;
+
+	CREATE TRIGGER IF NOT EXISTS session_elements_fts_delete
+	AFTER DELETE ON session_elements BEGIN
+		INSERT INTO session_elements_fts(session_elements_fts, rowid, content_text)
+		VALUES ('delete', old.rowid, COALESCE(old.content_text, ''));
+	END;
+
+	CREATE TRIGGER IF NOT EXISTS session_elements_fts_update
+	AFTER UPDATE ON session_elements BEGIN
+		INSERT INTO session_elements_fts(session_elements_fts, rowid, content_text)
+		VALUES ('delete', old.rowid, COALESCE(old.content_text, ''));
+		INSERT INTO session_elements_fts(rowid, content_text)
+		VALUES (new.rowid, COALESCE(new.content_text, ''));
+	END;
+
+`
+
+const sessionSearchSchemaReady = `
+ SELECT COUNT(*) = 4 FROM sqlite_schema
+ WHERE (name = 'session_elements_fts' AND type = 'table' AND sql LIKE 'CREATE VIRTUAL TABLE%')
+ OR (type = 'trigger' AND name IN (
+  'session_elements_fts_insert', 'session_elements_fts_delete', 'session_elements_fts_update'
+ ))
+`
+
+func migrateSessionSearchIndex(ctx context.Context, db *sql.DB) error {
+	var ready bool
+	if err := db.QueryRowContext(ctx, sessionSearchSchemaReady).Scan(&ready); err != nil {
+		return fmt.Errorf("read session search schema: %w", err)
+	}
+	if ready {
+		return nil
+	}
+	connection, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("connect for session search migration: %w", err)
+	}
+	defer func() { _ = connection.Close() }()
+	// Acquire the write lock before checking again so concurrent opens cannot
+	// both backfill the index. Schema creation and backfill commit together.
+	if _, err := connection.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return fmt.Errorf("begin session search migration: %w", err)
+	}
+	defer func() { _, _ = connection.ExecContext(context.WithoutCancel(ctx), "ROLLBACK") }()
+	if err := connection.QueryRowContext(ctx, sessionSearchSchemaReady).Scan(&ready); err != nil {
+		return fmt.Errorf("recheck session search schema: %w", err)
+	}
+	if !ready {
+		if _, err := connection.ExecContext(ctx, sessionSearchSchema); err != nil {
+			return fmt.Errorf("create session search schema: %w", err)
+		}
+		if _, err := connection.ExecContext(ctx,
+			`INSERT INTO session_elements_fts(session_elements_fts) VALUES ('rebuild')`,
+		); err != nil {
+			return fmt.Errorf("rebuild session element search index: %w", err)
+		}
+	}
+	if _, err := connection.ExecContext(ctx, "COMMIT"); err != nil {
+		return fmt.Errorf("commit session search migration: %w", err)
 	}
 	return nil
 }

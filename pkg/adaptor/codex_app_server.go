@@ -35,8 +35,8 @@ type codexAppServerError struct {
 	Message string `json:"message"`
 }
 
-func isCodexAppSession(nativeID string) bool {
-	path, err := findCodexRollout(nativeID)
+func isCodexAppSession(ctx context.Context, nativeID string) bool {
+	path, err := findCodexRollout(ctx, nativeID)
 	if err != nil {
 		return false
 	}
