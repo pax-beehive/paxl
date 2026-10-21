@@ -23,6 +23,14 @@ func additionalNativeAuthArgs(req *NativeAuthRequest) ([]string, error) {
 	if req.Harness == model.AgentNameKiro {
 		return kiroAuthArgs(req)
 	}
+	if req.Provider == "" && req.Operation == model.HarnessAuthLogin {
+		if req.Method != "" {
+			return nil, fmt.Errorf(
+				"hermes --method requires --provider; omit both to use native provider and method selection",
+			)
+		}
+		return []string{"auth"}, nil
+	}
 	if !nativeAuthProviderID.MatchString(req.Provider) {
 		return nil, fmt.Errorf(
 			"hermes requires --provider with a provider ID, for example openai-codex or anthropic",

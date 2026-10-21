@@ -45,9 +45,11 @@ Secrets are read as one line (maximum 4096 bytes), passed only on the native
 process's stdin, and never placed in argv or a daemon request. Native output
 for these two secret-entry methods is suppressed, including error output,
 because a command could echo the supplied secret. A nonzero native exit is
-still returned as an error. `--secret-stdin` is required for these methods and
-rejected for browser/device methods. Piping from a secret manager is preferred;
-plain terminal input is not a masked secret-entry form.
+still returned as an error. In an interactive terminal, these methods prompt
+with `Please input credential: ` and disable echo before displaying the prompt.
+Enter, Ctrl-C, and cancellation restore the terminal state. SDK-owned secret
+prompts also stay hidden when stderr is redirected. Pipes require
+`--secret-stdin`; browser/device methods reject it.
 
 ## Status and logout
 
@@ -133,7 +135,8 @@ DSH discovers the installed AuthorizationService's real provider/method catalog,
 plus the native DeepSeek account browser service. DSCODE uses its installed
 provider plugins, private state root and bundled runtime. Provider selection is
 interactive by default; use `methods` for exact IDs. Explicit API-key input needs
-`--provider --method api-key --secret-stdin`. Native owners store/remove the
+`--provider ID --method api-key` (hidden terminal prompt), adding
+`--secret-stdin` for pipes. Native owners store/remove the
 credentials; no Pax credential database is created. Read-only metadata discovery
 does not mount the DeepSeek account service, whose initialization may migrate
 old issuer credentials. DSCODE OAuth requires a new native credential commit;
@@ -149,7 +152,9 @@ selects `modelProvider: gemini` in native settings; `adc` requires existing
 `AGY_ADC_AUTH=true` and ADC. Neither persists a secret or modifies the parent
 shell environment. Keep those variables in the environment launching AGY.
 `--secret-stdin` is rejected for AGY. Account status is unknown; environment
-presence is only `configured`, not proof that its native account is logged in.
+presence is only `configured` when it matches the selected authentication mode,
+not proof that its native account is logged in. Switching from API key to ADC
+clears the Gemini-only `modelProvider` selection.
 
 ## Remaining remote work
 
@@ -270,6 +275,29 @@ Default versions follow the official installer's channel. Shell routes currently
 support macOS/Linux/WSL; native Windows shell installation requires a separate
 PowerShell backend. npm routes rely on npm and the package's platform support.
 
+### Hermes prebuilt installation
+
+`paxl harness install hermes` prefers prebuilt packages. On macOS it reads the official stable bundled update feed,
+selects a ZIP for the machine architecture, and uses older stable release
+artifact receipts when the current feed omits that architecture. Metadata errors
+are surfaced and never trigger a build fallback. Each ZIP
+must match the publisher's recorded size and SHA-512 or SHA-256 digest.
+
+The complete app and embedded runtime remain under
+`~/.local/share/paxl/harnesses/hermes/`; `~/.local/bin/hermes` points to the CLI
+entry declared by its bundled runtime manifest. Bootstrap-only and light packages
+are rejected. No desktop, gateway, setup, or login process is started by install.
+On darwin/x64 only, absence of a matching published artifact falls back to the
+official source installer with `--skip-setup`. Before downloading or running that
+script, paxl checks required command-line tools, Rust/Cargo >= 1.83.0, Apple
+command-line tools, and OpenSSL development files. Missing prerequisites include
+actionable diagnostics; paxl does not install or upgrade system build tools.
+This preflight covers known prerequisites, not a guarantee that future upstream
+dependency builds will succeed. Network errors, invalid metadata, and checksum
+failures never trigger source fallback. Other operating systems currently return
+an explicit unsupported prebuilt-route error. This route has fixture coverage; real platform bundles still require
+installation verification before release.
+
 ### Antigravity CLI
 
 ```sh
@@ -347,7 +375,8 @@ methods; native API-key prompts are masked. `--method` is rejected: native plugi
 providers can silently ignore that flag and take the API-key path. Select the
 method in the native menu so Pax cannot pretend a requested method was applied. Pax does not invent OAuth support for a provider.
 `--secret-stdin` is rejected because no dedicated safe native key-stdin flag was
-established. `auth methods` remains Pi-only. Status lists all providers, so
+established. `auth methods` also discovers installed Gemini, DSH, DSCODE and AGY capabilities;
+OpenCode choices remain owned by its native menu. Status lists all providers, so
 `--provider` on OpenCode status is rejected instead of silently ignored.
 
 The credential-summary parser was checked against the native list implementation
@@ -370,9 +399,10 @@ run the same native command; Kiro can still select device flow in a remote
 environment. Only `--method device` explicitly forces device flow. Browser
 account selection stays native. API-key environments remain owned by
 `KIRO_API_KEY`; Pax does not persist a key or change the shell environment.
-Status requires recognized JSON account metadata; native failures and unknown
-schemas remain errors. `configured` is not proof of an active subscription or
-model entitlement. See the [native command reference](https://kiro.dev/docs/cli/reference/cli-commands/).
+Status requires recognized JSON account metadata from stdout; diagnostic stderr
+is captured separately and never returned as account metadata. Native failures
+and unknown schemas remain errors. `configured` is not proof of an active subscription or
+model entitlement. See the [native command reference](https://kiro.dev/docs/reference/cli-commands/).
 
 ### Hermes
 
@@ -383,7 +413,9 @@ paxl harness auth status --harness hermes --provider anthropic
 paxl harness auth logout --harness hermes --provider anthropic
 ```
 
-Hermes requires `--provider` for these operations. An omitted method uses the
+Omit both `--provider` and `--method` on an interactive login to open native
+`hermes auth`; select Add a credential to see its provider catalog and configured
+custom endpoints. Status/logout and explicit login methods require `--provider`. An omitted method uses the
 provider's native default, which can be API key or OAuth. The installed CLI checks
 provider capability. API-key entry uses its secure prompt; `--secret-stdin` is
 rejected. Provider logout follows Hermes' native semantics and may clear several
@@ -410,10 +442,13 @@ paxl harness auth logout --harness openclaw --profile openai:manual
 Interactive login requires a real terminal. Native plugins own method IDs;
 `api-key` is the explicit Pax route to `paste-api-key` and requires one bounded
 secret line on stdin. Secret-entry native output is discarded, including failure
-output, to prevent key echoes. No secret appears in argv. The native CLI owns
+output, to prevent key echoes. Pax therefore adds a credential-free notice that
+a running Gateway may need `openclaw gateway restart`; native completion does
+not confirm that Gateway activation occurred. No secret appears in argv. The native CLI owns
 profile persistence/configuration and any communication with an existing Gateway.
 Pax does not pass `--set-default`, `--relogin`, or `--yes`.
-Status is stored profile metadata, not a live credential probe. An empty list
+Status parses JSON from stdout while keeping startup diagnostics private on
+stderr. Status is stored profile metadata, not a live credential probe. An empty list
 means `unknown`; profiles mean `configured`, including possibly expired profiles.
 Logout requires one exact `--profile` from status and rejects `--provider` to avoid
 ambiguously removing accounts. Other credentials and environment keys may remain.
@@ -423,8 +458,9 @@ Executable overrides for these adapters are `OPENCODE_EXECUTABLE`,
 `KIRO_CLI_EXECUTABLE`, `HERMES_EXECUTABLE` and `OPENCLAW_EXECUTABLE`. They are
 executable paths, not shell strings. Otherwise the caller's PATH selects the CLI.
 
-Gemini, Antigravity, DSH and DSCODE still require individual SDK/TUI authentication
-adapters. Installation/discovery does not imply local auth support. Do not
+Gemini, Antigravity, DSH and DSCODE use their installed native SDK/TUI
+authentication adapters described above. Installation/discovery alone does not
+imply that authentication is configured. Do not
 simulate authentication by launching a general chat session and claiming success;
 PTY fallback and remote forwarding remain separate work under KEV-104.
 
@@ -466,3 +502,71 @@ method selection, secret submission, wrong-owner access, duplicate requests,
 cancellation, expiry, websocket reconnection/page refresh, native failure and
 unsupported paxl versions. Real-account acceptance remains user-driven: automated
 checks must not install harnesses or log in/out of the user's accounts.
+
+## Installed authentication audit (2026-10-21)
+
+This audit distinguishes credential persistence from selecting a provider/model
+and from the provider accepting a request. `succeeded` means the requested native
+operation completed; `configured` means credential metadata was observed.
+Neither proves subscription entitlement, token freshness, or inference access.
+
+| Harness | Credential owner / environment | Evidence and remaining limits |
+| --- | --- | --- |
+| Claude | Native CLI/keychain; `CLAUDE_CONFIG_DIR` | Earlier user-verified login/status/logout. ACP shares this configuration root; `CLAUDE_CODE_EXECUTABLE` selects the CLI. OAuth and inference were not repeated. |
+| Codex | Native CLI; `CODEX_HOME` | Real CLI API-key login/status/logout passed with a temporary file-only store. ACP shares the root; `CODEX_PATH` selects the binary. OAuth, keychain storage and inference were not tested here. |
+| Pi | Installed ModelRuntime; `PI_CODING_AGENT_DIR` or `~/.pi/agent/auth.json` | Native SDK 1.3.0 writes/reads the synthetic key; installed ACP's SDK 0.75.3 reads it too. The real adapter bound to SDK 1.3.0 reports that version in initialize and creates a session exposing DeepSeek models, without inference. Current paxd code binds a direct `pi-acp` launcher to the installed Pi SDK through `PI_ACP_SDK_ROOT`; an explicit root takes precedence. Custom wrappers need their own environment binding. Credential compatibility alone does not imply identical model catalogs. |
+| Gemini | Installed SDK plus native selected-auth setting; `GEMINI_CLI_HOME` | Actual native key loader and CLI settings loader read the saved key and `security.auth.selectedType`. OAuth token presence does not prove Code Assist entitlement. |
+| DSH | Native credential plugin; `DSH_HOME/.credentials.yaml` | Actual runtime reader resolves the saved `DEEPSEEK_API_KEY` reference used by `deepseek-official`. Older generic DeepSeek keys are reused only during explicit login. Other provider credentials do not enable inactive profile routes. |
+| DSCODE | Standalone credentials plugin; `DSCODE_HOME/credentials.yaml` | Actual standalone reader resolves saved DeepSeek/OpenAI references and OpenAI billing selection. Launcher explicitly selects this shared store. OAuth contract fixtures check account metadata and new commits; real OAuth remains untested. |
+| Hermes | Native credential pools; `HERMES_HOME` | Actual installed native writer and explicit runtime provider resolver agree on a synthetic API key. Default provider/model configuration is separate; ACP may still require that setup. Full native OAuth was not tested. |
+| OpenCode | Native CLI; isolated `XDG_DATA_HOME/opencode/auth.json` on v1.19.3 | Real CLI status/logout passed on a seeded credential. Native interactive login and OAuth were not exercised. Parser/commands target V1, not an assumed V2 SQLite account schema. |
+| Kimi | Selected CLI's authenticated native web API; `KIMI_CODE_HOME` | Command/service fixtures cover startup, metadata, logout, cancellation and bearer isolation. Missing/negative provider counts and unknown managed-account states now fail explicitly. Currently not installed; actual CLI login remains unverified. Legacy Python CLI is unsupported. |
+| Kiro | Native CLI/account store; `KIRO_API_KEY` remains environment-owned | Command/schema fixtures and native command reference reviewed. CLI was deliberately not started during this audit. No Kiro ACP registration exists in paxd. |
+| OpenClaw | Native `models auth` profiles plus Gateway configuration | Actual installed CLI 2026.10.4 API-key save and status passed with temporary keyed agent configuration; the native SQLite reader resolves the same synthetic key. Startup warnings no longer corrupt status JSON. Interactive logout/OAuth and Gateway activation remain unverified. ACP is a Gateway bridge, so auth alone does not complete setup. |
+| Antigravity | Native settings/keyring; `GEMINI_API_KEY`, `AGY_ADC_AUTH` | Settings switch tests cover API key to ADC and reject an unselected key as active. Real account state remains unknown; TUI closure is not login proof. No AGY ACP registration exists in paxd. |
+
+Reproduce the offline native-reader audit on a machine with these installations:
+
+```sh
+node scripts/harness-auth-native-audit.mjs /path/to/paxl
+# Optional: set PAXL_AUDIT_HERMES_PYTHON to Hermes' installed environment Python.
+python3 scripts/harness-auth-terminal-audit.py /path/to/paxl
+```
+
+The native audit uses synthetic keys and temporary homes, blocks Node network
+requests, and does not call inference or OAuth. Pi ACP initialize/session creation verifies
+the selected SDK version and model availability without sending a prompt.
+OpenClaw uses an isolated agent configuration and native credential database;
+no Gateway is started. Missing installations are printed
+as skips. The terminal audit uses a fake CLI and disposable PTYs to check immediate
+paste, hidden input, Ctrl-C and terminal restoration. When DSH is installed it
+also checks the SDK-owned secret prompt with stderr redirected, using a temporary
+native credential store. Neither changes real logins.
+Provider/model settings and usage/balance reporting are tracked separately in
+KEV-112 and KEV-113.
+
+
+### Follow-up contract checks
+
+Structured native status commands (Claude, Kiro and OpenClaw) must produce JSON
+on stdout. Startup diagnostics on stderr are bounded and private; they must not
+be concatenated with JSON. Codex and OpenCode retain their native text-stream
+contract, which can report status on stderr. Native nonzero failures remain
+failures even if stdout contains plausible success metadata.
+
+Kimi's [native auth snapshot](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/reference/server-api.md)
+requires a nonnegative `providers_count`; when a managed provider is present,
+its status must be `authenticated`, `expired`, `revoked` or `unauthenticated`.
+An empty/changed snapshot is an interface error, not evidence of logout.
+Configured provider metadata still does not verify a model request. The
+[native web option parser](https://github.com/MoonshotAI/kimi-code/blob/main/apps/kimi-code/src/cli/sub/web/shared.ts)
+accepts port zero, and the server reports its actual bound port, matching the
+owned temporary-service strategy used here.
+
+ACP environment selection must be checked separately from authentication.
+Current paxd binding recognizes direct `codex-acp`, `claude-agent-acp` and
+`pi-acp` commands. It preserves explicit executable/SDK overrides. Commands
+launched through `npx` or custom wrappers do not receive the same automatic
+binding merely because they start the same adapter; configure their environment
+explicitly. Per-agent HOME/config-directory overrides can also select different
+credential stores than a default local `paxl auth` invocation.

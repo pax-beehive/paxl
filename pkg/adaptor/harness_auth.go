@@ -218,12 +218,20 @@ func (a *NativeHarnessAuth) CaptureStatus(
 	if req == nil {
 		return nil, fmt.Errorf("authentication request is required")
 	}
-	var output boundedAuthOutput
+	var output, diagnostics boundedAuthOutput
 	request := *req
 	request.Stdout, request.Stderr = &output, &output
+	// JSON status belongs to stdout. Native startup warnings on stderr must not
+	// invalidate it or be exposed as account metadata. Codex/OpenCode use stderr
+	// for their text status, so retain their existing combined stream contract.
+	if req.Harness == model.AgentNameClaude || req.Harness == model.AgentNameKiro ||
+		req.Harness == model.AgentNameOpenClaw {
+		request.Stderr = &diagnostics
+	}
 	request.Stdin = nil
 	err := a.Run(ctx, &request)
-	if output.overflow {
+	if output.overflow || diagnostics.overflow ||
+		len(output.data)+len(diagnostics.data) > nativeAuthOutputLimit {
 		return nil, fmt.Errorf("authentication status output exceeds limit")
 	}
 	if err != nil {
@@ -242,12 +250,13 @@ type boundedAuthOutput struct {
 	overflow bool
 }
 
+const nativeAuthOutputLimit = 64 * 1024
+
 func (b *boundedAuthOutput) Write(p []byte) (int, error) {
-	const limit = 64 * 1024
 	n := len(p)
-	if len(b.data)+n > limit {
+	if len(b.data)+n > nativeAuthOutputLimit {
 		b.overflow = true
-		p = p[:limit-len(b.data)]
+		p = p[:nativeAuthOutputLimit-len(b.data)]
 	}
 	b.data = append(b.data, p...)
 	return n, nil

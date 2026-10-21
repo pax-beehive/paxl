@@ -43,6 +43,7 @@ echo fixture-private-key >&2
 	)
 	require.NoError(t, err)
 	require.Contains(t, out.String(), "State: succeeded")
+	require.Contains(t, out.String(), "Gateway")
 	require.NotContains(t, out.String()+diagnostics.String(), "fixture-private-key")
 }
 

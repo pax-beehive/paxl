@@ -52,6 +52,10 @@ func TestKimiAuthServiceProcess(t *testing.T) {
 			return
 		}
 		if r.URL.Path == "/api/v1/auth" && r.Method == http.MethodGet {
+			if response := os.Getenv("PAXL_KIMI_AUTH_RESPONSE"); response != "" {
+				_, _ = fmt.Fprint(w, response)
+				return
+			}
 			_, _ = fmt.Fprint(
 				w,
 				`{"code":0,"data":{"providers_count":1,"managed_provider":{"status":"authenticated"}}}`,
@@ -67,6 +71,51 @@ func TestKimiAuthServiceProcess(t *testing.T) {
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: time.Second}
 	_ = server.Serve(listener)
 	os.Exit(0)
+}
+func TestKimiStatusRejectsUnrecognizedNativeMetadata(t *testing.T) {
+	for _, data := range []string{
+		`{}`,
+		`{"providers_count":null}`,
+		`{"providers_count":-1}`,
+		`{"providers_count":1,"managed_provider":{"status":"unrecognized-private-status"}}`,
+	} {
+		t.Run(data, func(t *testing.T) {
+			kimiAuthFixture(t)
+			t.Setenv("PAXL_KIMI_AUTH_RESPONSE", `{"code":0,"data":`+data+`}`)
+			_, err := adaptor.NewNativeHarnessAuth().
+				RunKimi(t.Context(), &adaptor.NativeAuthRequest{
+					Harness: model.AgentNameKimi, Operation: model.HarnessAuthStatus,
+				})
+			require.ErrorContains(t, err, "unrecognized native Kimi authentication status")
+			require.NotContains(t, err.Error(), "private-status")
+		})
+	}
+}
+
+func TestKimiStatusDoesNotTreatExpiredAccountMetadataAsVerifiedLogin(t *testing.T) {
+	for _, tc := range []struct {
+		data  string
+		state model.HarnessAuthState
+	}{
+		{`{"providers_count":0,"managed_provider":null}`, model.HarnessAuthStateUnknown},
+		{`{"providers_count":1,"managed_provider":null}`, model.HarnessAuthConfigured},
+		{`{"providers_count":0,"managed_provider":{"status":"authenticated"}}`, model.HarnessAuthConfigured},
+		{`{"providers_count":0,"managed_provider":{"status":"expired"}}`, model.HarnessAuthStateUnknown},
+		{`{"providers_count":0,"managed_provider":{"status":"revoked"}}`, model.HarnessAuthStateUnknown},
+		{`{"providers_count":0,"managed_provider":{"status":"unauthenticated"}}`, model.HarnessAuthStateUnknown},
+	} {
+		t.Run(tc.data, func(t *testing.T) {
+			kimiAuthFixture(t)
+			t.Setenv("PAXL_KIMI_AUTH_RESPONSE", `{"code":0,"data":`+tc.data+`}`)
+			result, err := adaptor.NewNativeHarnessAuth().
+				RunKimi(t.Context(), &adaptor.NativeAuthRequest{
+					Harness: model.AgentNameKimi, Operation: model.HarnessAuthStatus,
+				})
+			require.NoError(t, err)
+			require.Equal(t, tc.state, result.State)
+			require.Nil(t, result.LoggedIn)
+		})
+	}
 }
 func kimiAuthFixture(t *testing.T) {
 	t.Helper()
@@ -186,6 +235,16 @@ func TestAntigravityPreservesNativeSettingsAndEnvironmentOwnership(t *testing.T)
 	result, err = auth.RunAntigravity(t.Context(), req)
 	require.NoError(t, err)
 	require.Equal(t, model.HarnessAuthConfigured, result.State)
+	data, err = os.ReadFile(path)
+	require.NoError(t, err)
+	require.NotContains(t, string(data), "modelProvider")
+	require.Contains(t, string(data), `"theme": "original"`)
+	req.Operation = model.HarnessAuthStatus
+	req.Method = ""
+	result, err = auth.RunAntigravity(t.Context(), req)
+	require.NoError(t, err)
+	require.Equal(t, "adc", result.AuthMethod)
+	req.Operation = model.HarnessAuthLogin
 	req.Method = model.HarnessAuthAPIKey
 	_, err = auth.RunAntigravity(t.Context(), req)
 	require.ErrorContains(t, err, "GEMINI_API_KEY")
@@ -208,4 +267,14 @@ func TestRemainingAuthValidationRejectsInvalidSelectors(t *testing.T) {
 	require.Error(t, err)
 	_, err = auth.RunAntigravity(t.Context(), nil)
 	require.Error(t, err)
+}
+
+func TestAntigravityStatusDoesNotTreatAnUnselectedAPIKeyAsActive(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GEMINI_API_KEY", "unused-fixture-key")
+	t.Setenv("AGY_ADC_AUTH", "")
+	result, err := adaptor.NewNativeHarnessAuth().
+		RunAntigravity(t.Context(), &adaptor.NativeAuthRequest{Harness: model.AgentNameAntigravity, Operation: model.HarnessAuthStatus})
+	require.NoError(t, err)
+	require.Equal(t, model.HarnessAuthStateUnknown, result.State)
 }

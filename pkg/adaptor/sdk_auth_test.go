@@ -87,6 +87,15 @@ func TestGeminiSDKOwnsCredentialPersistenceAndPreservesSettings(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(data), `"theme": "saved"`)
 	require.Contains(t, string(data), `"selectedType": "gemini-api-key"`)
+	var settings struct {
+		Security struct {
+			Auth struct {
+				SelectedType string `json:"selectedType"`
+			} `json:"auth"`
+		} `json:"security"`
+	}
+	require.NoError(t, json.Unmarshal(data, &settings))
+	require.Equal(t, "gemini-api-key", settings.Security.Auth.SelectedType)
 	require.NotContains(t, string(data), "fixture-secret-only")
 	req.Method = ""
 	req.SecretStdin = false

@@ -25,6 +25,29 @@ var terminalEscape = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
 
 type kimiEndpoint struct{ origin, token string }
 
+type kimiAuthSnapshot struct {
+	ProvidersCount  *int `json:"providers_count"`
+	ManagedProvider *struct {
+		Status string `json:"status"`
+	} `json:"managed_provider"`
+}
+
+func (s *kimiAuthSnapshot) configured() (bool, error) {
+	if s.ProvidersCount == nil || *s.ProvidersCount < 0 {
+		return false, fmt.Errorf("unrecognized native Kimi authentication status")
+	}
+	if s.ManagedProvider != nil {
+		switch s.ManagedProvider.Status {
+		case "authenticated":
+			return true, nil
+		case "expired", "revoked", "unauthenticated":
+		default:
+			return false, fmt.Errorf("unrecognized native Kimi authentication status")
+		}
+	}
+	return *s.ProvidersCount > 0, nil
+}
+
 // Startup output contains a bearer token: never forward it, including on failure.
 // stdout/stderr may write concurrently.
 type kimiStartupOutput struct {
@@ -172,18 +195,16 @@ func (a *NativeHarnessAuth) RunKimi(
 		result.Message = "Native Kimi Code logout completed; the native operation also disconnects this machine's Remote Control session. API-key providers and environment credentials may remain."
 		return result, nil
 	}
-	var data struct {
-		ProvidersCount  int `json:"providers_count"`
-		ManagedProvider *struct {
-			Status string `json:"status"`
-		} `json:"managed_provider"`
-	}
+	var data kimiAuthSnapshot
 	if err := kimiAuthAPI(ctx, endpoint, http.MethodGet, "/api/v1/auth", &data); err != nil {
 		return nil, err
 	}
+	configured, err := data.configured()
+	if err != nil {
+		return nil, err
+	}
 	result.State = model.HarnessAuthStateUnknown
-	if data.ProvidersCount > 0 ||
-		(data.ManagedProvider != nil && data.ManagedProvider.Status == "authenticated") {
+	if configured {
 		result.State = model.HarnessAuthConfigured
 	}
 	result.Message = "Native Kimi account/provider readiness only; API credentials, model access and network availability are not independently verified."

@@ -1,4 +1,49 @@
+async function runDshOfficialKey(ctx, entry) {
+  if (operation === "login" && requestedMethod && requestedMethod !== "api-key")
+    throw new InputError("DeepSeek official supports api-key.");
+  const { credentialRef } = await load("@deepseek-ai/dsh-credentials");
+  const ref = credentialRef(entry.ref);
+  if (operation === "logout") {
+    await ctx.credentials.unset(ref);
+    result({
+      state: "succeeded",
+      provider: entry.id,
+      message:
+        "Removed the stored official API key. Environment credentials may remain.",
+    });
+    return;
+  }
+  // Older paxl logins wrote the same DeepSeek key to pi-ai's public API-key
+  // record. Reuse it only on explicit login; status never changes credentials.
+  const legacy =
+    secretMode !== "true" && typeof ctx.credentials.readRecord === "function"
+      ? await ctx.credentials.readRecord("llm-pi-ai/deepseek")
+      : undefined;
+  let key;
+  if (
+    legacy?.kind === "api-key" &&
+    typeof legacy.key === "string" &&
+    legacy.key
+  ) {
+    key = legacy.key;
+    secrets.push(key);
+  } else key = await question("Please input credential: ", true);
+  await ctx.credentials.set(ref, key);
+  const saved = await ctx.credentials.describe(ref);
+  if (!saved.configured)
+    throw new InputError("DSH did not retain the official API key reference.");
+  result({
+    state: "succeeded",
+    provider: entry.id,
+    method: "api-key",
+    message:
+      "Saved the native DEEPSEEK_API_KEY reference used by deepseek-official. Provider access is not verified.",
+  });
+}
+
 async function runDsh() {
+  const provider =
+    requestedProvider === "deepseek" ? "deepseek-official" : requestedProvider;
   const { Context } = await load("@deepseek-ai/cordis");
   const ctx = new Context();
   try {
@@ -27,7 +72,13 @@ async function runDsh() {
         label: "DeepSeek account",
         methods: [{ id: "browser", label: "Browser account login" }],
       },
-      ...flows,
+      {
+        id: "deepseek-official",
+        label: "DeepSeek official API (default DSH route)",
+        ref: "DEEPSEEK_API_KEY",
+        methods: [{ id: "api-key", label: "API key" }],
+      },
+      ...flows.filter((flow) => flow.id !== "deepseek"),
     ];
     if (operation === "methods") {
       result({
@@ -43,16 +94,18 @@ async function runDsh() {
     if (operation === "status") {
       const stored = [];
       for (const e of entries) {
-        if (requestedProvider && requestedProvider !== e.id) continue;
-        const info = await ctx.credentials.describeRecord(e.key);
+        if (provider && provider !== e.id) continue;
+        const info = e.ref
+          ? await ctx.credentials.describe(e.ref)
+          : await ctx.credentials.describeRecord(e.key);
         if (info.configured)
           stored.push({
             id: e.id,
-            credential_type: info.kind,
-            source: "stored",
+            credential_type: e.ref ? "api-key" : info.kind,
+            source: e.ref ? (info.source ?? "native-store") : "stored",
           });
       }
-      if (requestedProvider && !entries.some((e) => e.id === requestedProvider))
+      if (provider && !entries.some((e) => e.id === provider))
         throw new InputError(
           "Unknown DSH provider. Available: " +
             entries.map((e) => e.id).join(", "),
@@ -64,13 +117,17 @@ async function runDsh() {
       });
       return;
     }
-    const id = requestedProvider || (await choose("Provider", entries));
+    const id = provider || (await choose("Provider", entries));
     const entry = entries.find((e) => e.id === id);
     if (!entry)
       throw new InputError(
         "Unknown DSH provider. Available: " +
           entries.map((e) => e.id).join(", "),
       );
+    if (entry.ref) {
+      await runDshOfficialKey(ctx, entry);
+      return;
+    }
     if (id === "deepseek-account") {
       if (
         operation === "login" &&
@@ -85,8 +142,9 @@ async function runDsh() {
         );
       await ctx.plugin(accountModule.default);
       const service = ctx.deepseekAccount;
+      const client = await accountClientMetadata();
       if (operation === "logout") {
-        await service.signOut();
+        await service.signOut(client);
         result({
           state: "succeeded",
           provider: id,
@@ -96,7 +154,7 @@ async function runDsh() {
         return;
       }
       const started = await service.startSignIn(
-        "en",
+        client,
         `http://127.0.0.1:${ctx.webServer.port}`,
         "desktop",
       );
@@ -161,7 +219,13 @@ async function runDsh() {
     });
     if (outcome.status !== "authorized")
       throw new InputError("Native authorization was cancelled.");
-    result({ state: "succeeded", provider: id, method });
+    result({
+      state: "succeeded",
+      provider: id,
+      method,
+      message:
+        "Credentials saved. Active provider/model selection is unchanged; model access is not verified.",
+    });
   } finally {
     await ctx.fiber.dispose();
   }

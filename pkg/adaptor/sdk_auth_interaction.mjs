@@ -44,10 +44,26 @@ const requireInstalled = createRequire(join(root, "package.json"));
 const load = (name) =>
   import(pathToFileURL(requireInstalled.resolve(name)).href);
 class InputError extends Error {}
+async function accountClientMetadata() {
+  const manifest = JSON.parse(
+    await fs.readFile(join(root, "package.json"), "utf8"),
+  );
+  if (typeof manifest.version !== "string" || !manifest.version)
+    throw new InputError(
+      "The selected installation has no runtime version metadata.",
+    );
+  return {
+    version: manifest.version,
+    locale: Intl.DateTimeFormat().resolvedOptions().locale,
+    timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60,
+  };
+}
+
 let terminal,
   lines,
   muted = false;
-const isTerminal = Boolean(process.stdin.isTTY && process.stderr.isTTY);
+// Input echo must stay disabled even when diagnostics are redirected.
+const isTerminal = Boolean(process.stdin.isTTY);
 async function question(message, secret = false, signal = controller.signal) {
   signal.throwIfAborted();
   if (secretMode === "true" && !secret)

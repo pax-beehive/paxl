@@ -72,25 +72,27 @@ func (a *NativeHarnessAuth) RunAntigravity(
 		return result, nil
 	}
 	if req.Operation == model.HarnessAuthStatus {
-		if os.Getenv("GEMINI_API_KEY") != "" || os.Getenv("AGY_ADC_AUTH") == "true" {
-			result.State = model.HarnessAuthConfigured
+		if err := antigravityEnvironmentStatus(result); err != nil {
+			return nil, err
 		}
-		result.Message = "Environment credential presence only. AGY's native account keyring and model access cannot be queried through its CLI; inspect the native UI."
 		return result, nil
 	}
+
 	if req.Operation == model.HarnessAuthLogin &&
 		(req.Method == model.HarnessAuthAPIKey || req.Method == model.HarnessAuthADC) {
+		provider := ""
 		if req.Method == model.HarnessAuthAPIKey {
 			if os.Getenv("GEMINI_API_KEY") == "" {
 				return nil, fmt.Errorf(
 					"set GEMINI_API_KEY in the environment used to launch AGY, then retry",
 				)
 			}
-			if err := selectAntigravityAPIKey(); err != nil {
-				return nil, err
-			}
+			provider = "gemini"
 		} else if os.Getenv("AGY_ADC_AUTH") != "true" {
 			return nil, fmt.Errorf("set AGY_ADC_AUTH=true and configure native ADC, then retry")
+		}
+		if err := selectAntigravityModelProvider(provider); err != nil {
+			return nil, err
 		}
 		result.State = model.HarnessAuthConfigured
 		result.Method = req.Method
@@ -131,7 +133,7 @@ func (a *NativeHarnessAuth) RunAntigravity(
 	return result, nil
 }
 
-func selectAntigravityAPIKey() error {
+func selectAntigravityModelProvider(provider string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("resolve home: %w", err)
@@ -149,7 +151,11 @@ func selectAntigravityAPIKey() error {
 			return fmt.Errorf("AGY settings must be a JSON object")
 		}
 	}
-	settings["modelProvider"] = "gemini"
+	if provider == "" {
+		delete(settings, "modelProvider")
+	} else {
+		settings["modelProvider"] = provider
+	}
 	data, err = json.MarshalIndent(settings, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode AGY settings: %w", err)
@@ -177,6 +183,40 @@ func selectAntigravityAPIKey() error {
 	}
 	if err = os.Rename(temp.Name(), path); err != nil {
 		return fmt.Errorf("replace AGY settings: %w", err)
+	}
+	return nil
+}
+
+func antigravityEnvironmentStatus(result *model.HarnessAuthResult) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve AGY home: %w", err)
+	}
+	data, err := os.ReadFile(
+		filepath.Join(home, ".gemini", "antigravity-cli", "settings.json"),
+	) // #nosec G304 -- Native settings metadata under the caller's home.
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read AGY settings: %w", err)
+	}
+	var settings struct {
+		ModelProvider string `json:"modelProvider"`
+	}
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &settings); err != nil {
+			return fmt.Errorf("read AGY provider selection: %w", err)
+		}
+	}
+	result.Message = "AGY's native account keyring and model access are not verified. Environment credentials must match the selected AGY mode."
+	if settings.ModelProvider == "gemini" {
+		if os.Getenv("GEMINI_API_KEY") != "" {
+			result.State = model.HarnessAuthConfigured
+			result.AuthMethod = "api-key"
+		}
+		return nil
+	}
+	if os.Getenv("AGY_ADC_AUTH") == "true" {
+		result.State = model.HarnessAuthConfigured
+		result.AuthMethod = "adc"
 	}
 	return nil
 }

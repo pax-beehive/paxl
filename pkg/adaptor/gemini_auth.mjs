@@ -29,9 +29,9 @@ async function geminiSettings(sdk, type) {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new InputError("Gemini settings are not an object.");
   value.security ??= {};
-  value.security.authentication ??= {};
-  if (type === undefined) delete value.security.authentication.selectedType;
-  else value.security.authentication.selectedType = type;
+  value.security.auth ??= {};
+  if (type === undefined) delete value.security.auth.selectedType;
+  else value.security.auth.selectedType = type;
   await fs.mkdir(dirname(path), { recursive: true, mode: 0o700 });
   // Use the native atomic write utility when available. Configuration contains
   // only the selected auth type; SDK functions own all secret storage.

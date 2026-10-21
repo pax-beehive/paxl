@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/pax-oss/paxl/internal/model"
 	"github.com/pax-oss/paxl/pkg/adaptor"
+	"golang.org/x/term"
 )
 
 type HarnessAuthFacade struct{ native *adaptor.NativeHarnessAuth }
@@ -33,10 +35,14 @@ func (f *HarnessAuthFacade) Execute(
 	req *HarnessAuthRequest,
 	opts ...func(*Option),
 ) (*model.HarnessAuthResult, error) {
+	option := applyOptions(opts)
+	req, err := prepareLocalAuthRequest(req, option)
+	if err != nil {
+		return nil, err
+	}
 	if err := validateLocalAuth(req); err != nil {
 		return nil, err
 	}
-	option := applyOptions(opts)
 	native := &adaptor.NativeAuthRequest{
 		SecretStdin: req.SecretStdin,
 		Profile:     req.Profile,
@@ -55,7 +61,7 @@ func (f *HarnessAuthFacade) Execute(
 		return f.status(ctx, native)
 	}
 	if req.SecretStdin {
-		secret, err := readLocalAuthSecret(ctx, option.Stdin)
+		secret, err := readPromptedAuthSecret(ctx, option)
 		if err != nil {
 			return nil, err
 		}
@@ -80,12 +86,48 @@ func (f *HarnessAuthFacade) Execute(
 	}
 	// Successful command completion is not a provider-request verification.
 	// In particular, logout may leave environment credentials active.
-	return &model.HarnessAuthResult{
+	result := &model.HarnessAuthResult{
 		Harness:  req.Harness,
 		Provider: req.Provider,
 		State:    "succeeded",
 		Method:   req.Method,
-	}, nil
+	}
+	if req.Harness == model.AgentNameOpenClaw && req.Operation == model.HarnessAuthLogin &&
+		req.Method == model.HarnessAuthAPIKey {
+		result.Message = "API key saved. A running Gateway may require openclaw gateway restart to apply it; Gateway activation and model access are not verified."
+	}
+	return result, nil
+}
+
+func prepareLocalAuthRequest(req *HarnessAuthRequest, option *Option) (*HarnessAuthRequest, error) {
+	if req != nil && req.Harness == model.AgentNameHermes &&
+		req.Operation == model.HarnessAuthLogin && req.Provider == "" {
+		if err := requireHermesAuthTerminal(option.Stdin); err != nil {
+			return nil, err
+		}
+	}
+	if req != nil && req.Operation == model.HarnessAuthLogin &&
+		(req.Method == model.HarnessAuthAPIKey || req.Method == model.HarnessAuthAccessToken) &&
+		req.Harness != model.AgentNameAntigravity && req.Harness != model.AgentNameOpenCode &&
+		req.Harness != model.AgentNameHermes {
+		if input, ok := option.Stdin.(*os.File); ok && term.IsTerminal(int(input.Fd())) {
+			copyReq := *req
+			copyReq.SecretStdin = true
+			req = &copyReq
+		}
+	}
+	return req, nil
+}
+
+func readPromptedAuthSecret(ctx context.Context, option *Option) (string, error) {
+	if input, ok := option.Stdin.(*os.File); ok && term.IsTerminal(int(input.Fd())) {
+		output := option.Stderr
+		if output == nil {
+			output = io.Discard
+		}
+		return readTerminalAuthSecret(ctx, input, output)
+	}
+	return readLocalAuthSecret(ctx, option.Stdin)
 }
 
 func validateLocalAuth(req *HarnessAuthRequest) error {
@@ -171,6 +213,10 @@ func validateAuthSelectors(req *HarnessAuthRequest) error {
 }
 
 func readLocalAuthSecret(ctx context.Context, input io.Reader) (string, error) {
+	return awaitAuthSecret(ctx, func() (string, error) { return readLocalAuthSecretLine(input) })
+}
+
+func awaitAuthSecret(ctx context.Context, read func() (string, error)) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", fmt.Errorf("read authentication input: %w", err)
 	}
@@ -179,7 +225,7 @@ func readLocalAuthSecret(ctx context.Context, input io.Reader) (string, error) {
 		err   error
 	}
 	result := make(chan secretResult, 1)
-	go func() { value, err := readLocalAuthSecretLine(input); result <- secretResult{value: value, err: err} }()
+	go func() { value, err := read(); result <- secretResult{value: value, err: err} }()
 	select {
 	case <-ctx.Done():
 		return "", fmt.Errorf("read authentication input: %w", ctx.Err())

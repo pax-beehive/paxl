@@ -108,13 +108,14 @@ async function runDscode() {
         (await load("@deepseek-ai/dsh-deepseek-account-platform")).default,
       );
       const service = ctx.deepseekAccount;
+      const client = await accountClientMetadata();
       if (operation === "logout") {
-        await service.signOut();
+        await service.signOut(client);
         result({ state: "succeeded", provider: id });
         return;
       }
       const started = await service.startSignIn(
-          "en",
+          client,
           `http://127.0.0.1:${ctx.webServer.port}`,
           "desktop",
         ),
@@ -144,7 +145,13 @@ async function runDscode() {
           ) {
             if (view.attempt.phase !== "succeeded")
               throw new InputError("Native account login did not complete.");
-            result({ state: "succeeded", provider: id, method });
+            result({
+              state: "succeeded",
+              provider: id,
+              method,
+              message:
+                "Credentials saved. Active provider/model selection is unchanged; model access is not verified.",
+            });
             return;
           }
         }
@@ -187,7 +194,13 @@ async function runDscode() {
       const key = await question("API key: ", true);
       await ctx.credentials.set(entry.ref, key);
       if (id === "openai") await login.auth.select("api-key");
-      result({ state: "succeeded", provider: id, method });
+      result({
+        state: "succeeded",
+        provider: id,
+        method,
+        message:
+          "Credentials saved. Active provider/model selection is unchanged; model access is not verified.",
+      });
       return;
     }
     if (!login)
@@ -220,7 +233,13 @@ async function runDscode() {
       if (attempt?.done) await attempt.done;
       if (!committed)
         throw new InputError("Native login did not commit a new credential.");
-      result({ state: "succeeded", provider: id, method });
+      result({
+        state: "succeeded",
+        provider: id,
+        method,
+        message:
+          "Credentials saved. Active provider/model selection is unchanged; model access is not verified.",
+      });
     } finally {
       owner[key] = original;
       controller.signal.removeEventListener("abort", cancel);

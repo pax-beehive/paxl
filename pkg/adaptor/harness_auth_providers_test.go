@@ -71,6 +71,37 @@ func TestProviderAuthStatusNormalizesMetadataAndRejectsUnknownOutput(t *testing.
 	}
 }
 
+func TestStructuredAuthStatusIgnoresDiagnosticStderr(t *testing.T) {
+	for _, tc := range []struct {
+		harness   model.AgentName
+		key, data string
+		state     model.HarnessAuthState
+	}{
+		{model.AgentNameClaude, "CLAUDE_CODE_EXECUTABLE", `{"loggedIn":true,"authMethod":"oauth"}`, model.HarnessAuthLoggedIn},
+		{model.AgentNameKiro, "KIRO_CLI_EXECUTABLE", `{"accountType":"BuilderId"}`, model.HarnessAuthConfigured},
+		{model.AgentNameOpenClaw, "OPENCLAW_EXECUTABLE", `{"profiles":[]}`, model.HarnessAuthStateUnknown},
+	} {
+		t.Run(string(tc.harness), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "auth")
+			script := "#!/bin/sh\necho private-native-warning >&2\ncat <<'JSON'\n" + tc.data + "\nJSON\n"
+			require.NoError(t, os.WriteFile(path, []byte(script), 0700))
+			t.Setenv(tc.key, path)
+			var output bytes.Buffer
+			result, err := adaptor.NewNativeHarnessAuth().
+				Status(t.Context(), &adaptor.NativeAuthRequest{
+					Harness:   tc.harness,
+					Operation: model.HarnessAuthStatus,
+					Stdout:    &output,
+					Stderr:    &output,
+				})
+			require.NoError(t, err)
+			require.Equal(t, tc.state, result.State)
+			require.Empty(t, output.String())
+			require.NotContains(t, result.Message, "private-native-warning")
+		})
+	}
+}
+
 func TestProviderAuthUsesSelectedNativeCommandAndPreservesInput(t *testing.T) {
 	for _, tc := range []struct{ harness, provider, profile, operation, method, args string }{
 		{"opencode", "", "", "login", "", "auth login"},
@@ -84,6 +115,7 @@ func TestProviderAuthUsesSelectedNativeCommandAndPreservesInput(t *testing.T) {
 		{"hermes", "anthropic", "", "login", "api-key", "auth add anthropic --type api-key"},
 		{"hermes", "openai-codex", "", "login", "oauth", "auth add openai-codex --type oauth"},
 		{"hermes", "nous", "", "login", "", "auth add nous"},
+		{"hermes", "", "", "login", "", "auth"},
 		{"hermes", "nous", "", "logout", "", "auth logout nous"},
 		{"openclaw", "", "", "login", "", "models auth login"},
 		{"openclaw", "openai-codex", "", "login", "device-code", "models auth login --provider openai-codex --method device-code"},
@@ -120,7 +152,7 @@ func TestProviderAuthRejectsUnsupportedSelectorsBeforeExecution(t *testing.T) {
 		{Harness: "kiro", Operation: "login", Method: "api-key"},
 		{Harness: "kiro", Operation: "status", Method: "browser"},
 		{Harness: "kiro", Operation: "methods"},
-		{Harness: "hermes", Operation: "login"},
+		{Harness: "hermes", Operation: "login", Method: "oauth"},
 		{Harness: "hermes", Operation: "login", Provider: "bad provider"},
 		{Harness: "hermes", Operation: "login", Provider: "anthropic", Method: "device"},
 		{Harness: "hermes", Operation: "methods", Provider: "anthropic"},

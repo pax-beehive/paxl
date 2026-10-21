@@ -24,7 +24,7 @@ DEFAULTS:
   pi      Choose a provider and its available method interactively
   opencode Choose a provider and its available method in the native CLI
   kiro    Use native browser/device detection
-  hermes  Native provider default; --provider is required
+  hermes  Open native credential management; --provider optionally selects a provider
   openclaw Choose a provider and method in the native CLI (TTY required)
   gemini  Google browser login
   dsh     Choose a provider and method from the installed SDK
@@ -40,8 +40,8 @@ METHODS:
     device        Open the displayed URL and enter the code in your browser
                   (default; suitable for remote terminals).
     browser       Sign in through a browser with a localhost callback.
-    api-key       Read an OpenAI API key from stdin; requires --secret-stdin.
-    access-token  Read a Codex access token from stdin; requires --secret-stdin.
+    api-key       Read an OpenAI API key from stdin; prompts without echo in a terminal; use --secret-stdin for pipes.
+    access-token  Read a Codex access token from stdin; prompts without echo in a terminal; use --secret-stdin for pipes.
 
   Kimi:
     device        Sign in to Kimi Code using a browser and device code (default).
@@ -49,7 +49,7 @@ METHODS:
 
   Pi:
     oauth         Provider subscription/OAuth login, when supported.
-    api-key       Provider API key; explicit use requires --secret-stdin.
+    api-key       Provider API key; explicit use prompts without echo in a terminal; use --secret-stdin for pipes.
                   Run paxl harness auth methods --harness pi for current choices.
 
   OpenCode:
@@ -69,28 +69,33 @@ METHODS:
   Hermes:
     oauth         Add a native provider OAuth credential.
     api-key       Add a credential through Hermes' secure prompt.
-                  Requires --provider for login/status/logout. Omit --method
+                  Omit --provider and --method to open native credential management;
+                  choose Add a credential to see known providers/custom endpoints.
+                  Status/logout require --provider. Omit --method
                   to use that provider's native default; unsupported provider
                   methods fail in Hermes. --secret-stdin is not supported.
 
   OpenClaw:
     Omit --method to choose interactively. With --provider, --method accepts a
     native plugin method ID. api-key instead saves a key through the native
-    paste-api-key command and requires --provider plus --secret-stdin.
+    paste-api-key command; requires --provider. Terminal input is hidden; use
+    --secret-stdin for pipes.
     Status lists saved profiles; logout requires --profile with one exact ID.
     Login/logout can update OpenClaw configuration through its own CLI.
 
   Gemini:
     browser       Native Google OAuth (default).
     device        Native manual authorization-code flow; TTY required.
-    api-key       Save through Gemini's native SDK; requires --secret-stdin.
+    api-key       Save through Gemini's native SDK; prompts without echo in a terminal; use --secret-stdin for pipes.
     vertex        Select native Vertex auth with existing project/location/ADC.
 
   DSH / DSCODE:
     browser/oauth/api-key are provider-specific. Run auth methods to discover
     the selected installation's actual providers and supported methods.
     Omit --provider/--method to choose interactively. Explicit api-key requires
-    --secret-stdin and --provider. Credentials stay in the native SDK stores.
+    --provider; terminal input is hidden. Use --secret-stdin for pipes.
+    Credentials stay in the native SDK stores; active provider/model selection
+    is unchanged. A saved credential does not enable an inactive provider route.
     DSCODE's antigravity provider is separate from the AGY application's login.
 
   Antigravity (alias: agy):
@@ -160,7 +165,7 @@ func newHarnessAuthCommand(stdin io.Reader, stdout, stderr io.Writer) *cli.Comma
 	command := &cli.Command{
 		Name:        "auth",
 		Usage:       "Authenticate harnesses on this machine",
-		Description: "Local native authentication; no paxd required. Usually only --harness is needed; Hermes requires --provider. Run paxl harness auth login -h for methods, defaults, required flags, and examples.",
+		Description: "Local native authentication; no paxd required. Usually only --harness is needed; Hermes status/logout require --provider. Run paxl harness auth login -h for methods, defaults, required flags, and examples.",
 	}
 	for _, operation := range []string{"login", "status", "logout", "methods"} {
 		flags := harnessAuthFlags()
