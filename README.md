@@ -1,5 +1,7 @@
 # paxl
 
+[Scheduled tasks](docs/cron.md) — manage scheduled agent tasks with `paxl cron`.
+
 **Local-first context transfer for AI coding agents.**
 
 `paxl` lets Codex, Claude Code, Pi, Kiro, OpenCode, Kimi Code, Hermes, and
