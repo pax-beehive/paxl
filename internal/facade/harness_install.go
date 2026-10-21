@@ -59,6 +59,17 @@ func (f *HarnessInstallFacade) Install(
 		return result, nil
 	}
 	option := applyOptions(opts)
+	if result.Harness == "hermes" && result.Source == "prebuilt" {
+		return f.installHermesPrebuilt(ctx, result, option)
+	}
+	return f.runHarnessInstallPlan(ctx, result, option)
+}
+
+func (f *HarnessInstallFacade) runHarnessInstallPlan(
+	ctx context.Context,
+	result *HarnessInstallResult,
+	option *Option,
+) (*HarnessInstallResult, error) {
 	runner := f.runner
 	if runner == nil {
 		runner = &nativeHarnessInstallRunner{input: option.Stdin, output: option.Stderr}

@@ -53,7 +53,7 @@ func TestOfficialInstallationPlansCoverEveryHarness(t *testing.T) {
 		{"antigravity", "script", "https://antigravity.google/cli/install.sh"},
 		{"kimi", "script", "https://code.kimi.com/kimi-code/install.sh"},
 		{"opencode", "script", "https://opencode.ai/install"},
-		{"hermes", "script", "https://hermes-agent.nousresearch.com/install.sh"},
+		{"hermes", "prebuilt", "https://hermes-assets.nousresearch.com"},
 		{"openclaw", "script", "https://openclaw.ai/install.sh"},
 		{"kiro", "script", "https://cli.kiro.dev/install"},
 		{"dsh", "npm", "@deepseek-ai/dsh"},
