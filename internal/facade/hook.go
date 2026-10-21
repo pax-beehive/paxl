@@ -266,7 +266,8 @@ func (f *AgentHookFacade) Deliver(
 			DeliveryMethod: "stdout",
 			Message:        message,
 		}, nil
-	case model.AgentNameUnknown,
+	case model.AgentNameAntigravity,
+		model.AgentNameUnknown,
 		model.AgentNameDSH,
 		model.AgentNameDSCode,
 		model.AgentNameClaude,

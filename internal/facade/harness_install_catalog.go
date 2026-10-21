@@ -69,10 +69,7 @@ var officialHarnessInstallers = []officialHarnessInstaller{
 		versionFlag: "--version",
 	},
 	{
-		harness:   "hermes",
-		scriptURL: "https://hermes-agent.nousresearch.com/install.sh",
-		shell:     "bash",
-		args:      []string{"--skip-setup"},
+		harness: "hermes",
 	},
 	{
 		harness:     "openclaw",
@@ -185,6 +182,17 @@ func officialInstallPlan(
 	entry *officialHarnessInstaller,
 	platform string,
 ) (*HarnessInstallResult, error) {
+	if result.Harness == "hermes" {
+		if result.Version != "latest" {
+			return nil, fmt.Errorf(
+				"hermes prebuilt installation selects the newest available platform build; omit --version",
+			)
+		}
+		result.Source = "prebuilt"
+		result.Package = "https://hermes-assets.nousresearch.com"
+		result.Command = []string{"<download-and-verify-official-prebuilt>"}
+		return result, nil
+	}
 	if entry.npmPackage != "" {
 		return npmInstallPlan(result, entry.npmPackage), nil
 	}

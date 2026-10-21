@@ -4025,7 +4025,8 @@ func parseSetupRequest(cmd *cli.Command) (*facade.SetupRequest, error) {
 				model.AgentNameHermes,
 				model.AgentNameOpenClaw:
 				agents = append(agents, agent)
-			case model.AgentNameUnknown,
+			case model.AgentNameAntigravity,
+				model.AgentNameUnknown,
 				model.AgentNameDSH,
 				model.AgentNameDSCode,
 				model.AgentNameGemini,

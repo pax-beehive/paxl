@@ -139,3 +139,10 @@ func TestLocalAuthCanCancelWhileWaitingForSecretInput(t *testing.T) {
 		t.Fatal("Cancel blocked on secret stdin")
 	}
 }
+
+func TestHermesProviderSelectionRejectsNoninteractiveInput(t *testing.T) {
+	_, err := NewHarnessAuthFacade().Execute(t.Context(), &HarnessAuthRequest{
+		Harness: model.AgentNameHermes, Operation: model.HarnessAuthLogin,
+	}, WithStreams(strings.NewReader("1\n"), nil, nil))
+	require.ErrorContains(t, err, "use --provider for noninteractive login")
+}

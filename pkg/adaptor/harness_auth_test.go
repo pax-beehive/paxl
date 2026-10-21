@@ -77,8 +77,6 @@ func TestNativeAuthRejectsUnsupportedOperationsBeforeExecution(t *testing.T) {
 		{Harness: "unsupported", Operation: "login"},
 		{Harness: "claude", Operation: "login", Method: "api-key"},
 		{Harness: "codex", Operation: "login", Method: "console"},
-		{Harness: "kimi", Operation: "status"},
-		{Harness: "kimi", Operation: "logout"},
 		{Harness: "codex", Operation: "status", Method: "device"},
 		{Harness: "codex", Operation: "invalid"},
 	} {

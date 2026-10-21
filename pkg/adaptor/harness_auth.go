@@ -22,21 +22,41 @@ type NativeHarnessAuth struct{}
 func NewNativeHarnessAuth() *NativeHarnessAuth { return &NativeHarnessAuth{} }
 
 type NativeAuthRequest struct {
-	Provider  string
-	Harness   model.AgentName
-	Operation model.HarnessAuthOperation
-	Method    model.HarnessAuthMethod
-	Stdin     io.Reader
-	Stdout    io.Writer
-	Stderr    io.Writer
+	SecretStdin bool
+	Profile     string
+	Provider    string
+	Harness     model.AgentName
+	Operation   model.HarnessAuthOperation
+	Method      model.HarnessAuthMethod
+	Stdin       io.Reader
+	Stdout      io.Writer
+	Stderr      io.Writer
 }
 
 func nativeAuthArgs(req *NativeAuthRequest) ([]string, error) {
 	if req == nil {
 		return nil, fmt.Errorf("authentication request is required")
 	}
+	if req.Harness == model.AgentNameAntigravity {
+		return nil, validateAntigravityAuth(req)
+	}
+	if req.Harness == model.AgentNameKimi && req.Operation != model.HarnessAuthLogin {
+		return nil, validateKimiAuth(req)
+	}
 	if req.Harness == model.AgentNamePi {
 		return nil, validatePiAuthRequest(req)
+	}
+	if isSDKAuth(req.Harness) {
+		return nil, validateSDKAuth(req)
+	}
+	if req.Harness == model.AgentNameOpenCode {
+		return openCodeAuthArgs(req)
+	}
+	if req.Harness == model.AgentNameOpenClaw {
+		return openClawAuthArgs(req)
+	}
+	if req.Harness == model.AgentNameKiro || req.Harness == model.AgentNameHermes {
+		return additionalNativeAuthArgs(req)
 	}
 	if req.Operation == model.HarnessAuthLogin {
 		return nativeLoginArgs(req)
@@ -111,6 +131,18 @@ func nativeLoginArgs(req *NativeAuthRequest) ([]string, error) {
 }
 
 func (a *NativeHarnessAuth) Run(ctx context.Context, req *NativeAuthRequest) error {
+	if req != nil && req.Harness == model.AgentNameAntigravity {
+		_, err := a.RunAntigravity(ctx, req)
+		return err
+	}
+	if req != nil && req.Harness == model.AgentNameKimi && req.Operation != model.HarnessAuthLogin {
+		_, err := a.RunKimi(ctx, req)
+		return err
+	}
+	if req != nil && isSDKAuth(req.Harness) {
+		_, err := a.RunSDK(ctx, req)
+		return err
+	}
 	if req != nil && req.Harness == model.AgentNamePi {
 		_, err := a.RunPi(ctx, req)
 		return err
@@ -125,7 +157,9 @@ func (a *NativeHarnessAuth) Run(ctx context.Context, req *NativeAuthRequest) err
 		command,
 		args...) // #nosec G204 -- Fixed native subcommands, no shell.
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = req.Stdin, req.Stdout, req.Stderr
-	if req.Method == model.HarnessAuthAPIKey || req.Method == model.HarnessAuthAccessToken {
+	if (req.Harness == model.AgentNameCodex &&
+		(req.Method == model.HarnessAuthAPIKey || req.Method == model.HarnessAuthAccessToken)) ||
+		(req.Harness == model.AgentNameOpenClaw && req.Method == model.HarnessAuthAPIKey) {
 		// Native output is untrusted and may echo the supplied secret on failure.
 		cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
 	}
@@ -151,6 +185,24 @@ func authExecutable(harness model.AgentName) string {
 		key = "CLAUDE_CODE_EXECUTABLE"
 	case model.AgentNameCodex:
 		key = "CODEX_PATH"
+	case model.AgentNameOpenCode:
+		key = "OPENCODE_EXECUTABLE"
+	case model.AgentNameOpenClaw:
+		key = "OPENCLAW_EXECUTABLE"
+	case model.AgentNameKiro:
+		if value := os.Getenv("KIRO_CLI_EXECUTABLE"); value != "" {
+			return value
+		}
+		return "kiro-cli"
+	case model.AgentNameHermes:
+		key = "HERMES_EXECUTABLE"
+	case model.AgentNameKimi:
+		key = "KIMI_EXECUTABLE"
+	case model.AgentNameAntigravity:
+		if value := os.Getenv("AGY_EXECUTABLE"); value != "" {
+			return value
+		}
+		return "agy"
 	}
 	if value := os.Getenv(key); key != "" && value != "" {
 		return value
@@ -166,12 +218,20 @@ func (a *NativeHarnessAuth) CaptureStatus(
 	if req == nil {
 		return nil, fmt.Errorf("authentication request is required")
 	}
-	var output boundedAuthOutput
+	var output, diagnostics boundedAuthOutput
 	request := *req
 	request.Stdout, request.Stderr = &output, &output
+	// JSON status belongs to stdout. Native startup warnings on stderr must not
+	// invalidate it or be exposed as account metadata. Codex/OpenCode use stderr
+	// for their text status, so retain their existing combined stream contract.
+	if req.Harness == model.AgentNameClaude || req.Harness == model.AgentNameKiro ||
+		req.Harness == model.AgentNameOpenClaw {
+		request.Stderr = &diagnostics
+	}
 	request.Stdin = nil
 	err := a.Run(ctx, &request)
-	if output.overflow {
+	if output.overflow || diagnostics.overflow ||
+		len(output.data)+len(diagnostics.data) > nativeAuthOutputLimit {
 		return nil, fmt.Errorf("authentication status output exceeds limit")
 	}
 	if err != nil {
@@ -190,12 +250,13 @@ type boundedAuthOutput struct {
 	overflow bool
 }
 
+const nativeAuthOutputLimit = 64 * 1024
+
 func (b *boundedAuthOutput) Write(p []byte) (int, error) {
-	const limit = 64 * 1024
 	n := len(p)
-	if len(b.data)+n > limit {
+	if len(b.data)+n > nativeAuthOutputLimit {
 		b.overflow = true
-		p = p[:limit-len(b.data)]
+		p = p[:nativeAuthOutputLimit-len(b.data)]
 	}
 	b.data = append(b.data, p...)
 	return n, nil
@@ -259,6 +320,15 @@ func (a *NativeHarnessAuth) Status(
 	ctx context.Context,
 	req *NativeAuthRequest,
 ) (*model.HarnessAuthResult, error) {
+	if req != nil && req.Harness == model.AgentNameAntigravity {
+		return a.RunAntigravity(ctx, req)
+	}
+	if req != nil && req.Harness == model.AgentNameKimi {
+		return a.RunKimi(ctx, req)
+	}
+	if req != nil && isSDKAuth(req.Harness) {
+		return a.RunSDK(ctx, req)
+	}
 	if req != nil && req.Harness == model.AgentNamePi {
 		return a.RunPi(ctx, req)
 	}
@@ -268,6 +338,15 @@ func (a *NativeHarnessAuth) Status(
 	}
 	if req.Harness == model.AgentNameCodex {
 		return ParseNativeCodexAuthStatus(data)
+	}
+	if req.Harness == model.AgentNameOpenCode {
+		return parseOpenCodeAuthStatus(data)
+	}
+	if req.Harness == model.AgentNameOpenClaw {
+		return parseOpenClawAuthStatus(req, data)
+	}
+	if req.Harness == model.AgentNameKiro || req.Harness == model.AgentNameHermes {
+		return parseAdditionalNativeAuthStatus(req, data)
 	}
 	var raw struct {
 		LoggedIn   *bool  `json:"loggedIn"`

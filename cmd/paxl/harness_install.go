@@ -25,7 +25,7 @@ func newHarnessInstallCommand(stdin io.Reader, stdout, stderr io.Writer) *cli.Co
   antigravity  Antigravity CLI official installer (command: agy)
   kimi      Kimi Code native installer
   opencode  OpenCode v1 official installer
-  hermes    Hermes source installer (setup deferred)
+  hermes    Official prebuilt runtime; checked source fallback on macOS Intel
   openclaw  OpenClaw installer (onboarding deferred)
   kiro      Kiro CLI installer (may open its app on macOS)
   dsh       Published @deepseek-ai/dsh npm package, installed persistently
@@ -51,7 +51,10 @@ Pi's npm route remains available. Other alternative routes are not implemented.
 ACP package installation is supported separately for Claude, Codex, and Pi.
 Use --dry-run to inspect the route without downloading or installing.
 Exact --version is supported only where the installer has a verified option.
-Official shell installers currently support macOS/Linux/WSL.`,
+Official shell installers currently support macOS/Linux/WSL.
+Hermes prefers a matching prebuilt package. On macOS Intel only, missing
+prebuilt artifacts fall back to the official source installer after checking
+Rust/Cargo >= 1.83, Apple command-line tools, and OpenSSL build prerequisites.`,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "format", Value: "text", Usage: "Output format: text or json"},
 			&cli.StringFlag{
