@@ -114,11 +114,10 @@ func listCodexSessions(
 }
 
 func getCodexSession(ctx context.Context, req *GetSessionRequest) (*GetSessionResponse, error) {
-	_ = ctx
 	if req == nil || req.NativeID == "" {
 		return nil, fmt.Errorf("native session id is required")
 	}
-	path, err := findCodexRollout(req.NativeID)
+	path, err := findCodexRollout(ctx, req.NativeID)
 	if err != nil {
 		return nil, fmt.Errorf("find codex rollout: %w", err)
 	}
@@ -140,7 +139,7 @@ func promptCodexSession(
 	if err := validateNativeSessionID(req.NativeID); err != nil {
 		return nil, err
 	}
-	if isCodexAppSession(req.NativeID) {
+	if isCodexAppSession(ctx, req.NativeID) {
 		resp, err := promptCodexAppServer(ctx, req, option)
 		if err == nil {
 			return resp, nil
@@ -207,17 +206,20 @@ func readCodexIndex(path string) (map[string]*model.Session, error) {
 	return out, scanner.Err()
 }
 
-func findCodexRollout(nativeID string) (string, error) {
+func findCodexRollout(ctx context.Context, nativeID string) (string, error) {
 	root, err := codexRoot()
 	if err != nil {
 		return "", err
 	}
-	return findCodexConversationRollout(root, nativeID)
+	return findCodexConversationRollout(ctx, root, nativeID)
 }
 
-func findCodexRolloutInDir(root string, nativeID string) (string, error) {
+func findCodexRolloutInDir(ctx context.Context, root string, nativeID string) (string, error) {
 	var found string
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return walkErr
 		}

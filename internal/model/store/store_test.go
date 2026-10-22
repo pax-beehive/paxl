@@ -736,6 +736,43 @@ func (s *StoreSuite) TestClaimHookKnowledgeInjectionSupportsAnyAgentAndKeywordRo
 // FTS5 search tests (Task 1 + Task 2 + Task 5)
 // ---------------------------------------------------------------------------
 
+func (s *StoreSuite) TestOpeningExistingStoreDoesNotRewriteSearchIndex() {
+	_, err := s.store.UpsertSessions(s.ctx, &store.UpsertSessionsRequest{
+		Agent:    model.AgentNameCodex,
+		Sessions: []*model.Session{{NativeID: "existing-search"}},
+	})
+	s.Require().NoError(err)
+	_, err = s.store.ReplaceSessionElements(s.ctx, &store.ReplaceSessionElementsRequest{
+		SessionID: "codex:existing-search",
+		Elements: []*model.Element{{
+			Seq: 1, Type: "message", Role: "user", ContentText: "searchable existing content",
+		}},
+	})
+	s.Require().NoError(err)
+
+	observer, err := sql.Open("sqlite", s.path)
+	s.Require().NoError(err)
+	defer func() { s.NoError(observer.Close()) }()
+	connection, err := observer.Conn(s.ctx)
+	s.Require().NoError(err)
+	defer func() { s.NoError(connection.Close()) }()
+	var before, after int
+	s.Require().NoError(connection.QueryRowContext(s.ctx, "PRAGMA data_version").Scan(&before))
+
+	opened, err := store.Open(s.ctx, &store.OpenRequest{Path: s.path})
+	s.Require().NoError(err)
+	defer func() { s.NoError(opened.Store.Close()) }()
+
+	s.Require().NoError(connection.QueryRowContext(s.ctx, "PRAGMA data_version").Scan(&after))
+	s.Equal(before, after, "opening a current store must not rewrite its search index")
+	results, err := opened.Store.SearchElements(s.ctx, &store.SearchElementsRequest{
+		Query: "searchable",
+	})
+	s.Require().NoError(err)
+	s.Require().Len(results.Results, 1)
+	s.Equal("codex:existing-search", results.Results[0].SessionID)
+}
+
 func (s *StoreSuite) TestFTS5TriggersExistAfterMigration() {
 	db, err := sql.Open("sqlite", s.path)
 	s.Require().NoError(err)
@@ -758,7 +795,7 @@ func (s *StoreSuite) TestFTS5TriggersExistAfterMigration() {
 	}
 }
 
-func (s *StoreSuite) TestMigrationBackfillsFTS5ForExistingElements() {
+func (s *StoreSuite) legacySearchStorePath() string {
 	dbPath := filepath.Join(s.T().TempDir(), "old.sqlite")
 	db, err := sql.Open("sqlite", dbPath)
 	s.Require().NoError(err)
@@ -810,7 +847,11 @@ func (s *StoreSuite) TestMigrationBackfillsFTS5ForExistingElements() {
 	`)
 	s.Require().NoError(err)
 	s.Require().NoError(db.Close())
+	return dbPath
+}
 
+func (s *StoreSuite) TestMigrationBackfillsFTS5ForExistingElements() {
+	dbPath := s.legacySearchStorePath()
 	opened, err := store.Open(s.ctx, &store.OpenRequest{Path: dbPath})
 	s.Require().NoError(err)
 	defer func() {
@@ -824,6 +865,73 @@ func (s *StoreSuite) TestMigrationBackfillsFTS5ForExistingElements() {
 	s.Require().NoError(err)
 	s.Require().Len(resp.Results, 1)
 	s.Equal("codex:old-search", resp.Results[0].SessionID)
+}
+
+func (s *StoreSuite) TestFailedSearchMigrationCanBeRetriedWithoutLosingExistingElements() {
+	for _, test := range []struct {
+		name    string
+		schema  string
+		cleanup string
+		message string
+	}{
+		{name: "backfill", schema: "CREATE TABLE session_elements_fts(unrelated TEXT)",
+			cleanup: "DROP TABLE session_elements_fts", message: "rebuild session element search index"},
+		{name: "schema", schema: "CREATE INDEX session_elements_fts ON session_elements(session_id)",
+			cleanup: "DROP INDEX session_elements_fts", message: "create session search schema"},
+	} {
+		s.Run(test.name, func() {
+			dbPath := s.legacySearchStorePath()
+			db, err := sql.Open("sqlite", dbPath)
+			s.Require().NoError(err)
+			defer func() { s.NoError(db.Close()) }()
+			_, err = db.ExecContext(s.ctx, test.schema)
+			s.Require().NoError(err)
+
+			_, err = store.Open(s.ctx, &store.OpenRequest{Path: dbPath})
+			s.Require().ErrorContains(err, test.message)
+			_, err = db.ExecContext(s.ctx, test.cleanup)
+			s.Require().NoError(err)
+
+			opened, err := store.Open(s.ctx, &store.OpenRequest{Path: dbPath})
+			s.Require().NoError(err)
+			defer func() { s.NoError(opened.Store.Close()) }()
+			results, err := opened.Store.SearchElements(
+				s.ctx,
+				&store.SearchElementsRequest{Query: "legacy"},
+			)
+			s.Require().NoError(err)
+			s.Require().Len(results.Results, 1)
+			s.Equal("codex:old-search", results.Results[0].SessionID)
+		})
+	}
+}
+
+func (s *StoreSuite) TestConcurrentStoreOpensKeepLegacyElementsSearchable() {
+	dbPath := s.legacySearchStorePath()
+	type result struct {
+		opened *store.OpenResponse
+		err    error
+	}
+	const readers = 6
+	results := make(chan result, readers)
+	for range readers {
+		go func() {
+			opened, err := store.Open(s.ctx, &store.OpenRequest{Path: dbPath})
+			results <- result{opened: opened, err: err}
+		}()
+	}
+	for range readers {
+		opened := <-results
+		s.Require().NoError(opened.err)
+		defer func() { s.NoError(opened.opened.Store.Close()) }()
+		found, err := opened.opened.Store.SearchElements(
+			s.ctx,
+			&store.SearchElementsRequest{Query: "legacy"},
+		)
+		s.Require().NoError(err)
+		s.Require().Len(found.Results, 1)
+		s.Equal("codex:old-search", found.Results[0].SessionID)
+	}
 }
 
 func (s *StoreSuite) TestReplaceSessionElementsDeletesOldRows() {

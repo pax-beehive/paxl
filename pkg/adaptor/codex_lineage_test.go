@@ -95,3 +95,13 @@ func TestCodexHistoryFollowsCompactionButDirectReviewReadsItsOwnHistory(t *testi
 		require.Equal(t, "codex:"+id, resp.Elements[0].SessionID)
 	}
 }
+
+func TestCodexGivenCanceledContextWhenReadingHistoryThenReturnsCancellation(t *testing.T) {
+	writeCodexLineageFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := NewCodexAdapter().GetSession(ctx, &GetSessionRequest{NativeID: "aaa"})
+
+	require.ErrorIs(t, err, context.Canceled)
+}
