@@ -119,6 +119,7 @@ func newCommandWithDiagnostics(
 			newChannelCommand(stdout, stderr, diagnostics),
 			newNodeCommand(stdout),
 			newDaemonCommand(stdout),
+			newCronCommand(stdin, stdout, stderr),
 			newSetupCommand(stdout),
 			newAgentCommand(agentFacade, stdout, stderr, diagnostics),
 			newResumeCommand(stdin, stdout, stderr),
