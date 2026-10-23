@@ -48,6 +48,13 @@ var newLocalCollaborationFacade = func(sessionStore *store.Store) localCollabora
 }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == executionLogCleanupWorkerFlag {
+		if err := runExecutionLogCleanupWorker(); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
+	scheduleExecutionLogCleanup = startExecutionLogCleanup
 	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
