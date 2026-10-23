@@ -10,6 +10,13 @@ import (
 	"time"
 )
 
+const executionLogCleanupMaxRuntime = 10 * time.Minute
+
+type executionLogCleanupWorkerOption struct {
+	MaxRuntime time.Duration
+	Clean      func(*os.File, string) error
+}
+
 const executionLogCleanupWorkerFlag = "__paxl-cleanup-logs" // #nosec G101 -- Internal command switch, not a credential.
 
 var executionLogCleanupCommand = func() (*exec.Cmd, error) {

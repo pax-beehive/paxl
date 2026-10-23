@@ -59,23 +59,40 @@ func startExecutionLogCleanup(dir string) {
 	go func() { _ = command.Wait() }()
 }
 
-func runExecutionLogCleanupWorker() error {
+func runExecutionLogCleanupWorker(opts ...func(*executionLogCleanupWorkerOption)) error {
+	option := &executionLogCleanupWorkerOption{
+		MaxRuntime: executionLogCleanupMaxRuntime,
+		Clean:      cleanExecutionLogsWithLock,
+	}
+	for _, opt := range opts {
+		opt(option)
+	}
+	if option.MaxRuntime <= 0 {
+		return fmt.Errorf("cleanup runtime must be positive")
+	}
+	// A context cannot interrupt a stalled filesystem operation. Exiting the worker
+	// bounds its lifetime and lets the OS release the inherited lock and file handles.
+	deadline := time.AfterFunc(option.MaxRuntime, func() { os.Exit(124) })
+	defer deadline.Stop()
+
 	dir, err := executionLogDir()
 	if err != nil {
 		return fmt.Errorf("resolve cleanup log directory: %w", err)
+	}
+	// Validate before wrapping fd 3: a malformed invocation may have a Go runtime
+	// descriptor there instead of an inherited lock, which must not be closed here.
+	var inherited, expected unix.Stat_t
+	if err := unix.Fstat(3, &inherited); err != nil {
+		return fmt.Errorf("inspect inherited cleanup lock: %w", err)
+	}
+	if err := unix.Stat(executionLogCleanupLockPath(dir), &expected); err != nil ||
+		inherited.Dev != expected.Dev || inherited.Ino != expected.Ino {
+		return fmt.Errorf("invalid inherited cleanup lock")
 	}
 	file := os.NewFile(3, "log-cleanup.lock")
 	if file == nil {
 		return fmt.Errorf("missing inherited cleanup lock")
 	}
 	defer closeFile(file)
-	inherited, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("inspect inherited cleanup lock: %w", err)
-	}
-	expected, err := os.Stat(executionLogCleanupLockPath(dir))
-	if err != nil || !os.SameFile(inherited, expected) {
-		return fmt.Errorf("invalid inherited cleanup lock")
-	}
-	return cleanExecutionLogsWithLock(file, dir)
+	return option.Clean(file, dir)
 }

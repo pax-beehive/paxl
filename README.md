@@ -259,9 +259,13 @@ The worker streams 256 directory entries at a time and pauses 50 milliseconds
 between batches to reduce disk pressure. An inherited OS file lock allows only
 one worker per log directory, even across concurrent commands. Successful scans
 are throttled to once per hour; failed launches or interrupted workers can be
-retried by later invocations after a one-minute backoff. No stale lock needs to
-be deleted manually. Recent logs, unrelated files, directories, and symlinks are
-preserved. Each record includes a PID and execution ID to distinguish commands.
+retried by later invocations after a one-minute backoff. Each worker has a
+10-minute wall-clock deadline, enforced independently of directory reads,
+filesystem operations, and pacing sleeps. On timeout the worker exits, releasing
+its inherited lock. Files already removed stay removed; a later invocation can
+clean the remaining backlog. Normal completion cancels the deadline. No stale
+lock needs to be deleted manually. Recent logs, unrelated files, directories,
+and symlinks are preserved. Each record includes a PID and execution ID to distinguish commands.
 
 Logs include command start and finish events, duration, errors, and buffered
 adapter diagnostics. Normal command output is unchanged; `--verbose` still
