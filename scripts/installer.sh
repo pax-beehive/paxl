@@ -301,6 +301,38 @@ resolve_from_api() {
     printf '%s' "$response" | json_field data.size)"
 }
 
+# Keep installation cleanup independent of the installed executable and PATH.
+cleanup_execution_logs() {
+  if ! python3 - <<'PY_CLEANUP'
+import os
+import re
+import time
+
+log_dir = os.path.join(os.path.expanduser("~"), ".pax", "paxl", "logs")
+owned = re.compile(r"paxl-(?:[0-9]{8}T[0-9]{2}Z|[0-9]{8}T[0-9]{6}\.[0-9]{9}Z-[0-9]+)\.log")
+cutoff = time.time() - 72 * 3600
+removed = 0
+try:
+    with os.scandir(log_dir) as entries:
+        for entry in entries:
+            if not owned.fullmatch(entry.name):
+                continue
+            try:
+                if entry.is_file(follow_symlinks=False) and entry.stat(follow_symlinks=False).st_mtime < cutoff:
+                    os.unlink(entry.path)
+                    removed += 1
+            except FileNotFoundError:
+                pass  # Another installer or CLI process may clean the same file.
+    if removed:
+        print(f"Removed {removed} expired paxl log files.")
+except FileNotFoundError:
+    pass
+PY_CLEANUP
+  then
+    warn "Could not clean expired paxl logs; installation will continue."
+  fi
+}
+
 main() {
   print_banner
   require_cmd curl
@@ -351,6 +383,8 @@ main() {
   if ! path_has_dir "$install_dir"; then
     print_path_guidance "$install_dir" "$target"
   fi
+
+  cleanup_execution_logs
 
   log "Installed: $("${target}" version | head -n 1)"
   printf '%s\n' "${green}Done.${reset}"

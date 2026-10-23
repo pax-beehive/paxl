@@ -252,6 +252,9 @@ Commands share `paxl-YYYYMMDDTHHZ.log` files, rotated hourly in UTC, including
 for long-running processes. On startup and rotation, paxl removes its log files
 whose last modification is older than 72 hours, including legacy per-command
 files. Cleanup runs when paxl writes logs; it does not require a background job.
+The installer also removes expired logs immediately after installing the binary,
+without requiring a separate cleanup command. Cleanup failures do not prevent
+installation.
 Each record includes a PID and execution ID to distinguish concurrent commands.
 
 Logs include command start and finish events, duration, errors, and buffered

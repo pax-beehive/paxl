@@ -175,6 +175,15 @@ run_fake_install() (
 
 missing_path_home="${test_dir}/missing-path-home"
 missing_path_output="${test_dir}/missing-path-output"
+legacy_log="${missing_path_home}/.pax/paxl/logs/paxl-20260101T000000.000000000Z-123.log"
+python3 - "$legacy_log" <<'PY_LOG'
+import os, pathlib, sys, time
+path = pathlib.Path(sys.argv[1])
+path.parent.mkdir(parents=True)
+path.write_text("Old execution log.\n")
+expired = time.time() - 73 * 3600
+os.utime(path, (expired, expired))
+PY_LOG
 if ! run_fake_install \
   "$missing_path_home" \
   '/usr/bin:/bin' \
@@ -195,7 +204,10 @@ fi
 if ! grep -Fq "${missing_path_home}/.local/bin/paxl version" "$missing_path_output"; then
   fail_test "PATH guidance did not include a directly runnable paxl command"
 fi
-printf 'ok - install succeeds outside PATH and prints copyable zsh guidance\n'
+if [[ -e "$legacy_log" ]]; then
+  fail_test "install did not automatically remove an expired legacy log"
+fi
+printf 'ok - install succeeds outside PATH, cleans expired legacy logs, and prints copyable zsh guidance\n'
 
 custom_home="${test_dir}/custom-home"
 custom_install_dir="${test_dir}/custom bin's"
