@@ -91,3 +91,13 @@ func createExecutionCleanupLog(t *testing.T, dir, name string, modified time.Tim
 	require.NoError(t, os.WriteFile(path, []byte("Historical log.\n"), 0600))
 	require.NoError(t, os.Chtimes(path, modified, modified))
 }
+
+func TestExecutionLogCleanupToleratesFilesRemovedByAnotherProcess(t *testing.T) {
+	dir := t.TempDir()
+	name := "paxl-20260101T00Z.log"
+	createExecutionCleanupLog(t, dir, name, time.Now().Add(-73*time.Hour))
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.NoError(t, os.Remove(filepath.Join(dir, name)))
+	require.NoError(t, removeExpiredExecutionLog(dir, entries[0], time.Now()))
+}

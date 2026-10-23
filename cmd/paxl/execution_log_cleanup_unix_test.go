@@ -4,7 +4,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -94,7 +93,7 @@ func TestExecutionLogCleanupWorkerProcess(_ *testing.T) {
 		return
 	}
 	deadline := time.Now().Add(5 * time.Second)
-	for {
+	for os.Getenv("PAXL_TEST_CLEANUP_GATE") != "" {
 		if _, err := os.Stat(os.Getenv("PAXL_TEST_CLEANUP_GATE")); err == nil {
 			break
 		}
@@ -103,12 +102,12 @@ func TestExecutionLogCleanupWorkerProcess(_ *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if err := runExecutionLogCleanupWorker(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(3)
-	}
-	if err := os.WriteFile(os.Getenv("PAXL_TEST_CLEANUP_DONE"), nil, 0600); err != nil {
-		os.Exit(4)
+	os.Args = []string{os.Args[0], executionLogCleanupWorkerFlag}
+	main()
+	if done := os.Getenv("PAXL_TEST_CLEANUP_DONE"); done != "" {
+		if err := os.WriteFile(done, nil, 0600); err != nil {
+			os.Exit(4)
+		}
 	}
 	os.Exit(0)
 }
@@ -132,4 +131,74 @@ func TestExecutionLogCleanupLaunchFailuresDoNotBlockCommands(t *testing.T) {
 	startExecutionLogCleanup(dir)
 	startExecutionLogCleanup(dir) // Backoff avoids repeatedly trying to launch a broken worker.
 	startExecutionLogCleanup(filepath.Join(dir, "missing", "logs"))
+}
+
+func TestExecutionLogCleanupWorkerRejectsMissingOrUnrelatedLock(t *testing.T) {
+	for _, scenario := range []string{"missing_home", "missing_lock", "unrelated_lock"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			if scenario == "missing_home" {
+				t.Setenv("HOME", "")
+			}
+			command := exec.CommandContext(
+				t.Context(),
+				os.Args[0],
+				"-test.run=^TestExecutionLogCleanupWorkerProcess$",
+			)
+			command.Env = append(os.Environ(), "PAXL_TEST_CLEANUP_HELPER=1")
+			if scenario == "unrelated_lock" {
+				dir, err := executionLogDir()
+				require.NoError(t, err)
+				require.NoError(t, os.MkdirAll(dir, 0700))
+				require.NoError(t, os.WriteFile(executionLogCleanupLockPath(dir), nil, 0600))
+				unrelated, err := os.CreateTemp(t.TempDir(), "unrelated")
+				require.NoError(t, err)
+				defer closeFile(unrelated)
+				command.ExtraFiles = []*os.File{unrelated}
+			}
+			err := command.Run()
+			var exited *exec.ExitError
+			require.ErrorAs(t, err, &exited)
+			require.Equal(t, 1, exited.ExitCode())
+		})
+	}
+}
+
+func TestExecutionLogCleanupCLIEntrySchedulesWorkerAndReportsErrors(t *testing.T) {
+	for _, scenario := range []string{"version", "invalid-command"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			command := exec.CommandContext(
+				t.Context(),
+				os.Args[0],
+				"-test.run=^TestExecutionLogCleanupCLIEntryProcess$",
+			)
+			command.Env = append(os.Environ(), "PAXL_TEST_CLI_ENTRY="+scenario)
+			output, err := command.CombinedOutput()
+			if scenario == "version" {
+				require.NoError(t, err, string(output))
+				dir, dirErr := executionLogDir()
+				require.NoError(t, dirErr)
+				require.FileExists(
+					t,
+					executionLogCleanupLockPath(dir),
+					"The CLI entry point must enable background scheduling.",
+				)
+			} else {
+				require.Error(t, err)
+				require.Contains(t, string(output), "Error:")
+			}
+		})
+	}
+}
+
+func TestExecutionLogCleanupCLIEntryProcess(_ *testing.T) {
+	scenario := os.Getenv("PAXL_TEST_CLI_ENTRY")
+	if scenario == "" {
+		return
+	}
+	executionLogCleanupCommand = func() (*exec.Cmd, error) { return nil, errors.New("test worker is unavailable") }
+	os.Args = []string{os.Args[0], scenario}
+	main()
+	os.Exit(0)
 }
