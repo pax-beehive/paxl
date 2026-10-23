@@ -45,6 +45,14 @@ func TestExecutionLogsRotateAndPruneOldFiles(t *testing.T) {
 	require.NoError(t, os.WriteFile(recent, []byte("recent\n"), 0600))
 	logger.now = func() time.Time { return now.Add(time.Hour) }
 	logger.write("next_hour", nil)
+	require.NoError(
+		t,
+		pruneExecutionLogs(
+			logger.dir,
+			now.Add(time.Hour-72*time.Hour),
+			func(o *executionLogCleanupOption) { o.Pause = 0 },
+		),
+	)
 	require.NoFileExists(t, filepath.Join(logger.dir, "paxl-20260101T00Z.log"))
 	require.NoFileExists(t, filepath.Join(logger.dir, "paxl-20260101T000000.000000000Z-123.log"))
 	require.FileExists(t, filepath.Join(logger.dir, "keep.txt"))
@@ -74,7 +82,7 @@ func TestExecutionLogRotationFailurePreservesCurrentFile(t *testing.T) {
 	logger.dir = filepath.Join(logger.dir, "missing")
 	require.Error(t, logger.rotate(logger.startedAt.Add(time.Hour)))
 	require.Same(t, previous, logger.file)
-	pruneExecutionLogs(logger.dir, time.Now())
+	require.Error(t, pruneExecutionLogs(logger.dir, time.Now()))
 }
 
 func TestExecutionLogsConcurrentWritersProduceCompleteRecords(t *testing.T) {
@@ -125,4 +133,17 @@ func TestExecutionLogsIgnoreWritesAfterCloseOrFailedRotation(t *testing.T) {
 	logger.write("ignored", nil)
 	closeExecutionLogger(logger)
 	logger.write("ignored", nil)
+}
+
+func TestExecutionLogRotationDoesNotWaitForHistoricalCleanup(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	logger := openExecutionLogger(nil)
+	require.NotNil(t, logger)
+	defer closeExecutionLogger(logger)
+	path := filepath.Join(logger.dir, "paxl-20260101T00Z.log")
+	require.NoError(t, os.WriteFile(path, []byte("Old log.\n"), 0600))
+	expired := time.Now().Add(-73 * time.Hour)
+	require.NoError(t, os.Chtimes(path, expired, expired))
+	require.NoError(t, logger.rotate(logger.startedAt.Add(time.Hour)))
+	require.FileExists(t, path, "Rotation must not scan or delete historical files synchronously.")
 }

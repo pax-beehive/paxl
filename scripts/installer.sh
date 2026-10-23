@@ -352,6 +352,7 @@ main() {
     print_path_guidance "$install_dir" "$target"
   fi
 
+  # Startup schedules detached cleanup; never scan the historical directory here.
   log "Installed: $("${target}" version | head -n 1)"
   printf '%s\n' "${green}Done.${reset}"
 }

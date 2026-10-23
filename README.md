@@ -249,10 +249,19 @@ Every `paxl` command appends JSONL execution records under:
 ```
 
 Commands share `paxl-YYYYMMDDTHHZ.log` files, rotated hourly in UTC, including
-for long-running processes. On startup and rotation, paxl removes its log files
-whose last modification is older than 72 hours, including legacy per-command
-files. Cleanup runs when paxl writes logs; it does not require a background job.
-Each record includes a PID and execution ID to distinguish concurrent commands.
+for long-running processes. On startup and rotation, the macOS and Linux CLI
+schedules a detached background worker to remove owned logs last modified more
+than 72 hours ago, including legacy per-command files. Commands and installation
+do not wait for the historical directory to be scanned. The installer invokes
+the newly installed binary, which schedules the same worker automatically.
+
+The worker streams 256 directory entries at a time and pauses 50 milliseconds
+between batches to reduce disk pressure. An inherited OS file lock allows only
+one worker per log directory, even across concurrent commands. Successful scans
+are throttled to once per hour; failed launches or interrupted workers can be
+retried by later invocations after a one-minute backoff. No stale lock needs to
+be deleted manually. Recent logs, unrelated files, directories, and symlinks are
+preserved. Each record includes a PID and execution ID to distinguish commands.
 
 Logs include command start and finish events, duration, errors, and buffered
 adapter diagnostics. Normal command output is unchanged; `--verbose` still
