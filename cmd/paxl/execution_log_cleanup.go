@@ -13,7 +13,7 @@ import (
 const executionLogCleanupWorkerFlag = "__paxl-cleanup-logs" // #nosec G101 -- Internal command switch, not a credential.
 
 var executionLogCleanupCommand = func() (*exec.Cmd, error) {
-	executable, err := os.Executable()
+	executable, err := executablePath()
 	if err != nil {
 		return nil, fmt.Errorf("find cleanup executable: %w", err)
 	}

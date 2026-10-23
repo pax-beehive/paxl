@@ -1,6 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +12,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/urfave/cli/v3"
 )
 
 func TestExecutionLogCleanupStreamsAndPacesBatches(t *testing.T) {
@@ -100,4 +105,86 @@ func TestExecutionLogCleanupToleratesFilesRemovedByAnotherProcess(t *testing.T) 
 	require.NoError(t, err)
 	require.NoError(t, os.Remove(filepath.Join(dir, name)))
 	require.NoError(t, removeExpiredExecutionLog(dir, entries[0], time.Now()))
+}
+
+func TestExecutionLogsRemainOptionalWhenHomeOrLogFileIsUnavailable(t *testing.T) {
+	t.Run("missing_home", func(t *testing.T) {
+		t.Setenv("HOME", "")
+		require.Nil(t, openExecutionLogger(nil))
+	})
+	t.Run("unwritable_log_file", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		dir, err := executionLogDir()
+		require.NoError(t, err)
+		// A directory at the expected file path must not prevent the command running.
+		now := time.Now()
+		for _, now := range []time.Time{now, now.Add(time.Hour)} {
+			require.NoError(
+				t,
+				os.MkdirAll(
+					filepath.Join(dir, "paxl-"+now.UTC().Format(executionLogHourLayout)+".log"),
+					0700,
+				),
+			)
+		}
+		require.Nil(t, openExecutionLogger(nil))
+		var stdout, stderr bytes.Buffer
+		require.NoError(t, run(t.Context(), []string{"version"}, &stdout, &stderr))
+		require.Contains(t, stdout.String(), "paxl")
+	})
+}
+
+func TestExecutionLogsFinishOnlyOnce(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	logger := openExecutionLogger(nil)
+	require.NotNil(t, logger)
+	defer closeExecutionLogger(logger)
+	finishExecutionLog(logger, nil)
+	finishExecutionLog(logger, errors.New("duplicate finish"))
+	raw, err := os.ReadFile(logger.file.Name())
+	require.NoError(t, err)
+	require.Equal(t, 1, bytes.Count(raw, []byte(`"event":"command_finish"`)))
+	require.NotContains(t, string(raw), "duplicate finish")
+}
+
+func TestExecutionLogCallerAttributionRespectsInvocationBoundaries(t *testing.T) {
+	for _, scenario := range []struct {
+		name  string
+		args  []string
+		agent string
+	}{
+		{"inline_flag", []string{"--caller-agent=codex"}, "codex"},
+		{"missing_flag_value", []string{"--caller-agent"}, ""},
+		{"nested_command_flag", []string{"--", "--caller-agent=codex"}, ""},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("PAXL_CALLER_AGENT", "")
+			t.Setenv("PAXL_AGENT", "")
+			logger := openExecutionLogger(scenario.args)
+			require.NotNil(t, logger)
+			defer closeExecutionLogger(logger)
+			raw, err := os.ReadFile(logger.file.Name())
+			require.NoError(t, err)
+			var record map[string]any
+			require.NoError(t, json.Unmarshal(bytes.TrimSpace(raw), &record))
+			if scenario.agent == "" {
+				require.NotContains(t, record, "callerAgent")
+			} else {
+				require.Equal(t, scenario.agent, record["callerAgent"])
+			}
+		})
+	}
+}
+
+func TestExecutionLogsFailureDoesNotSuppressVerboseStderr(t *testing.T) {
+	var stderr bytes.Buffer
+	command := &cli.Command{
+		Flags: []cli.Flag{&cli.BoolFlag{Name: "verbose"}},
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			require.Same(t, &stderr, verboseWriter(cmd, &stderr, nil))
+			return nil
+		},
+	}
+	require.NoError(t, command.Run(t.Context(), []string{"paxl", "--verbose"}))
 }

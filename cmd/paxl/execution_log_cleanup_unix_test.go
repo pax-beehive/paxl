@@ -202,3 +202,43 @@ func TestExecutionLogCleanupCLIEntryProcess(_ *testing.T) {
 	main()
 	os.Exit(0)
 }
+
+func TestExecutionLogCleanupReportsPermissionFailuresAndCanRetry(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("Permission boundaries require an unprivileged user.")
+	}
+	dir := t.TempDir()
+	createExecutionCleanupLog(t, dir, "paxl-20260101T00Z.log", time.Now().Add(-73*time.Hour))
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.NoError(t, os.Chmod(dir, 0000))
+	t.Cleanup(func() { require.NoError(t, os.Chmod(dir, 0700)) })
+	require.Error(t, removeExpiredExecutionLog(dir, entries[0], time.Now()))
+	require.NoError(t, os.Chmod(dir, 0500))
+	require.Error(t, pruneExecutionLogs(dir, time.Now()))
+	require.FileExists(t, filepath.Join(dir, "paxl-20260101T00Z.log"))
+	require.NoError(t, os.Chmod(dir, 0700))
+	require.NoError(t, pruneExecutionLogs(dir, time.Now()))
+	require.NoFileExists(t, filepath.Join(dir, "paxl-20260101T00Z.log"))
+}
+
+func TestExecutionLogsStillWriteAfterWorkingDirectoryIsRemoved(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	t.Chdir(dir)
+	require.NoError(t, os.Remove(dir))
+	logger := openExecutionLogger(nil)
+	require.NotNil(t, logger)
+	defer closeExecutionLogger(logger)
+	raw, err := os.ReadFile(logger.file.Name())
+	require.NoError(t, err)
+	require.Contains(t, string(raw), `"event":"command_start"`)
+}
+
+func TestExecutionLogCleanupReportsUnavailableExecutable(t *testing.T) {
+	previous := executablePath
+	t.Cleanup(func() { executablePath = previous })
+	executablePath = func() (string, error) { return "", errors.New("executable is unavailable") }
+	_, err := executionLogCleanupCommand()
+	require.ErrorContains(t, err, "find cleanup executable")
+}
