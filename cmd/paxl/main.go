@@ -5832,6 +5832,9 @@ type executionLogger struct {
 	mu        sync.Mutex
 	startedAt time.Time
 	finished  bool
+	dir       string
+	hour      string
+	now       func() time.Time
 }
 
 type diagnosticLogWriter struct {
@@ -5847,19 +5850,9 @@ func openExecutionLogger(args []string) *executionLogger {
 		return nil
 	}
 	now := time.Now().UTC()
-	path := filepath.Join(
-		dir,
-		fmt.Sprintf("paxl-%s-%d.log", now.Format("20060102T150405.000000000Z"), os.Getpid()),
-	)
-	// The path is constructed from os.UserHomeDir plus paxl's fixed log directory.
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) // #nosec G304
-	if err != nil {
+	logger := &executionLogger{dir: dir, startedAt: now, now: time.Now}
+	if err := logger.rotate(now); err != nil {
 		return nil
-	}
-	logger := &executionLogger{
-		file:      file,
-		encoder:   json.NewEncoder(file),
-		startedAt: now,
 	}
 	fields := map[string]any{
 		"args":    redactExecutionArgs(args),
@@ -5971,22 +5964,34 @@ func closeExecutionLogger(logger *executionLogger) {
 	if logger == nil {
 		return
 	}
+	logger.mu.Lock()
+	defer logger.mu.Unlock()
 	_ = logger.file.Close()
+	logger.encoder = nil
 }
 
 func (l *executionLogger) write(event string, fields map[string]any) {
-	if l == nil || l.encoder == nil {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.encoder == nil {
+		return
+	}
+	now := l.now().UTC()
+	if err := l.rotate(now); err != nil {
 		return
 	}
 	record := map[string]any{
-		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
-		"event":     event,
+		"timestamp":   now.Format(time.RFC3339Nano),
+		"pid":         os.Getpid(),
+		"executionId": fmt.Sprintf("%d-%d", os.Getpid(), l.startedAt.UnixNano()),
+		"event":       event,
 	}
 	for key, value := range fields {
 		record[key] = value
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
 	_ = l.encoder.Encode(record)
 }
 

@@ -242,11 +242,17 @@ you need to inspect what will be delivered.
 
 ## Execution Logs
 
-Every `paxl` command writes a JSONL execution log under:
+Every `paxl` command appends JSONL execution records under:
 
 ```text
 ~/.pax/paxl/logs/
 ```
+
+Commands share `paxl-YYYYMMDDTHHZ.log` files, rotated hourly in UTC, including
+for long-running processes. On startup and rotation, paxl removes its log files
+whose last modification is older than 72 hours, including legacy per-command
+files. Cleanup runs when paxl writes logs; it does not require a background job.
+Each record includes a PID and execution ID to distinguish concurrent commands.
 
 Logs include command start and finish events, duration, errors, and buffered
 adapter diagnostics. Normal command output is unchanged; `--verbose` still
