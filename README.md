@@ -475,6 +475,61 @@ paxl agent list
 The `CLI` column shows whether the native agent command is on `PATH`. The
 `SESSIONS` column shows whether `paxl` can see local session logs for that agent.
 
+### Read Native Skills and MCP Configuration
+
+Read a passive JSON inventory without starting an agent or connecting to MCP:
+
+```sh
+paxl harness config read codex --cwd /path/to/project
+paxl harness config read claude --cwd /path/to/project --kind skills
+paxl harness config read pi --cwd /path/to/project --kind mcp
+paxl harness config schema
+```
+
+The reader supports Codex, Claude Code, Pi, Kiro, OpenCode v1, current and legacy
+Kimi paths, Hermes, OpenClaw, DSH, and DSCODE. A harness does not need to be
+installed for its configuration files to be inspected. Native environment
+variables select configuration roots; `--cwd` selects the project discovery
+context. The command does not modify native configuration or initialize a
+session database.
+
+The version 1 response follows the embedded
+[JSON Schema](internal/model/agent_configuration.schema.json):
+
+| Field | Meaning |
+| --- | --- |
+| `schema_version`, `agent`, `cwd`, `kind` | Snapshot contract and discovery context |
+| `skills` | Skill metadata, invocation declarations, instruction file hash, source, and known origin |
+| `mcp_servers` | Normalized transport, command, arguments, endpoint, declared enablement, source, and native fields |
+| `sources` | Read, missing, unsupported, and unreadable configuration sources |
+| `conflicts` | Same-name candidates retained with their individual sources |
+| `coverage`, `diagnostics` | Scope limitations, malformed sources, and unresolved native behavior |
+
+`source` identifies the local file, scope, JSON pointer where applicable, and
+package or agent owner where known. `origin` identifies an upstream package or
+repository only when metadata supplies evidence; loose files can have an
+unknown origin. A skill source's SHA-256 covers its instruction file, not its
+entire directory. Same-name candidates are not silently deduplicated, and array
+order does not represent native precedence.
+
+This is a static file inventory. `runtime_verified` is always false; a file or
+`enabled` declaration does not prove trust, dependency readiness, authentication,
+connection, or visibility to a running agent. Nullable enablement and invocation
+fields mean unknown. Coverage remains partial because runtime flags, selected
+profiles or agents, cloud/managed configuration, plugins, and dynamically
+registered resources may add or suppress declarations. Unsupported syntax and
+unreadable files produce diagnostics while other sources continue to be read.
+JSON, JSONC, JSON5, YAML, and TOML are parsed locally. Cordis JavaScript
+expressions are never evaluated, and server environment/header placeholders
+are not expanded into secret values.
+
+Literal MCP arguments, environment values, headers, credential-bearing URL
+components, and sensitive native fields are redacted by default. Use
+`--include-sensitive` for the unredacted local configuration. Skill instruction
+bodies are omitted unless `--include-content` is passed. `--verbose` writes
+diagnostics to stderr; stdout remains one JSON document. `--format json` is
+accepted explicitly and is the default.
+
 ### List Local Sessions
 
 ```sh
