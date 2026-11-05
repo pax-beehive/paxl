@@ -3,11 +3,15 @@ module github.com/pax-oss/paxl
 go 1.26
 
 require (
+	github.com/google/jsonschema-go v0.4.3
 	github.com/klauspost/compress v1.20.0
+	github.com/pelletier/go-toml/v2 v2.3.1
 	github.com/stretchr/testify v1.11.1
 	github.com/urfave/cli/v3 v3.10.0
 	modernc.org/sqlite v1.52.0
 )
+
+require github.com/titanous/json5 v1.0.0
 
 require (
 	github.com/avast/retry-go v3.0.0+incompatible // indirect
@@ -30,10 +34,10 @@ require (
 	github.com/ulikunitz/xz v0.5.11 // indirect
 	github.com/uudashr/gocognit v1.2.1 // indirect
 	github.com/zimmski/osutil v1.6.1 // indirect
-	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/sys v0.42.0
 	golang.org/x/term v0.17.0
 	golang.org/x/tools v0.42.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
+	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/libc v1.72.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect

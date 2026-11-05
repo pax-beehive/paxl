@@ -150,13 +150,14 @@ existing API keys or cloud settings may affect which credentials the harness use
 func newLocalHarnessCommand(stdin io.Reader, stdout, stderr io.Writer) *cli.Command {
 	return &cli.Command{
 		Name:  "harness",
-		Usage: "Manage local harness installations and authentication",
+		Usage: "Manage local harness installations, authentication, and configuration",
 		Commands: []*cli.Command{
 			newHarnessInstallCommand(stdin, stdout, stderr),
 			newHarnessInstallationCommand("inspect", stdout),
 			newHarnessInstallationCommand("upgrade", stdout),
 			newHarnessInstallationCommand("rollback", stdout),
 			newHarnessAuthCommand(stdin, stdout, stderr),
+			newHarnessConfigurationCommand(stdout, stderr),
 		},
 	}
 }

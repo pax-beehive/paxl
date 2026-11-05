@@ -1,0 +1,410 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:paxl:agent-configuration:1",
+  "title": "Paxl native agent configuration inventory v1",
+  "description": "Passive local-file inventory; does not claim effective runtime configuration, connections or authentication. Nullable enablement means unknown. Array order does not express native precedence.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "agent": {
+      "enum": [
+        "codex",
+        "claude",
+        "pi",
+        "kiro",
+        "opencode",
+        "kimi",
+        "hermes",
+        "openclaw",
+        "dsh",
+        "dscode"
+      ]
+    },
+    "cwd": {
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "all",
+        "skills",
+        "mcp"
+      ]
+    },
+    "runtime_verified": {
+      "const": false
+    },
+    "skills": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/skill"
+      }
+    },
+    "mcp_servers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/mcp"
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/source"
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "skills": {
+          "$ref": "#/$defs/coverage"
+        },
+        "mcp": {
+          "$ref": "#/$defs/coverage"
+        }
+      },
+      "required": [
+        "skills",
+        "mcp"
+      ]
+    },
+    "conflicts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/conflict"
+      }
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/diagnostic"
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "agent",
+    "cwd",
+    "kind",
+    "runtime_verified",
+    "skills",
+    "mcp_servers",
+    "sources",
+    "coverage",
+    "conflicts",
+    "diagnostics"
+  ],
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resolved_path": {
+          "type": "string"
+        },
+        "scope": {
+          "enum": [
+            "unknown",
+            "user",
+            "project",
+            "system",
+            "profile",
+            "agent",
+            "plugin",
+            "package"
+          ]
+        },
+        "format": {
+          "type": "string"
+        },
+        "pointer": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "unknown",
+            "read",
+            "missing",
+            "error",
+            "unsupported"
+          ]
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "path",
+        "scope",
+        "format",
+        "status"
+      ]
+    },
+    "origin": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "unknown",
+            "local",
+            "git",
+            "package",
+            "registry",
+            "bundled",
+            "plugin"
+          ]
+        },
+        "url": {
+          "type": "string"
+        },
+        "package": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "skill": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "directory": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "origin": {
+          "$ref": "#/$defs/origin"
+        },
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "model_invocable": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "user_invocable": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "frontmatter": {
+          "type": "object"
+        },
+        "instructions": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "description",
+        "directory",
+        "source",
+        "origin",
+        "enabled",
+        "model_invocable",
+        "user_invocable",
+        "frontmatter"
+      ]
+    },
+    "mcp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "transport": {
+          "enum": [
+            "unknown",
+            "stdio",
+            "http",
+            "sse",
+            "ws"
+          ]
+        },
+        "command": {
+          "type": "string"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "origin": {
+          "$ref": "#/$defs/origin"
+        },
+        "native": {
+          "type": "object"
+        },
+        "redacted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "transport",
+        "args",
+        "environment",
+        "headers",
+        "enabled",
+        "source",
+        "origin",
+        "native",
+        "redacted"
+      ]
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "unknown",
+            "partial",
+            "not_requested"
+          ]
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "status",
+        "limitations"
+      ]
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "severity": {
+          "enum": [
+            "info",
+            "warning",
+            "error"
+          ]
+        },
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        }
+      },
+      "required": [
+        "severity",
+        "code",
+        "message"
+      ]
+    },
+    "conflict": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "skills",
+            "mcp"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/source"
+          }
+        },
+        "resolution": {
+          "enum": [
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "candidates",
+        "resolution"
+      ]
+    }
+  }
+}
