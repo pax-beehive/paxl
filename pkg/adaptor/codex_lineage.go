@@ -17,6 +17,21 @@ type codexConversationRollout struct {
 	meta *codexMetaLine
 }
 
+type codexHistoryBase struct {
+	ThreadID            string `json:"thread_id"`
+	EndOrdinalExclusive int64  `json:"end_ordinal_exclusive"`
+	EndByteOffset       *int64 `json:"end_byte_offset"`
+}
+
+func isCodexPaginatedFork(meta *codexMetaLine) bool {
+	// A bounded reference inherits history without sharing conversation identity.
+	// Older compact/resume rollouts lack this reference and retain legacy merging.
+	return meta.Payload.HistoryMode == "paginated" &&
+		meta.Payload.HistoryBase != nil && meta.Payload.ForkedFromOrdinalExclusive != nil &&
+		meta.Payload.ForkedFromID != "" && meta.Payload.SessionID == meta.Payload.ID &&
+		meta.Payload.HistoryBase.ThreadID == meta.Payload.ForkedFromID
+}
+
 func isCodexInternal(meta *codexMetaLine) bool {
 	if meta.Payload.ThreadSource == "subagent" || meta.Payload.ThreadSource == "guardian_review" {
 		return true
@@ -44,7 +59,7 @@ func codexConversationRollouts(
 		}
 		rollouts = append(rollouts, codexConversationRollout{path: path, meta: meta})
 		// Internal threads must retain their own identity when explicitly requested.
-		if isCodexInternal(meta) {
+		if isCodexInternal(meta) || isCodexPaginatedFork(meta) {
 			continue
 		}
 		parent := firstNonEmpty(meta.Payload.ForkedFromID, meta.Payload.ParentThreadID)

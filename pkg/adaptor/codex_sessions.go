@@ -59,15 +59,18 @@ type codexIndexEntry struct {
 type codexMetaLine struct {
 	Type    string `json:"type"`
 	Payload struct {
-		ID             string          `json:"id"`
-		SessionID      string          `json:"session_id"`
-		ParentThreadID string          `json:"parent_thread_id"`
-		ForkedFromID   string          `json:"forked_from_id"`
-		Timestamp      string          `json:"timestamp"`
-		CWD            string          `json:"cwd"`
-		Originator     string          `json:"originator"`
-		Source         json.RawMessage `json:"source"`
-		ThreadSource   string          `json:"thread_source"`
+		ID                         string            `json:"id"`
+		SessionID                  string            `json:"session_id"`
+		ParentThreadID             string            `json:"parent_thread_id"`
+		ForkedFromID               string            `json:"forked_from_id"`
+		ForkedFromOrdinalExclusive *int64            `json:"forked_from_ordinal_exclusive"`
+		HistoryMode                string            `json:"history_mode"`
+		HistoryBase                *codexHistoryBase `json:"history_base"`
+		Timestamp                  string            `json:"timestamp"`
+		CWD                        string            `json:"cwd"`
+		Originator                 string            `json:"originator"`
+		Source                     json.RawMessage   `json:"source"`
+		ThreadSource               string            `json:"thread_source"`
 	} `json:"payload"`
 }
 
@@ -239,16 +242,15 @@ func findCodexRolloutInDir(ctx context.Context, root string, nativeID string) (s
 }
 
 func readCodexElements(path string, sessionID string) ([]*model.Element, error) {
-	// The adapter only reads rollout files discovered under the local Codex root.
-	// #nosec G304
-	file, err := os.Open(path)
+	history := &codexHistoryReader{visiting: make(map[string]bool)}
+	defer history.close()
+	reader, err := history.open(path, nil)
 	if err != nil {
 		return nil, err
 	}
-	defer closeFile(file)
 	var elements []*model.Element
 	durations := make(map[string]int64)
-	scanner := bufio.NewScanner(file)
+	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), scannerMaxTokenSize)
 	for scanner.Scan() {
 		callID, duration := codexEventDuration(scanner.Bytes())
