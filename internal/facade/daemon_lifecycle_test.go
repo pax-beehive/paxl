@@ -686,6 +686,17 @@ func TestDaemonLifecycleSetupRunsPaxdSetupWithCloudURL(t *testing.T) {
 	assert.Equal(t, []string{"setup", "--cloud-url", "https://api.example.com"}, runner.args)
 }
 
+func TestDaemonLifecycleSetupForwardsDeviceName(t *testing.T) {
+	runner := &fakeDaemonLifecycleRunner{path: "/usr/local/bin/paxd"}
+
+	_, err := NewDaemonLifecycleFacade(runner).Setup(context.Background(), &DaemonSetupRequest{
+		Name: " My work laptop ",
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"setup", "--name", "My work laptop"}, runner.args)
+}
+
 func TestDaemonLifecycleSetupInstallsPaxdWhenMissing(t *testing.T) {
 	binary := []byte("fake-paxd-binary")
 	sum := sha256.Sum256(binary)
@@ -753,6 +764,7 @@ func TestDaemonLifecycleRemoteLoginRunsPaxdLogin(t *testing.T) {
 		context.Background(),
 		&DaemonRemoteLoginRequest{
 			RemoteID:    "staging",
+			Name:        " Work server ",
 			CloudURL:    "https://api.example.com/",
 			APIEndpoint: "http://127.0.0.1:9000",
 		},
@@ -771,6 +783,8 @@ func TestDaemonLifecycleRemoteLoginRunsPaxdLogin(t *testing.T) {
 			"https://api.example.com",
 			"--api-endpoint",
 			"http://127.0.0.1:9000",
+			"--name",
+			"Work server",
 		},
 		runner.args,
 	)

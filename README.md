@@ -466,6 +466,18 @@ incrementing.
 
 ## Command Reference
 
+### Name a Connection
+
+Set the name shown in Console when connecting a CLI or a daemon device:
+
+```sh
+paxl login --name "My laptop"
+paxl daemon setup --name "My server"
+paxl daemon remote login default --name "My server"
+```
+
+Without `--name`, the existing automatic naming and daemon configuration apply.
+
 ### List Available Agents
 
 ```sh

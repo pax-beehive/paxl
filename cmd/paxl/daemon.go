@@ -252,6 +252,7 @@ func newDaemonSetupCommand(stdout io.Writer) *cli.Command {
 		Name:  "setup",
 		Usage: "Set up paxd pairing and background service",
 		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "name", Usage: "Device display name"},
 			&cli.BoolFlag{Name: "dry-run", Usage: "Show setup actions without writing files"},
 			&cli.StringFlag{Name: "cloud-url", Usage: "Pax cloud API URL"},
 			&cli.StringFlag{
@@ -272,6 +273,7 @@ func newDaemonSetupCommand(stdout io.Writer) *cli.Command {
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			resp, err := newDaemonLifecycleFacade().Setup(ctx, &facade.DaemonSetupRequest{
+				Name:        cmd.String("name"),
 				DryRun:      cmd.Bool("dry-run"),
 				CloudURL:    cmd.String("cloud-url"),
 				ResolverURL: cmd.String("resolver-url"),
@@ -409,6 +411,7 @@ func newDaemonRemoteCommand(stdout io.Writer) *cli.Command {
 				Usage:     "Login a daemon remote through paxd",
 				ArgsUsage: "<remote>",
 				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "name", Usage: "Device display name"},
 					&cli.StringFlag{Name: "cloud-url", Usage: "Pax cloud API URL"},
 					&cli.StringFlag{
 						Name:  "api-endpoint",
@@ -442,6 +445,7 @@ func newDaemonRemoteCommand(stdout io.Writer) *cli.Command {
 					resp, err := newDaemonLifecycleFacade().RemoteLogin(
 						ctx,
 						&facade.DaemonRemoteLoginRequest{
+							Name:        cmd.String("name"),
 							RemoteID:    cmd.Args().First(),
 							DryRun:      cmd.Bool("dry-run"),
 							CloudURL:    cmd.String("cloud-url"),
