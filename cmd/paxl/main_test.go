@@ -1600,6 +1600,27 @@ func (s *CommandSuite) TestNodeSessionListSupportsJSONL() {
 	s.Contains(s.stdout.String(), `"sessionId":"sess_1"`)
 }
 
+func (s *CommandSuite) TestLoginSendsCustomConnectionName() {
+	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
+	oldClient := authHTTPClient
+	var clientName string
+	authHTTPClient = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var body map[string]string
+		s.Require().NoError(json.NewDecoder(req.Body).Decode(&body))
+		clientName = body["client_name"]
+		return nil, fmt.Errorf("stop after capturing connection name")
+	})
+	s.T().Cleanup(func() { authHTTPClient = oldClient })
+
+	err := run(context.Background(), []string{
+		"--db", dbPath, "login", "--name", " My laptop ",
+		"--manager-url", "https://manager.example",
+	}, &s.stdout, &s.stderr)
+
+	s.Require().ErrorContains(err, "stop after capturing connection name")
+	s.Equal("My laptop", clientName)
+}
+
 func (s *CommandSuite) TestAuthCommandsLoginWhoamiAndLogout() {
 	dbPath := filepath.Join(s.T().TempDir(), "paxl.sqlite")
 	var deleteCalled bool

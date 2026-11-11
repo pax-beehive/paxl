@@ -401,6 +401,7 @@ func newLoginCommand(stdout io.Writer) *cli.Command {
 		Name:  "login",
 		Usage: "Authenticate paxl with pax-manager",
 		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "name", Usage: "Connection display name; defaults to an automatically generated name"},
 			&cli.BoolFlag{
 				Name:   "admin",
 				Usage:  "Request administrator login to an explicit --manager-url",
@@ -1856,7 +1857,7 @@ func loginCommand(ctx context.Context, cmd *cli.Command, stdout io.Writer) error
 		ClientCommit: true,
 		Admin:        cmd.Bool("admin"),
 		ManagerURL:   cmd.String("manager-url"),
-		ClientName:   defaultLoginClientName(),
+		ClientName:   firstNonEmpty(strings.TrimSpace(cmd.String("name")), defaultLoginClientName()),
 		Timeout:      timeout,
 		OnStart: func(start *facade.LoginStart) error {
 			if format != "text" {

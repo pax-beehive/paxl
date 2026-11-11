@@ -54,6 +54,7 @@ type DaemonUpdateCheckRequest struct {
 
 type DaemonSetupRequest struct {
 	DryRun      bool
+	Name        string
 	CloudURL    string
 	ResolverURL string
 	Platform    string
@@ -64,6 +65,7 @@ type DaemonSetupRequest struct {
 
 type DaemonRemoteLoginRequest struct {
 	RemoteID    string
+	Name        string
 	DryRun      bool
 	CloudURL    string
 	APIEndpoint string
@@ -304,6 +306,9 @@ func (f *DaemonLifecycleFacade) Setup(
 		return nil, fmt.Errorf("install paxd before setup: %w", err)
 	}
 	args := []string{"setup"}
+	if name := strings.TrimSpace(req.Name); name != "" {
+		args = append(args, "--name", name)
+	}
 	if strings.TrimSpace(req.CloudURL) != "" {
 		args = append(args, "--cloud-url", strings.TrimRight(strings.TrimSpace(req.CloudURL), "/"))
 	}
@@ -356,6 +361,9 @@ func (f *DaemonLifecycleFacade) RemoteLogin(
 	}
 	if strings.TrimSpace(req.APIEndpoint) != "" {
 		args = append(args, "--api-endpoint", strings.TrimSpace(req.APIEndpoint))
+	}
+	if name := strings.TrimSpace(req.Name); name != "" {
+		args = append(args, "--name", name)
 	}
 	if err := f.runner.Run(ctx, path, args); err != nil {
 		return nil, fmt.Errorf("run paxd login: %w", err)

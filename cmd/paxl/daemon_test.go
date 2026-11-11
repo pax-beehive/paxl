@@ -640,6 +640,7 @@ func TestDaemonRemoteLoginCommandUsesDaemonLifecycleFacade(t *testing.T) {
 
 	err := run(context.Background(), []string{
 		"daemon", "remote", "login", "staging",
+		"--name", "Work server",
 		"--cloud-url", "https://api.example.com/",
 		"--api-endpoint", "http://127.0.0.1:9000",
 		"--resolver-url", "https://resolver.test/resolve",
@@ -651,6 +652,7 @@ func TestDaemonRemoteLoginCommandUsesDaemonLifecycleFacade(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, lifecycle.remoteLoginReq)
 	assert.Equal(t, "staging", lifecycle.remoteLoginReq.RemoteID)
+	assert.Equal(t, "Work server", lifecycle.remoteLoginReq.Name)
 	assert.Equal(t, "https://api.example.com/", lifecycle.remoteLoginReq.CloudURL)
 	assert.Equal(t, "http://127.0.0.1:9000", lifecycle.remoteLoginReq.APIEndpoint)
 	assert.Equal(t, "https://resolver.test/resolve", lifecycle.remoteLoginReq.ResolverURL)
@@ -668,6 +670,7 @@ func TestDaemonSetupLeavesResolverUnsetForCloudDerivedDefault(t *testing.T) {
 
 	err := run(context.Background(), []string{
 		"daemon", "setup",
+		"--name", "Work laptop",
 		"--cloud-url", "https://self-hosted.test/",
 		"--dry-run",
 	}, &stdout, &stderr)
@@ -675,6 +678,7 @@ func TestDaemonSetupLeavesResolverUnsetForCloudDerivedDefault(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, lifecycle.setupReq)
 	assert.Equal(t, "https://self-hosted.test/", lifecycle.setupReq.CloudURL)
+	assert.Equal(t, "Work laptop", lifecycle.setupReq.Name)
 	assert.Empty(t, lifecycle.setupReq.ResolverURL)
 }
 
