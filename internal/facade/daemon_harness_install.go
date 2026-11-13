@@ -23,15 +23,13 @@ func (f *DaemonLifecycleFacade) InstallHarness(
 	harness := strings.TrimSpace(req.Harness)
 	packageName, displayName := "@deepseek-ai/dsh@latest", "DeepSeek Harness"
 	if harness == "dscode" {
-		packageName, displayName = "@toddzheng024/dscode@latest", "DSCODE"
-	} else if harness != "dsh" {
+		return f.installDSCode(ctx, req.DryRun, opts...)
+	}
+	if harness != "dsh" {
 		return nil, fmt.Errorf("harness installation currently supports dsh and dscode only")
 	}
 	option := applyOptions(opts)
 	guidance := "Requires Node 22.19+ on 22.x or Node 24+. Configure DEEPSEEK_API_KEY in the paxd service environment, then run paxl daemon harness discover dsh."
-	if harness == "dscode" {
-		guidance = "Requires Node 22.19+ on 22.x or Node 24+. Use a DSCODE build with native dscode acp support; run dscode install to initialize its profile. Configure credentials with /login inside dscode or DEEPSEEK_API_KEY in the paxd service environment, then run paxl daemon harness discover dscode."
-	}
 	resp := &DaemonLifecycleResponse{
 		Binary: harness, Action: "install-harness", Status: SetupStatusPending,
 		Message: "Would run npm install -g " + packageName + " on this machine. " + guidance,

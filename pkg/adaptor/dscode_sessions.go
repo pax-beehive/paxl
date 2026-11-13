@@ -34,7 +34,13 @@ func dscodeSessionsRoot() (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("resolve DSCODE home: %w", err)
 		}
-		home = filepath.Join(userHome, ".local", "share", "dscode-hub")
+		home = filepath.Join(userHome, ".local", "share", "dscode-state")
+		// New installations use standalone state; retain read access to an unmigrated Hub home.
+		legacy := filepath.Join(userHome, ".local", "share", "dscode-hub")
+		if !pathExists(filepath.Join(home, "sessions")) &&
+			pathExists(filepath.Join(legacy, "sessions")) {
+			home = legacy
+		}
 	}
 	return filepath.Abs(filepath.Join(home, "sessions"))
 }
