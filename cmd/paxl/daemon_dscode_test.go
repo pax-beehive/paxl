@@ -18,8 +18,8 @@ func TestDaemonHarnessInstallDSCodeDryRun(t *testing.T) {
 		&stderr,
 	)
 	require.NoError(t, err)
-	assert.Contains(t, stdout.String(), "npm install -g @toddzheng024/dscode@latest")
-	assert.Contains(t, stdout.String(), "DEEPSEEK_API_KEY")
+	assert.Contains(t, stdout.String(), "self-contained")
+	assert.Contains(t, stdout.String(), "DSCODE_HOME")
 }
 
 func TestDaemonDSCodeDiscoveryAndCreation(t *testing.T) {

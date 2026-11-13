@@ -141,3 +141,41 @@ func TestDSCodeReadsCurrentCompressedHarnessFormats(t *testing.T) {
 		})
 	}
 }
+
+func TestGivenDSCodeDefaultInstallationsWhenListingThenPrefersStandaloneAndPreservesLegacyFallback(
+	t *testing.T,
+) {
+	for _, tc := range []struct {
+		name  string
+		roots []string
+		want  string
+	}{
+		{"standalone", []string{"dscode-state"}, "dscode:dscode-state"},
+		{"legacy", []string{"dscode-hub"}, "dscode:dscode-hub"},
+		{"both", []string{"dscode-state", "dscode-hub"}, "dscode:dscode-state"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("DSCODE_HOME", "")
+			t.Setenv("PAXL_DSCODE_SESSIONS_DIR", "")
+			for _, root := range tc.roots {
+				dir := filepath.Join(home, ".local", "share", root, "sessions", "work", root)
+				require.NoError(t, os.MkdirAll(dir, 0700))
+				log := fmt.Sprintf(
+					`{"type":"session","version":2,"id":%q,"createdAt":1000,"cwd":"/work","isSeeded":false,"delegationDepth":0}`+"\n",
+					root,
+				)
+				require.NoError(
+					t,
+					os.WriteFile(filepath.Join(dir, "session.v2.jsonl"), []byte(log), 0600),
+				)
+			}
+			adapter := adaptor.NewDSCodeAdapter()
+			resp, err := adapter.ListSessions(t.Context(), &adaptor.ListSessionsRequest{})
+			require.NoError(t, err)
+			require.Len(t, resp.Sessions, 1)
+			require.Equal(t, tc.want, resp.Sessions[0].ID)
+		})
+	}
+}

@@ -1,37 +1,46 @@
 # DSCODE discovery and connections
 
-Install and initialize [DSCODE](https://github.com/qiz029/dscode) on the machine
-running paxd. Node 22.19+ on the 22.x line or Node 24+ is required.
+Install the official self-contained [DSCODE](https://github.com/qiz029/dscode)
+release on the machine running paxd. It bundles Node and the pinned runtime;
+system Node and npm are not required. GitHub terminal archives, the maintained
+Homebrew formula, and the separate Desktop package currently report 0.7.54.
+Legacy npm launcher/bundle packages stop at 0.7.40 and are not the current
+terminal distribution. Resolve future terminal updates from GitHub releases.
 
 ```sh
 paxl daemon harness install dscode --dry-run
 paxl daemon harness install dscode
-dscode install
-# Start dscode and use /login to configure the provider, then exit it.
+# Add ~/.local/bin to the paxd service PATH.
+# Start dscode and use /login to configure providers, then exit it.
 paxl daemon harness discover dscode
 paxl daemon agent create --harness dscode --name dscode
 paxl daemon agent list
 ```
 
-Use a build containing upstream commit `6bd354e` (PR #7), which adds native
-`dscode acp`. Main still reports version 0.7.35 at that commit, but the earlier
-published 0.7.35 package lacks the command. Use a source build containing the
-commit or a subsequent release with ACP support; installing `@latest` alone
-does not prove support.
+The install command downloads a reviewed, commit-pinned official installer on
+the CLI host. The installer resolves the newest complete platform release,
+verifies its SHA-256 checksum and bundled modules, installs under
+`~/.local/share/dscode-app`, and links `~/.local/bin/dscode`. Existing foreign
+command links are refused. There is no npm fallback. Discovery only checks for
+the executable; it does not start, install or authenticate it.
 
-The installation command runs `npm install -g @toddzheng024/dscode@latest` on
-the CLI host. Discovery only checks for the executable and never starts it.
-The daemon must resolve both DSCODE and a supported Node version in its PATH.
-Use the same user/home as the configured installation, or supply `DSCODE_HOME`
-and provider credentials in the connection environment. Discovery availability
-does not verify credentials, profile dependencies or ACP support.
+Subsequent standalone updates use `dscode update` (or an exact version), after
+all sessions and schedulers exit. Homebrew installations use `brew upgrade dscode`.
+This installation alignment does not add DSCODE to the remote harness upgrade
+command; that coordinator still requires separate process and version support.
+
+Migration from npm/Hub or source installations is explicit. Keep old data and
+credentials until sessions have been checked. Select an existing Hub data home
+with `DSCODE_HOME` only after stopping its old processes; the new application
+creates its own profile. It does not automatically import `~/.dscode` credentials.
+Follow the upstream [migration guide](https://github.com/qiz029/dscode/blob/main/docs/distribution.md#migration-from-older-dscode-installations).
+Do not run legacy and standalone applications against the same data concurrently.
 
 Update both paxl and paxd. The daemon advertises `dscode acp` directly. DSCODE
 owns preset composition and uses the saved default model and native credentials.
-ACP clients answer approval requests under the `ask` permission preset. Title,
-session-card and memory generation are disabled. First-install progress goes
+ACP clients answer approval requests under the `ask` permission preset. First-install progress goes
 to stderr so stdout remains protocol-only. See the upstream
-[ACP guide](https://github.com/qiz029/dscode/blob/6bd354e/docs/acp.md).
+[ACP guide](https://github.com/qiz029/dscode/blob/main/docs/acp.md).
 
 For a source checkout, configure `node /absolute/path/to/dscode/bin/dscode.mjs acp`
 as the connection's explicit command, or expose that checkout through a `dscode`
@@ -60,7 +69,9 @@ it queues the message and returns the bridge acknowledgment, not a completed
 model response. Inactive sessions must first be resumed. New remote sessions
 are created through the daemon's ACP connection.
 
-The default log root is `~/.local/share/dscode-hub/sessions`. `DSCODE_HOME`
+The default log root is `~/.local/share/dscode-state/sessions`. If that directory
+is absent, an existing `~/.local/share/dscode-hub/sessions` remains readable.
+When both exist, the standalone directory takes precedence. `DSCODE_HOME`
 overrides the home and `PAXL_DSCODE_SESSIONS_DIR` overrides the session directory.
 A source/tar installation stores sessions under its own `.runtime/sessions`;
 set `PAXL_DSCODE_SESSIONS_DIR` to that directory for local listing/history.
